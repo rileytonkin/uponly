@@ -1,0 +1,611 @@
+import Foundation
+
+struct MissingValuation: Sendable, Equatable {
+    var componentID: UUID
+    var reason: String
+}
+
+struct StaleValuation: Sendable, Equatable {
+    var componentID: UUID
+    var asOf: Date
+}
+
+struct BalanceChange: Sendable, Equatable {
+    var kind: BalanceChangeKind
+    var amount: Decimal
+}
+
+struct ValuationResult: Sendable, Equatable {
+    var at: Date
+    var scope: ValuationScope
+    var components: [ValuationComponent]
+    var total: Decimal?
+    var lastComplete: (value: Decimal, at: Date)?
+    var missing: [MissingValuation]
+    var stale: [StaleValuation]
+    var includedAccountIDs: [UUID]
+    var includedPortfolioIDs: [UUID]
+    var isUnavailable: Bool
+
+    static func == (lhs: ValuationResult, rhs: ValuationResult) -> Bool {
+        lhs.at == rhs.at
+            && lhs.scope == rhs.scope
+            && lhs.components == rhs.components
+            && lhs.total == rhs.total
+            && lhs.lastComplete?.value == rhs.lastComplete?.value
+            && lhs.lastComplete?.at == rhs.lastComplete?.at
+            && lhs.missing == rhs.missing
+            && lhs.stale == rhs.stale
+            && lhs.includedAccountIDs == rhs.includedAccountIDs
+            && lhs.includedPortfolioIDs == rhs.includedPortfolioIDs
+            && lhs.isUnavailable == rhs.isUnavailable
+    }
+
+    var needsUpdate: Bool { total == nil && lastComplete != nil }
+}
+
+nonisolated enum NetWorthCalculator {
+    static func value(
+        at date: Date,
+        scope: ValuationScope,
+        document: VaultDocument,
+        now: Date = Date()
+    ) -> ValuationResult {
+        let day = UTCDay.start(of: date)
+        let isHistorical = day < UTCDay.start(of: now)
+        if isHistorical, let stored = document.storedValuation(day: day, scope: scope), stored.isComplete {
+            return result(from: stored, at: date)
+        }
+        return compute(at: date, scope: scope, document: document, now: now, historical: isHistorical)
+    }
+
+    static func change(from: ValuationResult, to: ValuationResult) -> BalanceChange? {
+        guard from.scope == to.scope,
+              from.includedAccountIDs == to.includedAccountIDs,
+              from.includedPortfolioIDs == to.includedPortfolioIDs,
+              let a = from.total, let b = to.total else { return nil }
+        guard let amount = try? MoneyInput.add(b, -a) else { return nil }
+        return BalanceChange(kind: .change, amount: amount)
+    }
+
+    static func sample(from result: ValuationResult) -> DailyValuation? {
+        guard !result.isUnavailable else { return nil }
+        return DailyValuation(
+            utcDay: UTCDay.start(of: result.at),
+            scope: result.scope,
+            total: result.total.map(PreciseDecimal.init),
+            isComplete: result.total != nil,
+            components: result.components,
+            computedAt: result.at,
+            includedAccountIDs: result.includedAccountIDs,
+            includedPortfolioIDs: result.includedPortfolioIDs
+        )
+    }
+
+    static func recordingSample(_ result: ValuationResult, in document: VaultDocument) -> VaultDocument {
+        guard let incoming = sample(from: result) else { return document }
+        var next = document
+        let day = UTCDay.start(of: result.at)
+        if !incoming.isComplete {
+            let hasComplete = next.dailyValuations.contains {
+                UTCDay.start(of: $0.utcDay) == day && $0.scope == result.scope && $0.isComplete
+            }
+            if hasComplete { return next }
+        }
+        next.dailyValuations.removeAll {
+            UTCDay.start(of: $0.utcDay) == day && $0.scope == result.scope && ($0.isComplete == incoming.isComplete)
+        }
+        next.dailyValuations.append(incoming)
+        return next
+    }
+
+    private static func result(from stored: DailyValuation, at date: Date) -> ValuationResult {
+        var missing: [MissingValuation] = []
+        var stale: [StaleValuation] = []
+        for component in stored.components {
+            if let reason = component.missing {
+                missing.append(MissingValuation(componentID: component.id, reason: reason))
+            }
+            if component.isStale, let asOf = component.quoteTime ?? component.fxTime {
+                stale.append(StaleValuation(componentID: component.id, asOf: asOf))
+            }
+        }
+        let lastComplete: (Decimal, Date)?
+        if stored.isComplete, let total = stored.total {
+            lastComplete = (total.value, stored.computedAt)
+        } else {
+            lastComplete = nil
+        }
+        return ValuationResult(
+            at: date,
+            scope: stored.scope,
+            components: stored.components,
+            total: stored.isComplete ? stored.total?.value : nil,
+            lastComplete: lastComplete,
+            missing: missing,
+            stale: stale,
+            includedAccountIDs: stored.includedAccountIDs,
+            includedPortfolioIDs: stored.includedPortfolioIDs,
+            isUnavailable: false
+        )
+    }
+
+    private static func compute(
+        at date: Date,
+        scope: ValuationScope,
+        document: VaultDocument,
+        now: Date,
+        historical: Bool
+    ) -> ValuationResult {
+        var missing: [MissingValuation] = []
+        var stale: [StaleValuation] = []
+        let banks: [ValuationComponent]
+        let holdings: [ValuationComponent]
+        switch scope {
+        case .allTracked:
+            banks = bankComponents(at: date, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+            holdings = holdingComponents(at: date, scope: scope, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+        case .banks:
+            banks = bankComponents(at: date, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+            holdings = []
+        case .portfolio:
+            banks = []
+            holdings = holdingComponents(at: date, scope: scope, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+        }
+        let components = banks + holdings
+        let includedAccounts = includedAccountIDs(scope: scope, document: document, at: date)
+        let includedPortfolios = includedPortfolioIDs(scope: scope, document: document, at: date)
+        let observed = hasObservation(scope: scope, document: document, at: date, includedAccounts: includedAccounts, includedPortfolios: includedPortfolios)
+        if !observed {
+            return ValuationResult(
+                at: date,
+                scope: scope,
+                components: [],
+                total: nil,
+                lastComplete: lastCompleteSample(in: document, scope: scope, at: date),
+                missing: [],
+                stale: [],
+                includedAccountIDs: includedAccounts,
+                includedPortfolioIDs: includedPortfolios,
+                isUnavailable: true
+            )
+        }
+        var total: Decimal? = nil
+        if missing.isEmpty, components.allSatisfy({ $0.usdValue != nil && $0.missing == nil }) {
+            do {
+                total = try components.reduce(Decimal(0)) { try MoneyInput.add($0, $1.usdValue?.value ?? 0) }
+            } catch {
+                missing.append(MissingValuation(componentID: UUID(), reason: "overflow"))
+                total = nil
+            }
+        }
+        return ValuationResult(
+            at: date,
+            scope: scope,
+            components: components,
+            total: total,
+            lastComplete: total == nil ? lastCompleteSample(in: document, scope: scope, at: date) : (total!, date),
+            missing: missing,
+            stale: stale,
+            includedAccountIDs: includedAccounts,
+            includedPortfolioIDs: includedPortfolios,
+            isUnavailable: false
+        )
+    }
+
+    private static func lastCompleteSample(
+        in document: VaultDocument,
+        scope: ValuationScope,
+        at date: Date
+    ) -> (value: Decimal, at: Date)? {
+        document.dailyValuations
+            .filter {
+                $0.scope == scope && $0.isComplete && $0.computedAt <= date && UTCDay.start(of: $0.utcDay) <= UTCDay.start(of: date)
+            }
+            .sorted { lhs, rhs in
+                if lhs.computedAt != rhs.computedAt { return lhs.computedAt < rhs.computedAt }
+                return lhs.utcDay < rhs.utcDay
+            }
+            .last
+            .flatMap { sample in
+                sample.total.map { ($0.value, sample.computedAt) }
+            }
+    }
+
+    private static func includedAccountIDs(scope: ValuationScope, document: VaultDocument, at date: Date) -> [UUID] {
+        switch scope {
+        case .portfolio: return []
+        case .allTracked, .banks:
+            return document.accounts.map(\.id).filter { document.isBankTracked($0, at: date) }.sorted { $0.uuidString < $1.uuidString }
+        }
+    }
+
+    private static func includedPortfolioIDs(scope: ValuationScope, document: VaultDocument, at date: Date) -> [UUID] {
+        switch scope {
+        case .banks: return []
+        case .allTracked:
+            return document.portfolios.filter { $0.isActive(at: date) }.map(\.id).sorted { $0.uuidString < $1.uuidString }
+        case .portfolio(let id):
+            return document.portfolios.contains(where: { $0.id == id && $0.isActive(at: date) }) ? [id] : []
+        }
+    }
+
+    private static func hasObservation(
+        scope: ValuationScope,
+        document: VaultDocument,
+        at date: Date,
+        includedAccounts: [UUID],
+        includedPortfolios: [UUID]
+    ) -> Bool {
+        let hasBank = includedAccounts.contains { accountID in
+            document.bankBalances.contains { $0.accountID == accountID && $0.observedAt <= date }
+        }
+        let holdings = document.holdings.filter { includedPortfolios.contains($0.portfolioID) }
+        let hasQuantity = holdings.contains { holding in
+            document.quantities.contains { $0.holdingID == holding.id && $0.effectiveAt <= date }
+        }
+        switch scope {
+        case .banks: return hasBank
+        case .portfolio: return hasQuantity
+        case .allTracked: return hasBank || hasQuantity
+        }
+    }
+
+    private static func bankComponents(
+        at date: Date,
+        document: VaultDocument,
+        now: Date,
+        historical: Bool,
+        missing: inout [MissingValuation],
+        stale: inout [StaleValuation]
+    ) -> [ValuationComponent] {
+        var result: [ValuationComponent] = []
+        for account in document.accounts where document.isBankTracked(account.id, at: date) {
+            let observation = latestBalance(accountID: account.id, at: date, document: document)
+            guard let observation else {
+                let component = ValuationComponent(
+                    id: account.id,
+                    kind: .bank,
+                    label: account.name,
+                    currency: account.currency,
+                    nativeAmount: nil,
+                    usdValue: nil,
+                    quoteTime: nil,
+                    fxTime: nil,
+                    isStale: false,
+                    missing: "balance"
+                )
+                result.append(component)
+                missing.append(MissingValuation(componentID: account.id, reason: "balance"))
+                continue
+            }
+            let converted = convert(
+                amount: observation.amount.value,
+                currency: observation.currency,
+                at: date,
+                document: document,
+                historical: historical
+            )
+            var isStale = false
+            if now.timeIntervalSince(observation.observedAt) > VaultLimits.bankStaleAfter {
+                isStale = true
+                stale.append(StaleValuation(componentID: account.id, asOf: observation.observedAt))
+            }
+            if let fxStale = converted.fxTime,
+               observation.currency != "USD",
+               now.timeIntervalSince(fxStale) > VaultLimits.fxStaleAfter {
+                isStale = true
+                stale.append(StaleValuation(componentID: account.id, asOf: fxStale))
+            }
+            if converted.usd == nil {
+                missing.append(MissingValuation(componentID: account.id, reason: converted.missing ?? "fx"))
+            }
+            result.append(
+                ValuationComponent(
+                    id: account.id,
+                    kind: .bank,
+                    label: account.name,
+                    currency: observation.currency,
+                    nativeAmount: observation.amount,
+                    usdValue: converted.usd.map(PreciseDecimal.init),
+                    quoteTime: nil,
+                    fxTime: converted.fxTime,
+                    isStale: isStale,
+                    missing: converted.usd == nil ? (converted.missing ?? "fx") : nil
+                )
+            )
+        }
+        return result
+    }
+
+    private static func holdingComponents(
+        at date: Date,
+        scope: ValuationScope,
+        document: VaultDocument,
+        now: Date,
+        historical: Bool,
+        missing: inout [MissingValuation],
+        stale: inout [StaleValuation]
+    ) -> [ValuationComponent] {
+        let portfolios: [Portfolio]
+        switch scope {
+        case .allTracked:
+            portfolios = document.portfolios.filter { $0.isActive(at: date) }
+        case .banks:
+            return []
+        case .portfolio(let id):
+            portfolios = document.portfolios.filter { $0.id == id && $0.isActive(at: date) }
+        }
+        var result: [ValuationComponent] = []
+        for portfolio in portfolios {
+            for holding in document.activeHoldings(in: portfolio.id, at: date) {
+                guard let quantity = document.effectiveQuantity(holdingID: holding.id, at: date) else {
+                    continue
+                }
+                if quantity == 0 { continue }
+                let quote = latestQuote(
+                    assetID: holding.assetID,
+                    at: date,
+                    document: document,
+                    historical: historical
+                )
+                guard let quote else {
+                    result.append(
+                        ValuationComponent(
+                            id: holding.id,
+                            kind: .holding,
+                            label: holding.assetName,
+                            currency: "USD",
+                            nativeAmount: PreciseDecimal(quantity),
+                            usdValue: nil,
+                            quoteTime: nil,
+                            fxTime: nil,
+                            isStale: false,
+                            missing: "quote"
+                        )
+                    )
+                    missing.append(MissingValuation(componentID: holding.id, reason: "quote"))
+                    continue
+                }
+                var isStale = false
+                if !historical, now.timeIntervalSince(quote.providerTime) > VaultLimits.quoteStaleAfter {
+                    isStale = true
+                    stale.append(StaleValuation(componentID: holding.id, asOf: quote.providerTime))
+                }
+                let usd: PreciseDecimal?
+                do {
+                    usd = PreciseDecimal(try MoneyInput.multiply(quantity, quote.priceUSD.value))
+                } catch {
+                    missing.append(MissingValuation(componentID: holding.id, reason: "overflow"))
+                    usd = nil
+                }
+                result.append(
+                    ValuationComponent(
+                        id: holding.id,
+                        kind: .holding,
+                        label: holding.assetName,
+                        currency: "USD",
+                        nativeAmount: PreciseDecimal(quantity),
+                        usdValue: usd,
+                        quoteTime: quote.providerTime,
+                        fxTime: nil,
+                        isStale: isStale,
+                        missing: usd == nil ? "overflow" : nil
+                    )
+                )
+            }
+        }
+        return result
+    }
+
+    private static func latestBalance(
+        accountID: UUID,
+        at date: Date,
+        document: VaultDocument
+    ) -> BankBalanceObservation? {
+        document.bankBalances
+            .filter { $0.accountID == accountID && $0.observedAt <= date }
+            .sorted { $0.observedAt < $1.observedAt }
+            .last
+    }
+
+    private static func latestQuote(
+        assetID: CanonicalAssetID,
+        at date: Date,
+        document: VaultDocument,
+        historical: Bool
+    ) -> QuoteObservation? {
+        let candidates = document.quotes.filter { $0.assetID == assetID && $0.providerTime <= date }
+        if historical {
+            return candidates
+                .filter { UTCDay.isSameDay($0.providerTime, date) }
+                .sorted { $0.providerTime < $1.providerTime }
+                .last
+        }
+        return candidates.sorted { $0.providerTime < $1.providerTime }.last
+    }
+
+    private static func convert(
+        amount: Decimal,
+        currency: String,
+        at date: Date,
+        document: VaultDocument,
+        historical: Bool
+    ) -> (usd: Decimal?, fxTime: Date?, missing: String?) {
+        if currency == "USD" {
+            return (amount, nil, nil)
+        }
+        let candidates = document.fx.filter {
+            $0.sourceCurrency == currency
+                && $0.targetCurrency == "USD"
+                && $0.providerTime <= date
+        }
+        let match: FXObservation?
+        if historical {
+            match = candidates
+                .filter { UTCDay.isSameDay($0.providerTime, date) }
+                .sorted { $0.providerTime < $1.providerTime }
+                .last
+        } else {
+            match = candidates.sorted { $0.providerTime < $1.providerTime }.last
+        }
+        guard let match else { return (nil, nil, "fx") }
+        do {
+            return (try MoneyInput.multiply(amount, match.rate.value), match.providerTime, nil)
+        } catch {
+            return (nil, match.providerTime, "overflow")
+        }
+    }
+}
+
+nonisolated enum HoldingMutations {
+    static func setQuantity(
+        holdingID: UUID,
+        quantity: Decimal,
+        at date: Date,
+        document: VaultDocument,
+        recordedAt: Date = Date()
+    ) throws -> VaultDocument {
+        try MoneyInput.requireNonNegativeFinite(quantity)
+        guard document.holding(id: holdingID) != nil else { throw VaultError.unknownHolding }
+        if let last = document.quantities.filter({ $0.holdingID == holdingID }).map(\.effectiveAt).max(),
+           date < last {
+            throw VaultError.invalidAmount
+        }
+        var next = document
+        let ordinal = next.nextOrdinal
+        next.nextOrdinal += 1
+        next.quantities.append(
+            QuantityObservation(
+                holdingID: holdingID,
+                quantity: PreciseDecimal(quantity),
+                effectiveAt: date,
+                recordedAt: recordedAt,
+                ordinal: ordinal
+            )
+        )
+        return next
+    }
+
+    static func archivePortfolio(id: UUID, at date: Date, document: VaultDocument) throws -> VaultDocument {
+        guard document.portfolio(id: id) != nil else { throw VaultError.unknownPortfolio }
+        var next = document
+        if let index = next.portfolios.firstIndex(where: { $0.id == id }) {
+            next.portfolios[index].archivedAt = date
+        }
+        return next
+    }
+
+    static func archiveHolding(id: UUID, at date: Date, document: VaultDocument) throws -> VaultDocument {
+        guard document.holding(id: id) != nil else { throw VaultError.unknownHolding }
+        var next = document
+        if let index = next.holdings.firstIndex(where: { $0.id == id }) {
+            next.holdings[index].archivedAt = date
+        }
+        return next
+    }
+
+    static func moveHolding(
+        assetID: CanonicalAssetID,
+        quantity: Decimal,
+        from sourceID: UUID,
+        to destinationID: UUID,
+        at date: Date,
+        document: VaultDocument,
+        recordedAt: Date = Date()
+    ) throws -> VaultDocument {
+        try MoneyInput.requirePositiveFinite(quantity)
+        guard sourceID != destinationID else { throw VaultError.samePortfolio }
+        guard let source = document.portfolio(id: sourceID), source.isActive(at: date) else {
+            throw VaultError.unknownPortfolio
+        }
+        guard let destination = document.portfolio(id: destinationID), destination.isActive(at: date) else {
+            throw VaultError.unknownPortfolio
+        }
+        _ = source
+        _ = destination
+
+        guard let sourceHolding = document.holdings.first(where: {
+            $0.portfolioID == sourceID && $0.assetID == assetID && $0.isActive(at: date)
+        }) else { throw VaultError.unknownHolding }
+
+        let available = document.effectiveQuantity(holdingID: sourceHolding.id, at: date) ?? 0
+        guard available >= quantity else { throw VaultError.insufficientQuantity }
+
+        var next = document
+        let firstOrdinal = next.nextOrdinal
+        next.nextOrdinal += 1
+        next.quantities.append(
+            QuantityObservation(
+                holdingID: sourceHolding.id,
+                quantity: PreciseDecimal(try MoneyInput.add(available, -quantity)),
+                effectiveAt: date,
+                recordedAt: recordedAt,
+                ordinal: firstOrdinal
+            )
+        )
+
+        let destHolding: Holding
+        if let existing = next.holdings.first(where: {
+            $0.portfolioID == destinationID && $0.assetID == assetID && $0.isActive(at: date)
+        }) {
+            destHolding = existing
+        } else {
+            destHolding = Holding(
+                portfolioID: destinationID,
+                assetID: assetID,
+                assetName: sourceHolding.assetName,
+                createdAt: date
+            )
+            next.holdings.append(destHolding)
+        }
+        let destQuantity = next.effectiveQuantity(holdingID: destHolding.id, at: date) ?? 0
+        let secondOrdinal = next.nextOrdinal
+        next.nextOrdinal += 1
+        next.quantities.append(
+            QuantityObservation(
+                holdingID: destHolding.id,
+                quantity: PreciseDecimal(try MoneyInput.add(destQuantity, quantity)),
+                effectiveAt: date,
+                recordedAt: recordedAt,
+                ordinal: secondOrdinal
+            )
+        )
+        return next
+    }
+
+    static func addHolding(
+        portfolioID: UUID,
+        assetID: CanonicalAssetID,
+        assetName: String,
+        quantity: Decimal,
+        at date: Date,
+        document: VaultDocument
+    ) throws -> VaultDocument {
+        try MoneyInput.requireNonNegativeFinite(quantity)
+        guard let portfolio = document.portfolio(id: portfolioID), portfolio.isActive(at: date) else {
+            throw VaultError.unknownPortfolio
+        }
+        _ = portfolio
+        var next = document
+        if let existing = next.holdings.first(where: {
+            $0.portfolioID == portfolioID && $0.assetID == assetID && $0.isActive(at: date)
+        }) {
+            return try setQuantity(holdingID: existing.id, quantity: quantity, at: date, document: next)
+        }
+        let holding = Holding(portfolioID: portfolioID, assetID: assetID, assetName: assetName, createdAt: date)
+        next.holdings.append(holding)
+        let ordinal = next.nextOrdinal
+        next.nextOrdinal += 1
+        next.quantities.append(
+            QuantityObservation(
+                holdingID: holding.id,
+                quantity: PreciseDecimal(quantity),
+                effectiveAt: date,
+                recordedAt: date,
+                ordinal: ordinal
+            )
+        )
+        return next
+    }
+}

@@ -1,0 +1,13 @@
+.DS_Store
+.context/
+.flowdeck/
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+Local.xcconfig
+*.uponly
+*.uponlybackup/
+*.wrapper
+.env*
