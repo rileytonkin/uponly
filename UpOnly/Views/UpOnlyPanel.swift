@@ -236,9 +236,6 @@ private struct UpOnlyUnlockedPanel: View {
             HStack(spacing: 8) {
                 periodSelector
                 Spacer(minLength: 0)
-                if detail == nil, companySelection == nil, selectedPortfolio == nil {
-                    if hasData { dataStatusButton }
-                }
             }.frame(minHeight: 32).padding(.bottom, 16)
             if let companySelection { companyContent(companySelection) }
             else if !hasData, shows(.cashFlow) || showsNetWorth { firstDataContent }
@@ -283,18 +280,7 @@ private struct UpOnlyUnlockedPanel: View {
                 } else if shows(.cashFlow) { destination("Performance", value: 0) }
                 else if showsNetWorth { destination("Net worth", value: 1) }
                 Spacer(minLength: 0)
-                GlassEffectContainer {
-                    HStack(spacing: 0) {
-                        Button { manage("Manage") } label: { Image(systemName: "slider.horizontal.3").frame(width: 16, height: 16) }
-                            .buttonStyle(UpOnlyToolbarButtonStyle())
-                            .help("Add and manage").accessibilityLabel("Add and manage").accessibilityIdentifier("ManageUpOnly")
-                        Divider().frame(height: 13)
-                        UpOnlyPrivacyButton()
-                        Divider().frame(height: 13)
-                        Button { session.lockAndAuthenticate() } label: { Image(systemName: "lock").frame(width: 16, height: 16) }
-                            .buttonStyle(UpOnlyToolbarButtonStyle()).help("Lock Up Only (⌘L)").keyboardShortcut("l", modifiers: .command).accessibilityLabel("Lock Up Only")
-                    }.font(.system(size: 13, weight: .medium)).glassEffect(.regular, in: .capsule)
-                }
+                dashboardActions
             }.frame(minHeight: 32)
         }
     }
@@ -307,19 +293,33 @@ private struct UpOnlyUnlockedPanel: View {
         return false
         #endif
     }
-    @ViewBuilder private var dataStatusButton: some View {
-        let needsAttention = session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true || syncNeedsAttention
-        if needsAttention {
-            Button { manage("Needs attention") } label: {
-                Image(systemName: "checklist").font(.system(size: 13, weight: .medium))
-                    .frame(width: 16, height: 16).accessibilityHidden(true)
-            }.buttonStyle(UpOnlyToolbarButtonStyle())
-                .glassEffect(.regular, in: .circle)
-                .accessibilityLabel("Review data")
-                .accessibilityValue(syncNeedsAttention ? "Saved data needs a refresh" : "Missing information")
-                .accessibilityIdentifier("DataAttention")
-                .help("Review missing data")
+    private var needsDataReview: Bool {
+        hasData && (session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true || syncNeedsAttention)
+    }
+    private var dashboardActions: some View {
+        Menu {
+            if needsDataReview {
+                Button { manage("Needs attention") } label: { Label("Review data", systemImage: "checklist") }
+                    .accessibilityIdentifier("DataAttention")
+                Divider()
+            }
+            Button { manage("Manage") } label: { Label("Manage", systemImage: "slider.horizontal.3") }
+                .accessibilityIdentifier("ManageUpOnly")
+            UpOnlyPrivacyButton(inMenu: true)
+            Divider()
+            Button { session.lockAndAuthenticate() } label: { Label("Lock", systemImage: "lock") }
+                .keyboardShortcut("l", modifiers: .command).accessibilityLabel("Lock Up Only")
+        } label: {
+            Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold))
         }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .frame(width: 32, height: 32).glassEffect(.regular, in: .circle)
+        .overlay(alignment: .topTrailing) {
+            if needsDataReview { Circle().fill(.orange).frame(width: 5, height: 5).offset(x: -1, y: 1).allowsHitTesting(false).accessibilityHidden(true) }
+        }
+        .accessibilityLabel("Dashboard actions").accessibilityIdentifier("DashboardActions")
+        .accessibilityValue(needsDataReview ? "Data needs review" : "")
+        .help(needsDataReview ? "Dashboard actions · Data needs review" : "Dashboard actions")
     }
     private func destination(_ title: String, value: Int) -> some View {
         Button { session.destination = value; detail = nil } label: {
@@ -387,27 +387,22 @@ private struct UpOnlyUnlockedPanel: View {
     }
     private var exchangeRateAction: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(session.refreshing ? "Getting exchange rates…" : "Exchange rate missing")
-                .font(.system(size: 13, weight: .semibold))
+            Text("Exchange rate missing").font(.system(size: 13, weight: .semibold))
             Text("To show this in USD, Up needs " + missingCurrencies.joined(separator: ", ") + " rates for " + repairMonth.title + ".")
                 .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if session.refreshing { ProgressView().controlSize(.small) }
-            else {
-                if let issue = missingCurrencies.compactMap({ session.fxIssues[$0] }).first {
-                    Text(issue).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                UpOnlyFlow {
+            if let issue = missingCurrencies.compactMap({ session.fxIssues[$0] }).first {
+                Text(issue).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Menu("Exchange rates") {
                 Button(session.document?.settings.automaticFX == true ? "Get " + repairMonth.shortName + " rates" : "Enable exchange rates") {
                     Task { await session.repairExchangeRates(month: repairMonth, currencies: missingCurrencies) }
-                }.buttonStyle(.glassProminent).buttonBorderShape(.capsule).disabled(session.isBusy)
-                    .accessibilityIdentifier("RepairExchangeRates")
+                }.disabled(session.isBusy || session.refreshing).accessibilityIdentifier("RepairExchangeRates")
                 Button("Add rate manually") {
                     session.entryMonthForManagement = repairMonth.description
                     session.requestedRateCurrency = missingCurrencies.first
                     session.managementSection = "Entries"; session.managementInMenu = true
-                }.buttonStyle(.bordered)
-                }.controlSize(.regular)
-            }
+                }.disabled(session.isBusy)
+            }.modifier(UpOnlyPillMenu()).accessibilityLabel("Resolve exchange rates")
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
@@ -434,9 +429,9 @@ private struct UpOnlyUnlockedPanel: View {
             HStack(spacing: 0) {
                 if model.period != .allTime {
                     Button { model.stepPeriod(by: -1) } label: { Image(systemName: "chevron.left") }
-                        .buttonStyle(UpOnlyToolbarButtonStyle()).disabled(!model.canStepPeriodBack)
+                        .buttonStyle(UpOnlyToolbarButtonStyle(size: 26)).disabled(!model.canStepPeriodBack)
                         .accessibilityLabel(model.period == .monthly ? "Previous month" : "Previous year")
-                    Divider().frame(height: 13)
+                    Divider().frame(height: 10)
                 }
                 Menu {
                     ForEach(PerformancePeriod.allCases, id: \.self) { period in
@@ -457,12 +452,12 @@ private struct UpOnlyUnlockedPanel: View {
                     Button("Current month") { model.selectPeriod(.monthly); model.select(.current()) }
                 } label: { Text(model.periodTitle).font(.system(size: 12, weight: .medium)).lineLimit(1) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 12).frame(minHeight: 32)
+                    .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8).frame(minHeight: 26)
                     .accessibilityLabel("Time period").accessibilityValue(model.periodTitle)
                 if model.period != .allTime {
-                    Divider().frame(height: 13)
+                    Divider().frame(height: 10)
                     Button { model.stepPeriod(by: 1) } label: { Image(systemName: "chevron.right") }
-                        .buttonStyle(UpOnlyToolbarButtonStyle()).disabled(!model.canStepPeriodForward)
+                        .buttonStyle(UpOnlyToolbarButtonStyle(size: 26)).disabled(!model.canStepPeriodForward)
                         .accessibilityLabel(model.period == .monthly ? "Next month" : "Next year")
                 }
             }.glassEffect(.regular, in: .capsule).fixedSize(horizontal: true, vertical: false)
@@ -473,25 +468,22 @@ private struct UpOnlyUnlockedPanel: View {
         return GlassEffectContainer {
             HStack(spacing: 0) {
                 Button { selection.wrappedValue = options[(index + options.count - 1) % options.count].0 } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(UpOnlyToolbarButtonStyle()).accessibilityLabel("Previous " + item)
-                Divider().frame(height: 12)
-                Text(options[index].1).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    .padding(.horizontal, 10).frame(maxWidth: 160).help(options[index].1)
-                Divider().frame(height: 12)
+                    .buttonStyle(UpOnlyToolbarButtonStyle(size: 26)).accessibilityLabel("Previous " + item)
+                Divider().frame(height: 10)
+                Text(options[index].1).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    .padding(.horizontal, 8).frame(maxWidth: 160).help(options[index].1)
+                Divider().frame(height: 10)
                 Button { selection.wrappedValue = options[(index + 1) % options.count].0 } label: { Image(systemName: "chevron.right") }
-                    .buttonStyle(UpOnlyToolbarButtonStyle()).accessibilityLabel("Next " + item)
+                    .buttonStyle(UpOnlyToolbarButtonStyle(size: 26)).accessibilityLabel("Next " + item)
             }.glassEffect(.regular, in: .capsule).fixedSize(horizontal: true, vertical: false)
                 .accessibilityElement(children: .contain).accessibilityLabel(label).accessibilityValue(options[index].1)
         }
     }
     private var performanceScopeSelector: some View {
-        HStack(spacing: 8) {
-            scopeControl([(.all, "All accounts"), (.personal, "Personal")] + model.books.map { (.business($0.id), $0.name) },
-                         selection: Binding(get: { model.scope }, set: { model.selectScope($0) }), label: "Performance accounts", item: "account")
-            if model.state.missingMonths > 0 || model.state.isEstimated || (model.state.totals == nil && model.availableTotals != nil) {
-                Text("Partial").font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-        }.help(performanceCaption)
+        scopeControl([(.all, "All accounts"), (.personal, "Personal")] + model.books.map { (.business($0.id), $0.name) },
+                     selection: Binding(get: { model.scope }, set: { model.selectScope($0) }), label: "Performance accounts", item: "account")
+            .help(performanceCaption)
+            .accessibilityHint(performanceCaption)
     }
     private var worthScopeOptions: [(ValuationScope, String)] {
         var options: [(ValuationScope, String)] = [(.allTracked, allScopeTitle)]
@@ -526,7 +518,7 @@ private struct UpOnlyUnlockedPanel: View {
                 }.padding(.top, 18)
             }
             if !model.books.isEmpty { performanceScopeSelector.padding(.top, 6) }
-            else if model.availableTotals != nil { Text(performanceCaption).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 4) }
+            else if model.availableTotals != nil { Text("Personal result").help(performanceCaption).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 4) }
             if !personalRateGaps.isEmpty {
                 if case .exchangeRates? = model.state.unavailable {
                     if model.availableTotals != nil { exchangeRateAction.padding(.top, 12) }
@@ -603,7 +595,7 @@ private struct UpOnlyUnlockedPanel: View {
             if let totals = state.totals {
                 VStack(alignment: .leading, spacing: 4) {
                     UpOnlyAmount(value: totals.net, signed: true, tint: totals.net < 0 ? Color(nsColor: .systemRed) : UpOnlyTint.cashFlow)
-                    Text(state.isEstimated ? "Income − spending · Partial" : "Income − spending")
+                    Text("Income − spending").help(state.isEstimated ? "Based on recorded entries; this month is not yet complete." : "Income minus spending")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 20) {
@@ -807,10 +799,6 @@ private struct UpOnlyUnlockedPanel: View {
             UpOnlyChart(points: monthPoints, includesZero: true, showsAllMarkers: true,
                         selected: model.period == .monthly ? model.month.description : nil,
                         onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
-            if !model.state.warnings.isEmpty || model.state.isEstimated {
-                Text("Partial")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
             ForEach(portfolios) { portfolio in
                 Button { companySelection = nil; model.selectScope(selection.previousScope); scope = .portfolio(portfolio.id) } label: {
                     worthRowLabel(portfolio)
@@ -1042,9 +1030,11 @@ final class UpOnlyAuthenticationViewController: NSViewController {
 }
 
 struct UpOnlyPrivacyButton: View {
+    var inMenu = false
     @Environment(UpOnlySession.self) private var session
     var body: some View {
-        button.buttonStyle(UpOnlyToolbarButtonStyle())
+        if inMenu { button }
+        else { button.buttonStyle(UpOnlyToolbarButtonStyle()) }
     }
     private var button: some View {
         Button {
@@ -1058,7 +1048,8 @@ struct UpOnlyPrivacyButton: View {
                 }
             }
         } label: {
-            Image(systemName: session.privacyMode ? "eye.slash" : "eye").font(.system(size: 13, weight: .medium)).frame(width: 16, height: 16)
+            if inMenu { Label(session.privacyMode ? "Show values" : "Hide values", systemImage: session.privacyMode ? "eye.slash" : "eye") }
+            else { Image(systemName: session.privacyMode ? "eye.slash" : "eye").font(.system(size: 13, weight: .medium)).frame(width: 16, height: 16) }
         }.foregroundStyle(session.privacyMode ? Color.accentColor : Color.primary)
             .accessibilityLabel(session.privacyMode ? "Show values" : "Hide values")
             .accessibilityValue(session.privacyMode ? "Privacy mode on" : "Privacy mode off")
@@ -1093,9 +1084,10 @@ struct UpOnlyValueField: View {
 
 // Equal hit regions and one shared glass surface keep toolbar actions aligned.
 struct UpOnlyToolbarButtonStyle: ButtonStyle {
+    var size: CGFloat = 32
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.frame(width: 32, height: 32)
+        configuration.label.frame(width: size, height: size)
             .contentShape(Rectangle())
             .background(.primary.opacity(configuration.isPressed ? 0.14 : 0), in: Capsule())
             .opacity(isEnabled ? 1 : 0.4)
@@ -1108,7 +1100,7 @@ struct UpOnlyPillMenu: ViewModifier {
     func body(content: Content) -> some View {
         content.menuStyle(.borderlessButton).menuIndicator(.hidden)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12).frame(minHeight: 32)
+            .padding(.horizontal, 10).frame(minHeight: 26)
             .glassEffect(.regular, in: .capsule)
     }
 }

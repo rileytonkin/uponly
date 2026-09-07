@@ -60,7 +60,6 @@ private struct UpOnlyManagementContent: View {
     @State private var editor: UpOnlyEditor?
     @State private var archive: Portfolio?
     @State private var entryToRemove: Entry?
-    @State private var editingPortfolio: UUID?
     @State private var editingEntry: UUID?
     @State private var returnToReview = false
     @State private var entrySearch = ""
@@ -122,7 +121,15 @@ private struct UpOnlyManagementContent: View {
                         case "Needs attention":
                             UpOnlyDataAttention(addEntry: { editor = .entry }, addRate: { editor = .exchangeRate })
                         case "Accounts":
-                            Button { session.startImport(.bankBalances) } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.glassProminent)
+                            if (session.document?.accounts.count ?? 0) > 1 {
+                                Menu {
+                                    Button("Add account") { session.startImport(.bankBalances) }
+                                    Button("Update all balances") { session.startImport(.bankBalances, prefill: true) }
+                                } label: { Label("Add or update", systemImage: "plus") }
+                                    .modifier(UpOnlyPillMenu()).accessibilityLabel("Account actions")
+                            } else {
+                                Button { session.startImport(.bankBalances) } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.glassProminent)
+                            }
                             accounts
                         case "Portfolios":
                             Button { session.startImport(.holdings) } label: { Label("Add holding", systemImage: "plus") }.buttonStyle(.glassProminent)
@@ -196,12 +203,11 @@ private struct UpOnlyManagementContent: View {
                         Toggle(kind.title, isOn: Binding(get: { shows(kind) }, set: { on in Task { await session.perform { $0.setTracked(kind, on) } } }))
                             .labelsHidden().toggleStyle(.switch).controlSize(.small)
                             .disabled(session.isBusy || session.document?.hasData(kind) == true)
+                            .help(session.document?.hasData(kind) == true ? "Types with saved data stay visible." : kind.title)
                     }.padding(.vertical, 10)
                     if kind != TrackedKind.allCases.last { Divider().opacity(0.5) }
                 }
             }.padding(.horizontal, UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
-            Text("Types with saved data stay visible.")
-                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
     private func setAccountOwner(_ account: Account, owner: String) {
@@ -215,8 +221,6 @@ private struct UpOnlyManagementContent: View {
         VStack(alignment: .leading, spacing: 16) {
             if session.document?.accounts.isEmpty == true {
                 managementEmpty("Your accounts, together", detail: "Add a balance or import a statement to begin.", symbol: "building.columns")
-            } else if (session.document?.accounts.count ?? 0) > 1 {
-                Button("Update all balances") { session.startImport(.bankBalances, prefill: true) }.buttonStyle(.bordered)
             }
             ForEach(session.document?.accounts ?? []) { account in
                 HStack(alignment: .top, spacing: 14) {
@@ -308,11 +312,6 @@ private struct UpOnlyManagementContent: View {
             }
         }
     }
-    private func portfolioOwner(_ portfolio: Portfolio) -> some View {
-        UpOnlyOwnerPicker(owner: Binding(get: { portfolio.ownerBusinessID }, set: { owner in
-            setPortfolioOwner(portfolio, owner: owner)
-        })).disabled(session.isBusy)
-    }
     private func setPortfolioOwner(_ portfolio: Portfolio, owner: String?) {
         Task { await session.perform { doc in
             if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].ownerBusinessID = owner }
@@ -328,13 +327,19 @@ private struct UpOnlyManagementContent: View {
                     HStack {
                         Text(portfolio.name).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 12)
-                        Button(editingPortfolio == portfolio.id ? "Done" : "Edit") {
-                            editingPortfolio = editingPortfolio == portfolio.id ? nil : portfolio.id
-                        }.accessibilityLabel("Edit " + portfolio.name)
-                    }
-                    if editingPortfolio == portfolio.id {
-                        portfolioOwner(portfolio)
-                        Button("Archive portfolio…", role: .destructive) { archive = portfolio }
+                        Menu {
+                            Button("Add holding") { session.startImport(.holdings, portfolioID: portfolio.id) }
+                            Button("Update quantities") { session.startImport(.holdings, prefill: true, portfolioID: portfolio.id) }
+                            Menu("Owner") {
+                                Button("Personal") { setPortfolioOwner(portfolio, owner: nil) }
+                                ForEach(session.document?.businessAccounting ?? []) { book in
+                                    Button(book.name) { setPortfolioOwner(portfolio, owner: book.id) }
+                                }
+                            }
+                            Divider()
+                            Button("Archive portfolio…", role: .destructive) { archive = portfolio }
+                        } label: { Text("Edit") }
+                            .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Edit " + portfolio.name)
                     }
                     if let doc = session.document {
                         let holdings = doc.activeHoldings(in: portfolio.id, at: Date())
@@ -348,10 +353,17 @@ private struct UpOnlyManagementContent: View {
                                     Text(holding.assetName).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                                     UpOnlyPrivateText(UpOnlyFormat.quantity(doc.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0)).font(.system(size: 16).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
-                                Button("Update") { session.startImport(.holdings, prefill: true, holdingID: holding.id) }.buttonStyle(.bordered).controlSize(.regular)
-                                if editingPortfolio == portfolio.id, (session.document?.portfolios.filter { !$0.isArchived && $0.kind == .crypto }.count ?? 0) > 1 {
-                                    Button("Move") { editor = .move(holding) }
+                                if (session.document?.portfolios.filter { !$0.isArchived && $0.kind == .crypto }.count ?? 0) > 1 {
+                                    Menu {
+                                        Button("Update quantity") { session.startImport(.holdings, prefill: true, holdingID: holding.id) }
+                                        Button("Move") { editor = .move(holding) }
+                                    } label: { Text("Edit") }
+                                        .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Edit " + holding.assetName)
+                                } else {
+                                    Button("Update") { session.startImport(.holdings, prefill: true, holdingID: holding.id) }
+                                        .accessibilityLabel("Update " + holding.assetName)
                                 }
+
                             }
                         }
                     }
@@ -609,14 +621,17 @@ private struct UpOnlyDataAttention: View {
                 let state = MonthlyLedger.personal(month, document: doc)
                 if case .exchangeRates(let currencies)? = state.unavailable {
                     note("A dated " + currencies.joined(separator: ", ") + " exchange rate is also needed.")
-                    Button(session.refreshing ? "Getting rates…" : "Get exchange rates") {
-                        Task { await session.repairExchangeRates(month: month, currencies: currencies) }
-                    }.disabled(session.refreshing || session.isBusy)
-                    Button("Add exchange rate") {
-                        session.entryMonthForManagement = month.description
-                        session.requestedRateCurrency = currencies.first
-                        addRate()
-                    }
+                    Menu("Exchange rates") {
+                        Button("Get exchange rates") {
+                            Task { await session.repairExchangeRates(month: month, currencies: currencies) }
+                        }.disabled(session.refreshing || session.isBusy)
+                        Button("Add exchange rate") {
+                            session.entryMonthForManagement = month.description
+                            session.requestedRateCurrency = currencies.first
+                            addRate()
+                        }
+                    }.menuStyle(.borderedButton).fixedSize()
+
                 }
                 if month == .current() { note("Review this month after it ends.") }
                 else if state.totals == nil { note("Add the missing entries or rates before marking this month complete.") }
