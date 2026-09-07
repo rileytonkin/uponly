@@ -71,6 +71,35 @@ final class UpOnlySession {
     private var lastActivity = Date()
     private var financeSurfaces = 0
     private var pickerDepth = 0
+    @ObservationIgnored private var activeFilePanel: NSSavePanel?
+    var filePickerIsOpen: Bool { pickerDepth > 0 }
+    var menuStaysOpen: Bool {
+        filePickerIsOpen || (state == .unlocked && importDraft != nil &&
+            (addingInMenu || (managementInMenu && managementSection == "Add your info")))
+    }
+    func focusFilePicker() {
+        NSApp.activate(ignoringOtherApps: true)
+        activeFilePanel?.makeKeyAndOrderFront(nil)
+        activeFilePanel?.orderFrontRegardless()
+    }
+    private func presentFilePanel(_ panel: NSSavePanel) async -> NSApplication.ModalResponse {
+        let token = sessionToken
+        activeFilePanel = panel
+        defer { if activeFilePanel === panel { activeFilePanel = nil } }
+        // This is an explicit user request to open a dialog. Cooperative
+        // activation alone can leave an accessory app’s panel behind another app.
+        NSApp.activate(ignoringOtherApps: true)
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        // Yield so popover lifetime observation sees pickerDepth before another
+        // window takes focus. Present the system panel above the menu surface.
+        await Task.yield()
+        guard token == sessionToken else { return .cancel }
+        return await withCheckedContinuation { continuation in
+            panel.begin { response in continuation.resume(returning: response) }
+            panel.makeKeyAndOrderFront(nil)
+            panel.orderFrontRegardless()
+        }
+    }
     private var observers: [NSObjectProtocol] = []
     private var inactivityTimer: Timer?
     private var eventMonitor: Any?
@@ -246,6 +275,7 @@ final class UpOnlySession {
     }
 
     func lock() {
+        activeFilePanel?.cancel(nil)
         unlockTiming = nil
         authenticationContext?.invalidate(); authenticationContext = nil
         passwordUnlockRequested = false
@@ -484,15 +514,16 @@ final class UpOnlySession {
         await chooseImportFiles()
     }
     func chooseImportFiles() async {
-        guard state == .unlocked, !importLoading else { return }
+        guard state == .unlocked, !importLoading, !filePickerIsOpen else { focusFilePicker(); return }
         pickerDepth += 1; defer { pickerFinished() }
         let token = sessionToken
         let panel = NSOpenPanel(); panel.allowedContentTypes = importDraft?.mode == .statements ? [.commaSeparatedText] : [.commaSeparatedText, .tabSeparatedText, .plainText]
         panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
-        guard await panel.begin() == .OK, token == sessionToken else { return }
+        guard await presentFilePanel(panel) == .OK, token == sessionToken else { return }
         await readImportFiles(panel.urls)
     }
     func readImportFiles(_ urls: [URL]) async {
+        let urls = urls.map { ($0 as NSURL).filePathURL ?? $0 }
         guard state == .unlocked, !importLoading else { return }
         if importDraft == nil { startImport(importMode) }
         guard let draft = importDraft else { return }
@@ -502,6 +533,8 @@ final class UpOnlySession {
         }
         let token = sessionToken, revision = UUID(); importRevision = revision
         importLoading = true; importMessage = "Reading files…"
+        let accounts = document?.accounts ?? []
+        let importDocument = document
         let task = Task.detached(priority: .userInitiated) { () throws -> ImportBatchDraft in
             var next = draft
             guard urls.count + next.sources.filter({ !$0.grid.isEmpty }).count <= ImportBatchDraft.maxFiles else { throw ImportFailure("Choose at most 50 files.") }
@@ -515,8 +548,15 @@ final class UpOnlySession {
                 guard size <= VaultLimits.maxBatchBytes else { throw StatementError.tooLarge }
                 let bytes = try Data(contentsOf: url)
                 var source = try ImportParser.source(bytes: bytes, filename: url.lastPathComponent, mode: next.mode, pasted: url.pathExtension.lowercased() == "tsv")
-                source.account = defaultAccount
-                next.rows += try ImportParser.rows(source: source, mode: next.mode)
+                source.account = ImportParser.account(for: source, preferred: defaultAccount, saved: accounts)
+                var rows = try ImportParser.rows(source: source, mode: next.mode)
+                if next.mode == .statements, let importDocument {
+                    for index in rows.indices where rows[index].statement.originalType.isEmpty {
+                        let input = rows[index].statement
+                        if let date = try? source.dateFormat.date(input.date), OwnerPayments.isCompanyCounterparty(input.label, month: String(ImportDateFormat.today(date).prefix(7)), document: importDocument) { rows[index].statement.kind = .transfer }
+                    }
+                }
+                next.rows += rows
                 next.sources.append(source); try next.checkLimits()
             }
             return next
@@ -550,11 +590,11 @@ final class UpOnlySession {
         if sessionToken == token, importRevision == revision { importTask = nil; importLoading = false }
     }
     func saveImportTemplate() async {
-        guard state == .unlocked else { return }
+        guard state == .unlocked, !filePickerIsOpen else { focusFilePicker(); return }
         pickerDepth += 1; defer { pickerFinished() }
         let token = sessionToken, mode = importDraft?.mode ?? importMode
         let panel = NSSavePanel(); panel.allowedContentTypes = [.commaSeparatedText]; panel.nameFieldStringValue = mode.rawValue + ".csv"
-        guard await panel.begin() == .OK, let url = panel.url, token == sessionToken else { return }
+        guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
         do { try mode.template.write(to: url, atomically: true, encoding: .utf8) }
         catch { importMessage = "The template could not be saved." }
@@ -573,14 +613,14 @@ final class UpOnlySession {
     }
 
     func exportBackup() async {
-        guard state == .unlocked else { return }
+        guard state == .unlocked, !filePickerIsOpen else { focusFilePicker(); return }
         pickerDepth += 1
         defer { pickerFinished() }
         let token = sessionToken
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "Up Only Backup.uponlybackup"
         panel.canCreateDirectories = true
-        guard await panel.begin() == .OK, let url = panel.url, token == sessionToken else { return }
+        guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -618,6 +658,26 @@ final class UpOnlySession {
 
     #if UPONLY_FIXTURE
     private func prepareFixture() async {
+        if let path = ProcessInfo.processInfo.environment["UPONLY_VERIFY_STATEMENT"] {
+            do {
+                let pair = VaultCrypto.makeInboxKeyPair()
+                var doc = VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
+                let names = (ProcessInfo.processInfo.environment["UPONLY_VERIFY_STATEMENT_COUNTERPARTIES"] ?? "").split(separator: ";").map(String.init)
+                doc.businessAccounting = [BusinessBook(id: "fixture", name: "Fixture", ownership: [.init(fromMonth: "1900-01", numerator: 1, denominator: 2)], firstMonth: "1900-01", sourceURL: "", basis: "Fixture", fetchedAt: Date(), transferCounterparties: names)]
+                var source = try ImportParser.source(bytes: Data(contentsOf: URL(fileURLWithPath: path)), filename: "statement.csv", mode: .statements)
+                var batch = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
+                let review = ImportBatchProcessor.evaluate(batch, document: doc)
+                guard !review.hasErrors, let saved = review.document else { throw ImportFailure("Statement validation failed.") }
+                source.account.existingID = saved.accounts[0].id; batch.sources = [source]
+                let repeated = ImportBatchProcessor.evaluate(batch, document: saved)
+                guard !repeated.hasErrors, repeated.duplicates == saved.entries.count else { throw ImportFailure("Repeat import failed.") }
+                let result: [String: Any] = ["rows": batch.rows.count, "saved": saved.entries.count, "excluded": batch.rows.filter { !$0.included }.count, "duplicates": repeated.duplicates, "transfers": saved.entries.filter { $0.kind == .transfer }.count, "months": Dictionary(grouping: saved.entries, by: \.month).mapValues(\.count)]
+                let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+                print("UPONLY_STATEMENT_VERIFIED " + String(decoding: data, as: UTF8.self))
+            } catch { print("UPONLY_STATEMENT_FAILED " + error.localizedDescription) }
+            fflush(stdout); NSApplication.shared.terminate(nil); return
+        }
+
         #if UPONLY_PERSONAL
         if ProcessInfo.processInfo.environment["UPONLY_VERIFY_BACKGROUND"] == "1" {
             do {
@@ -802,6 +862,18 @@ final class UpOnlySession {
             if preview == "security" { managementSection = "Security" }
             if ["accounts", "portfolios", "entries"].contains(preview) { managementSection = preview == "accounts" ? "Accounts" : preview == "portfolios" ? "Portfolios" : "Entries" }
             managementInMenu = isManagement
+            if let file = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_FILE"] {
+                if let raw = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_MODE"], let mode = ImportMode(rawValue: raw) {
+                    discardImport(); startImport(mode)
+                } else if importDraft == nil { startImport(.statements) }
+                await readImportFiles(file.split(separator: ";").map { URL(fileURLWithPath: String($0)) })
+                if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_DUPLICATE"] == "1", let batch = importDraft {
+                    try await commitImportBatch(batch)
+                    startImport(.statements)
+                    await readImportFiles([URL(fileURLWithPath: file)])
+                }
+                managementInMenu = true; managementSection = "Add your info"
+            }
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_MENU_BAR"] == "1" {
                 print("UPONLY_SYNTHETIC_MENU_READY"); fflush(stdout)
                 return
@@ -853,7 +925,7 @@ extension UpOnlySession {
             guard token == sessionToken, !Task.isCancelled, !request.isCancelled else { return }
             while isBusy, token == sessionToken, !request.isCancelled { try await Task.sleep(for: .milliseconds(100)) }
             guard token == sessionToken, !request.isCancelled else { return }
-            try await mutate { $0.businessAccounting = AccountingHistory.merging(result.books, into: $0.businessAccounting ?? []); $0.track(.cashFlow) }
+            try await mutate { $0.businessAccounting = AccountingHistory.merging(result.books, into: $0.businessAccounting ?? []); OwnerPayments.reconcile(in: &$0); $0.track(.cashFlow) }
             if !result.failedSources.isEmpty { accountingError = result.failedSources.joined(separator: ", ") + " couldn’t refresh. Saved results retained." }
         } catch {
             if token == sessionToken, !Task.isCancelled, !(error is CancellationError) {
@@ -1087,11 +1159,11 @@ extension UpOnlySession {
         }
     }
     func restoreBackup(code: String) async {
-        guard state == .newVault, !isBusy else { return }
+        guard state == .newVault, !isBusy, !filePickerIsOpen else { focusFilePicker(); return }
         pickerDepth += 1; defer { pickerFinished() }
         let token = sessionToken
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        guard await panel.begin() == .OK, let url = panel.url, token == sessionToken else { return }
+        guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
         isBusy = true; defer { if token == sessionToken { isBusy = false } }
         do {

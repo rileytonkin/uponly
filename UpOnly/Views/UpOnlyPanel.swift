@@ -3,6 +3,8 @@ import LocalAuthentication
 import LocalAuthenticationEmbeddedUI
 
 struct UpOnlyPanel: View {
+    var menuLifecycleManaged = false
+    var closeMenu: (() -> Void)?
     @Environment(UpOnlySession.self) private var session
     @Environment(\.dismiss) private var dismiss
     var body: some View {
@@ -18,14 +20,14 @@ struct UpOnlyPanel: View {
         }
         .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.regular)
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(UpOnlyPanelKeyboard(close: { dismiss() }).frame(width: 0, height: 0))
+        .background(UpOnlyPanelKeyboard(close: { if let closeMenu { closeMenu() } else { dismiss() } }).frame(width: 0, height: 0))
         .background {
             if session.state == .unlocked, session.unlockTiming != nil {
                 UpOnlyUnlockDisplayProbe { session.recordUnlockedMenuDisplay() }.frame(width: 1, height: 1)
             }
         }
-        .onAppear { session.menuOpened() }
-        .onDisappear { session.surfaceClosed() }
+        .onAppear { if !menuLifecycleManaged { session.menuOpened() } }
+        .onDisappear { if !menuLifecycleManaged { session.surfaceClosed() } }
     }
     private var panelContent: some View {
         Group {
@@ -294,7 +296,7 @@ private struct UpOnlyUnlockedPanel: View {
         #endif
     }
     private var needsDataReview: Bool {
-        hasData && (session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true || syncNeedsAttention)
+        (hasData && session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true) || syncNeedsAttention
     }
     private var dashboardActions: some View {
         Menu {
@@ -327,40 +329,7 @@ private struct UpOnlyUnlockedPanel: View {
                 .foregroundStyle(session.destination == value ? .primary : .secondary)
         }.buttonStyle(.bordered).controlSize(.small).tint(session.destination == value ? Color.accentColor : Color.secondary).accessibilityAddTraits(session.destination == value ? .isSelected : [])
     }
-    @ViewBuilder private var firstDataContent: some View {
-        #if UPONLY_PERSONAL
-        if session.document?.settings.automaticWise == true, !session.wiseProfiles.isEmpty {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(session.wiseProfiles) { profile in
-                        VStack(spacing: 7) {
-                            UpOnlyProfileImage(data: profile.image, name: profile.name, size: 44)
-                            Text(profile.name).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.center)
-                        }.frame(maxWidth: .infinity)
-                    }
-                }.padding(.vertical, 4)
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(session.wiseRefreshing ? "Syncing your accounts" : session.wiseError == nil ? "Bring in your Wise accounts" : "Let’s try that again")
-                        .font(.system(size: 19, weight: .semibold)).tracking(-0.3).fixedSize(horizontal: false, vertical: true)
-                    Text(session.wiseError ?? "Your balances and transactions will appear here.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                if session.wiseRefreshing {
-                    HStack(spacing: 9) {
-                        ProgressView().controlSize(.small)
-                        Text("You can close this menu while syncing continues.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    Button(session.wiseError == nil ? "Sync now" : "Try again") { Task { await session.refreshWise() } }
-                        .buttonStyle(.glassProminent).controlSize(.large).disabled(session.isBusy)
-                }
-                Button("Add other info") { session.addingInMenu = true }.buttonStyle(.bordered).font(.system(size: 12)).foregroundStyle(.secondary)
-            }.padding(.bottom, 4)
-        } else { addFirstData }
-        #else
-        addFirstData
-        #endif
-    }
+    private var firstDataContent: some View { addFirstData }
     private var addFirstData: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 7) {
@@ -659,7 +628,7 @@ private struct UpOnlyUnlockedPanel: View {
                 UpOnlyAmount(value: value).padding(.top, 8)
             }
             if worthScopeOptions.count > 1 { worthScopeSelector.padding(.top, 6) }
-            if valuation?.isUnavailable == false { Text(worthCaption).fixedSize(horizontal: false, vertical: true).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 5) }
+            if valuation?.isUnavailable == false, !worthCaption.isEmpty { Text(worthCaption).fixedSize(horizontal: false, vertical: true).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 5) }
             if valuation?.missing.contains(where: { $0.reason == "ownership" }) == true {
                 Text("Ownership history is needed to calculate your share.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 10)
                 Button("Review sources") { manage("Sources") }.buttonStyle(.bordered)
@@ -856,7 +825,7 @@ private struct UpOnlyUnlockedPanel: View {
         guard let result, !result.isUnavailable else { return "No value recorded" }
         if result.total == nil {
             if let last = result.lastComplete { return "Needs update · Last complete " + last.at.formatted(date: .abbreviated, time: .omitted) }
-            return "Needs update · Some balances or prices are missing"
+            return ""
         }
         if !result.stale.isEmpty { return "Last-known values · Some sources need an update" }
         if let doc = session.document, let first = visibleSamples.first {

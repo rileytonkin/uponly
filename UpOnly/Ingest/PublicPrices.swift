@@ -527,7 +527,8 @@ nonisolated enum WiseAPI {
                 let label = plain(activity.title ?? activity.description ?? "Wise transaction")
                 guard label.count <= 500, !activity.id.isEmpty else { throw ImportFailure("A Wise activity has invalid details.") }
                 let existing = next.entries.firstIndex { $0.source == .wise && $0.sourceRef == reference }
-                let kind: EntryKind = ownTransfer ? .transfer : income ? .income : .expense
+                let ownerPayment = item.profile.bucket == .personal && OwnerPayments.isCompanyCounterparty(label, month: month.description, document: next)
+                let kind: EntryKind = ownTransfer || ownerPayment ? .transfer : income ? .income : .expense
                 if let index = existing {
                     // Retain explicit user classification while refreshing provider amounts/status.
                     next.entries[index].amount = amount; next.entries[index].currency = recorded.currency

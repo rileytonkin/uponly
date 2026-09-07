@@ -433,7 +433,7 @@ struct UpOnlyImportView: View {
     @Environment(UpOnlySession.self) private var session
     @State private var review: ImportEvaluation?
     @State private var reviewing = false
-    @State private var reviewTask: Task<ImportEvaluation, Never>?
+    @State private var reviewTask: Task<(ImportEvaluation, [String]), Never>?
     @State private var mappingTask: Task<[ImportDraftRow], Error>?
     @State private var reviewRevision = UUID()
     @State private var mappingChanged = Set<UUID>()
@@ -442,6 +442,11 @@ struct UpOnlyImportView: View {
     @State private var error: String?
     @State private var dropTargeted = false
     @State private var discard = false
+    @State private var importDetails = false
+    @State private var problemRows = Set<UUID>()
+    @State private var problemSources = Set<UUID>()
+    @State private var coveredMonths: [String] = []
+    @State private var editingStatementAccount: UUID?
     @State private var starterRow: (id: UUID, content: ImportRowContent)?
     private let pageSize = 50
     private var accounts: [Account] { session.document?.accounts ?? [] }
@@ -454,38 +459,45 @@ struct UpOnlyImportView: View {
             UpOnlyConfirmation(title: "Discard this unsaved draft?", detail: "Your saved information stays unchanged.", confirmTitle: "Discard draft", confirm: { discard = false; session.discardImport(); resetView() }, cancel: { discard = false }).padding(16)
         } else {
         Group {
-        if let batch = session.importDraft, batch.mode != .statements, batch.rows.count <= 1, batch.sources.allSatisfy({ $0.grid.isEmpty }), !session.importTableMode {
+        if let batch = session.importDraft, usesSummary(batch), !importDetails {
+            UpOnlyMenuScroll { importOverview(batch) }
+        } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count <= 1, batch.sources.allSatisfy({ $0.grid.isEmpty }), !session.importTableMode {
             UpOnlyMenuScroll { UpOnlyEntryFlow(compact: true) }
         } else {
         UpOnlyMenuScroll {
         VStack(alignment: .leading, spacing: 16) {
             if let batch = session.importDraft {
-                batchHeader(batch)
-                inputActions
+                if usesSummary(batch) {
+                    Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.bordered)
+                } else { batchHeader(batch); inputActions }
                 if let message = session.importMessage { Text(message).fixedSize(horizontal: false, vertical: true).font(.callout).foregroundStyle(.secondary) }
                 if session.importLoading {
                     HStack { ProgressView().controlSize(.small); Text("Reading your files on this Mac…").fixedSize(horizontal: false, vertical: true); Spacer(); Button("Cancel reading") { session.cancelImport() } }
                 }
                 ForEach(batch.sources) { source in
-                    if !source.grid.isEmpty || (batch.mode == .statements && batch.rows.contains(where: { $0.sourceID == source.id })) { sourceCard(source, mode: batch.mode) }
+                    if !source.grid.isEmpty || (batch.mode == .statements && batch.rows.contains(where: { $0.sourceID == source.id })) {
+                        if usesSummary(batch), !problemSources.contains(source.id) {
+                            DisclosureGroup("File settings") { sourceCard(source, mode: batch.mode) }.font(.system(size: 12))
+                        } else { sourceCard(source, mode: batch.mode) }
+                    }
                 }
                 if !batch.rows.isEmpty {
-                    if batch.rows.count > 1 || batch.mode == .statements { rowActions(batch) }
+                    if !usesSummary(batch) && batch.rows.count > 1 { rowActions(batch) }
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(batch.rows.dropFirst(page * pageSize).prefix(pageSize))) { row in
+                        ForEach(Array(displayedRows(batch).dropFirst(page * pageSize).prefix(pageSize))) { row in
                             ImportRowEditor(row: rowBinding(row), mode: batch.mode, accounts: accounts, portfolios: portfolios, coins: coins,
                                             usesDebitCredit: batch.sources.first(where: { $0.id == row.sourceID }).map { $0.mapping[.debit] != nil || $0.mapping[.credit] != nil } ?? false,
-                                            sourceName: batch.sources.first(where: { $0.id == row.sourceID })?.filename ?? "", state: review?.states[row.id], selected: selection.contains(row.id),
-                                            manual: batch.sources.first(where: { $0.id == row.sourceID })?.grid.isEmpty == true,
+                                            sourceName: batch.sources.filter { !$0.grid.isEmpty }.count > 1 ? batch.sources.first(where: { $0.id == row.sourceID })?.filename ?? "" : "", state: review?.states[row.id], selected: selection.contains(row.id),
+                                            manual: batch.sources.first(where: { $0.id == row.sourceID })?.grid.isEmpty == true, selectable: !usesSummary(batch),
                                             select: { if selection.contains(row.id) { selection.remove(row.id) } else { selection.insert(row.id) } },
                                             remove: { invalidateReview(); session.importDraft?.rows.removeAll { $0.id == row.id }; clampPage() }).disabled(busy)
                         }
                     }
-                    if batch.rows.count > pageSize {
+                    if displayedRows(batch).count > pageSize {
                         HStack {
                             Button("Previous rows") { page = max(0, page - 1) }.disabled(page == 0)
-                            Text("\(page * pageSize + 1)–\(min((page + 1) * pageSize, batch.rows.count)) of \(batch.rows.count)").fixedSize(horizontal: false, vertical: true).font(.caption).monospacedDigit()
-                            Button("Next rows") { page += 1 }.disabled((page + 1) * pageSize >= batch.rows.count)
+                            Text("\(page * pageSize + 1)–\(min((page + 1) * pageSize, displayedRows(batch).count)) of \(displayedRows(batch).count)").fixedSize(horizontal: false, vertical: true).font(.caption).monospacedDigit()
+                            Button("Next rows") { page += 1 }.disabled((page + 1) * pageSize >= displayedRows(batch).count)
                         }
                     }
                 } else {
@@ -551,11 +563,117 @@ struct UpOnlyImportView: View {
             prepareExternalInput(); Task { await session.readImportFiles(urls) }; return true
         } isTargeted: { dropTargeted = $0 }
         .onChange(of: session.importRevision) { _, _ in invalidateReview(); clampPage() }
-        .onAppear { if let batch = session.importDraft, batch.mode != .statements, batch.rows.isEmpty, batch.sources.allSatisfy({ $0.grid.isEmpty }) { addRow() } }
+        .onChange(of: session.importLoading) { _, loading in if !loading, let batch = session.importDraft, usesSummary(batch) { beginReview() } }
+        .onChange(of: session.document?.generation) { _, _ in if let batch = session.importDraft, usesSummary(batch) { beginReview() } }
+        .onAppear { if let batch = session.importDraft, usesSummary(batch) { beginReview() }; if let batch = session.importDraft, batch.mode != .statements, batch.rows.isEmpty, batch.sources.allSatisfy({ $0.grid.isEmpty }) { addRow() } }
         .onDisappear { invalidateReview() }
+    }
+    private func importOverview(_ batch: ImportBatchDraft) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if batch.sources.allSatisfy({ $0.grid.isEmpty }) {
+                Button("Choose CSV files…") { Task { await session.chooseImportFiles() } }
+                    .buttonStyle(.glassProminent).disabled(busy)
+                Text("or drop CSVs here").font(.system(size: 12)).foregroundStyle(.secondary)
+            } else {
+                ForEach(batch.sources.filter { !$0.grid.isEmpty }) { source in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            if batch.mode == .statements, !batch.rows.isEmpty {
+                            Menu {
+                                ForEach(accounts) { account in
+                                    Button(account.name + " · " + account.currency) {
+                                        setStatementAccount(source, ImportAccount(existingID: account.id, name: account.name, currency: account.currency))
+                                        beginReview()
+                                    }
+                                }
+                                Button("New account…") {
+                                    var account = source.account; account.existingID = nil
+                                    setStatementAccount(source, account); editingStatementAccount = source.id
+                                }
+                            } label: {
+                                Text(source.account.name.isEmpty ? "Choose account" : source.account.name + " · " + source.account.currency).lineLimit(1)
+                            }.modifier(UpOnlyPillMenu()).accessibilityLabel("Statement account")
+                            } else { Text(source.filename).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle).help(source.filename) }
+                            Spacer(minLength: 0)
+                            Menu {
+                                Button("Add CSV files…") { Task { await session.chooseImportFiles() } }
+                                Button("Remove file", role: .destructive) {
+                                    invalidateReview(); session.importDraft?.sources.removeAll { $0.id == source.id }
+                                    session.importDraft?.rows.removeAll { $0.sourceID == source.id }; beginReview()
+                                }
+                            } label: { Image(systemName: "ellipsis") }
+                                .modifier(UpOnlyPillMenu()).accessibilityLabel("File options")
+                        }.disabled(busy)
+                        if batch.mode == .statements, !batch.rows.isEmpty { Text(source.filename).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(source.filename) }
+                        if editingStatementAccount == source.id {
+                            UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
+                            HStack(spacing: 8) {
+                                TextField("Account name", text: Binding(get: { source.account.name }, set: { value in var account = source.account; account.name = value; setStatementAccount(source, account) })).textFieldStyle(.roundedBorder)
+                                TextField("Currency", text: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) })).frame(width: 52).textFieldStyle(.roundedBorder)
+                                Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                }
+                if batch.rows.isEmpty {
+                    Text("This file has no transactions.").font(.system(size: 13)).foregroundStyle(.secondary)
+                    Button("Choose CSV files…") {
+                        session.importDraft?.sources.removeAll { !$0.grid.isEmpty }
+                        Task { await session.chooseImportFiles() }
+                    }.buttonStyle(.glassProminent).disabled(busy)
+                } else if let review {
+                    if !coveredPeriod.isEmpty { Text(coveredPeriod).font(.system(size: 14, weight: .medium)) }
+                    if review.hasErrors || !mappingChanged.isEmpty {
+                        Text(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.")
+                            .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Button("Fix import") {
+                            problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
+                        }.buttonStyle(.glassProminent)
+                    } else if review.added == 0 {
+                        Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(.system(size: 14, weight: .medium))
+                        Button("Done") { session.discardImport() }.buttonStyle(.glassProminent)
+                    } else {
+                        if batch.mode != .statements {
+                            ForEach(batch.rows.filter { if case .ready = review.states[$0.id] { return true }; return false }) { row in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    if batch.mode == .bankBalances {
+                                        Text(row.bank.account.name).font(.system(size: 13, weight: .medium))
+                                        Text(row.bank.balance + " " + row.bank.account.currency + " · " + row.bank.date).font(.system(size: 12)).foregroundStyle(.secondary)
+                                    } else {
+                                        Text(row.holding.portfolioName).font(.system(size: 13, weight: .medium))
+                                        Text(review.states[row.id]?.text ?? "").font(.system(size: 12)).foregroundStyle(.secondary)
+                                    }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        let excluded = batch.rows.filter { !$0.included }.count
+                        let skipped = [review.duplicates > 0 ? "\(review.duplicates.formatted()) already imported" : nil,
+                                       excluded > 0 ? "\(excluded.formatted()) excluded" : nil].compactMap { $0 }.joined(separator: " · ")
+                        if !skipped.isEmpty { Text(skipped).font(.system(size: 11)).foregroundStyle(.secondary) }
+                        Button(batch.mode == .statements ? "Import \(review.readyRows.formatted()) \(review.readyRows == 1 ? "transaction" : "transactions")" : "Save \(review.readyRows.formatted()) \(review.readyRows == 1 ? "update" : "updates")") { Task { await save() } }
+                            .buttonStyle(.glassProminent).disabled(busy || editingStatementAccount != nil)
+                    }
+                } else if !busy, editingStatementAccount == nil {
+                    Button("Check file") { beginReview() }.buttonStyle(.bordered)
+                }
+            }
+            if let message = error ?? session.importMessage, !session.importLoading {
+                Text(message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private var coveredPeriod: String {
+        guard let firstText = coveredMonths.first, let lastText = coveredMonths.last,
+              let first = MonthKey(firstText), let last = MonthKey(lastText) else { return "" }
+        if first == last { return first.title }
+        return first.year == last.year ? first.shortName + "–" + last.title : first.title + "–" + last.title
     }
     private func importFooter(_ batch: ImportBatchDraft) -> some View {
         VStack(alignment: .leading, spacing: 12) {
+            if usesSummary(batch) {
+                Button("Check corrections") { beginReview() }.buttonStyle(.glassProminent)
+                    .disabled(busy || !mappingChanged.isEmpty)
+            } else {
             if let review {
                 UpOnlyFlow(spacing: 12) {
                     Label(review.readyRows == 0 && review.added > 0 ? "Statement updates ready to save" : "\(review.readyRows) ready to save", systemImage: "checkmark.circle").foregroundStyle(UpOnlyTint.cashFlow)
@@ -583,6 +701,7 @@ struct UpOnlyImportView: View {
                         .disabled(busy || batch.rows.isEmpty || !mappingChanged.isEmpty)
                 }
             }.controlSize(.regular).font(.system(size: 12))
+            }
         }.padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .top) { Divider() }
@@ -667,24 +786,8 @@ struct UpOnlyImportView: View {
                 }.font(.system(size: 11)).foregroundStyle(.secondary)
             }
             if mode == .statements {
-                ImportAccountEditor(account: Binding(get: { source.account }, set: { account in
-                    let previousCurrency = source.account.currency
-                    sourceBinding(source, \.account).wrappedValue = account
-                    if source.mapping[.currency] == nil, var batch = session.importDraft {
-                        for index in batch.rows.indices where batch.rows[index].sourceID == source.id && batch.rows[index].statement.currency == previousCurrency {
-                            batch.rows[index].statement.currency = account.currency
-                            batch.rows[index].duplicateApproved = false
-                        }
-                        session.importDraft = batch
-                    }
-                }), accounts: accounts)
-                HStack {
-                    UpOnlyValueField("Optional bank balance", text: sourceBinding(source, \.balance)).textFieldStyle(.roundedBorder)
-                    UpOnlyDateButton(date: Binding(get: { (try? ImportDateFormat.iso.date(source.balanceDate)) ?? Date() }, set: { sourceBinding(source, \.balanceDate).wrappedValue = ImportDateFormat.today($0) }))
-                    if !source.balance.isEmpty, (try? ImportDateFormat.iso.date(source.balanceDate)) == nil {
-                        Text("Choose a valid balance date.").font(.caption).foregroundStyle(.orange)
-                    }
-                }
+                ImportAccountEditor(account: Binding(get: { source.account }, set: { setStatementAccount(source, $0) }), accounts: accounts)
+
             }
             VStack(alignment: .leading, spacing: 8) {
                 if !mode.isHolding { Picker("Dates", selection: sourceBinding(source, \.dateFormat)) { ForEach(ImportDateFormat.allCases, id: \.self) { Text($0.rawValue).fixedSize(horizontal: false, vertical: true).tag($0) } } }
@@ -706,16 +809,10 @@ struct UpOnlyImportView: View {
                                     replaceSource(updated); mappingChanged.insert(source.id)
                                 })) {
                                     Text("Not provided").fixedSize(horizontal: false, vertical: true).tag(-1)
-                                    ForEach(Array(source.headers.enumerated()), id: \.offset) { index, _ in Text("Column \(index + 1)").fixedSize(horizontal: false, vertical: true).tag(index) }
+                                    ForEach(Array(source.headers.enumerated()), id: \.offset) { index, _ in Text(source.headers[index]).lineLimit(1).tag(index) }
                                 }
                             }
                         }
-                        DisclosureGroup("Full column names") {
-                            ForEach(Array(source.headers.enumerated()), id: \.offset) { index, title in
-                                Text("Column \(index + 1): " + title).font(.caption).fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        Text("Applying mapping rebuilds this source’s rows. Make row corrections afterward.").fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.secondary)
                         Button("Apply mapping") { applyMapping(source) }.disabled(busy)
                     }.padding(.top, 8)
                 }.font(.callout)
@@ -729,9 +826,9 @@ struct UpOnlyImportView: View {
                 if !selection.isEmpty {
                     Divider()
                     if batch.mode == .statements {
-                        Button("Mark as Income") { editSelected { $0.statement.kind = .income } }
-                        Button("Mark as Expense") { editSelected { $0.statement.kind = .expense } }
-                        Button("Mark as Transfer") { editSelected { $0.statement.kind = .transfer } }
+                        Button("Mark as Income") { editSelected { $0.statement.kind = .income; $0.statement.kindIsUserEdited = true } }
+                        Button("Mark as Expense") { editSelected { $0.statement.kind = .expense; $0.statement.kindIsUserEdited = true } }
+                        Button("Mark as Transfer") { editSelected { $0.statement.kind = .transfer; $0.statement.kindIsUserEdited = true } }
                     }
                     Button("Exclude") { editSelected { $0.included = false } }
                     Button("Include") { editSelected { $0.included = true } }
@@ -740,6 +837,23 @@ struct UpOnlyImportView: View {
             Spacer()
             Text("\(batch.rows.filter(\.included).count) included").fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.secondary)
         }.font(.caption).disabled(busy)
+    }
+    private func usesSummary(_ batch: ImportBatchDraft) -> Bool {
+        batch.mode == .statements || (!batch.rows.isEmpty && batch.sources.filter { source in batch.rows.contains { $0.sourceID == source.id } }.allSatisfy { !$0.grid.isEmpty })
+    }
+    private func displayedRows(_ batch: ImportBatchDraft) -> [ImportDraftRow] {
+        usesSummary(batch) ? batch.rows.filter { problemRows.contains($0.id) } : batch.rows
+    }
+    private func setStatementAccount(_ source: ImportSourceDraft, _ account: ImportAccount) {
+        let previousCurrency = source.account.currency
+        sourceBinding(source, \.account).wrappedValue = account
+        if source.mapping[.currency] == nil, var batch = session.importDraft {
+            for index in batch.rows.indices where batch.rows[index].sourceID == source.id && batch.rows[index].statement.currency == previousCurrency {
+                batch.rows[index].statement.currency = account.currency
+                batch.rows[index].duplicateApproved = false
+            }
+            session.importDraft = batch
+        }
     }
     private func sourceBinding<T>(_ source: ImportSourceDraft, _ path: WritableKeyPath<ImportSourceDraft, T>) -> Binding<T> {
         Binding(get: { session.importDraft?.sources.first(where: { $0.id == source.id })?[keyPath: path] ?? source[keyPath: path] }, set: { value in
@@ -804,24 +918,39 @@ struct UpOnlyImportView: View {
         starterRow = nil
     }
     private func beginReview() {
-        guard let batch = session.importDraft, let document = session.document else { return }
+        guard !session.importLoading, let batch = session.importDraft, (!batch.rows.isEmpty || batch.sources.contains { !$0.grid.isEmpty }), let document = session.document else { return }
         invalidateReview(); reviewing = true
         let token = session.sessionToken, revision = reviewRevision, catalog = session.catalog
-        let task = Task.detached(priority: .userInitiated) { ImportBatchProcessor.evaluate(batch, document: document, catalog: catalog) }
+        let task = Task.detached(priority: .userInitiated) {
+            let evaluated = ImportBatchProcessor.evaluate(batch, document: document, catalog: catalog)
+            var months = Set<String>()
+            if batch.mode == .statements {
+                let sources = Dictionary(uniqueKeysWithValues: batch.sources.map { ($0.id, $0) })
+                for row in batch.rows where row.included {
+                    if Task.isCancelled { break }
+                    if let source = sources[row.sourceID], let date = try? source.dateFormat.date(row.statement.date) { months.insert(String(ImportDateFormat.today(date).prefix(7))) }
+                }
+            }
+            return (evaluated, months.sorted())
+        }
         reviewTask = task
         Task {
-            let evaluated = await task.value
+            let (evaluated, months) = await task.value
             guard token == session.sessionToken, revision == reviewRevision, !task.isCancelled else { return }
-            review = evaluated; reviewing = false; reviewTask = nil
+            review = evaluated; coveredMonths = months; reviewing = false; reviewTask = nil
+            if usesSummary(batch) {
+                if !evaluated.hasErrors && mappingChanged.isEmpty { importDetails = false }
+                else { problemSources = Set(evaluated.sourceErrors.keys); problemRows = Set(evaluated.states.filter { $0.value.blocksSave }.map(\.key)); clampPage() }
+            }
         }
     }
     private func invalidateReview() {
         reviewTask?.cancel(); reviewTask = nil; mappingTask?.cancel(); mappingTask = nil; review = nil; reviewing = false; error = nil; reviewRevision = UUID()
     }
-    private func clampPage() { page = min(page, max(0, ((session.importDraft?.rows.count ?? 0) - 1) / pageSize)) }
-    private func resetView() { invalidateReview(); mappingChanged = []; selection = []; page = 0; starterRow = nil }
+    private func clampPage() { page = min(page, max(0, ((session.importDraft.map { displayedRows($0).count } ?? 0) - 1) / pageSize)) }
+    private func resetView() { invalidateReview(); mappingChanged = []; selection = []; page = 0; starterRow = nil; importDetails = false; coveredMonths = []; editingStatementAccount = nil }
     private func save() async {
-        guard let batch = session.importDraft, let review, !review.hasErrors else { return }
+        guard let batch = session.importDraft, let review, !review.hasErrors, mappingChanged.isEmpty, !busy else { return }
         let token = session.sessionToken
         do { try await session.commitImportBatch(batch); resetView() }
         catch { if token == session.sessionToken { invalidateReview(); self.error = error.localizedDescription } }
@@ -875,6 +1004,7 @@ private struct ImportRowEditor: View {
     var state: ImportRowState?
     var selected: Bool
     var manual: Bool
+    var selectable: Bool = true
     var select: () -> Void
     var remove: () -> Void
     @State private var search = ""
@@ -883,11 +1013,11 @@ private struct ImportRowEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: mode == .statements ? 10 : 18) {
             HStack {
-                if mode == .statements || !manual {
+                if selectable && (mode == .statements || !manual) {
                     Button(action: select) { Image(systemName: selected ? "checkmark.square.fill" : "square") }.buttonStyle(.bordered).accessibilityLabel("Select row \(row.line)")
                 }
-                Text(manual ? (mode == .bankBalances ? "Bank balance" : mode == .metals ? "Metal holding" : mode == .holdings ? "Crypto holding" : "Transaction") : sourceName + " · Row \(row.line)")
-                    .fixedSize(horizontal: false, vertical: true).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                Text(manual ? (mode == .bankBalances ? "Bank balance" : mode == .metals ? "Metal holding" : mode == .holdings ? "Crypto holding" : "Transaction") : "Row \(row.line)" + (sourceName.isEmpty ? "" : " · " + sourceName))
+                    .lineLimit(1).truncationMode(.middle).help(sourceName).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                 Spacer()
                 if !row.included { Text("Excluded").font(.caption).foregroundStyle(.secondary) }
                 Button(role: .destructive, action: remove) { Image(systemName: "trash") }
@@ -928,7 +1058,7 @@ private struct ImportRowEditor: View {
                     UpOnlyValueField("Money out", text: $row.statement.debit)
                     UpOnlyValueField("Money in", text: $row.statement.credit)
                 } else { UpOnlyValueField("Amount", text: $row.statement.amount) }
-                Picker("Type", selection: $row.statement.kind) {
+                Picker("Type", selection: Binding(get: { row.statement.kind }, set: { row.statement.kind = $0; row.statement.kindIsUserEdited = true })) {
                     Text("Income").fixedSize(horizontal: false, vertical: true).tag(EntryKind.income); Text("Expense").fixedSize(horizontal: false, vertical: true).tag(EntryKind.expense); Text("Transfer").fixedSize(horizontal: false, vertical: true).tag(EntryKind.transfer)
                 }.frame(width: 155)
                 TextField("Transaction ID (optional)", text: $row.statement.transactionID, axis: .vertical)
