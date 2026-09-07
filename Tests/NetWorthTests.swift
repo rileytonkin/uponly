@@ -528,3 +528,83 @@ struct NetWorthTests {
         #expect(current.total == 200)
     }
 }
+
+struct OwnedAssetTests {
+    private func date(_ text: String) throws -> Date { try ImportDateFormat.iso.date(text) }
+    private func document() -> VaultDocument {
+        let key = VaultCrypto.makeInboxKeyPair()
+        return VaultDocument.empty(inboxPrivateKeyX963: key.privateX963, inboxPublicKeyX963: key.publicX963)
+    }
+    private func book() throws -> BusinessBook {
+        BusinessBook(id: "agency", name: "Agency", ownership: [.init(fromMonth: "2020-01", numerator: 1, denominator: 3), .init(fromMonth: "2025-01", numerator: 1, denominator: 2)], firstMonth: "2020-01", sourceURL: "", basis: "", fetchedAt: try date("2026-09-06"))
+    }
+    private func component(_ id: UUID, usd: Decimal?, kind: ValuationComponent.Kind = .bank, currency: String = "USD") -> ValuationComponent {
+        ValuationComponent(id: id, kind: kind, label: "Fixture", currency: currency, nativeAmount: PreciseDecimal(999), usdValue: usd.map(PreciseDecimal.init), isStale: false, missing: usd == nil ? "fx" : nil)
+    }
+    @Test("Profile rows sum USD conversions, including negatives and zero, without hiding missing FX")
+    func groupedUSD() throws {
+        var doc = document()
+        doc.accounts = [Account(name: "Agency · EUR", currency: "EUR", externalProfileID: "a"), Account(name: "Agency · GBP", currency: "GBP", externalProfileID: "a"), Account(name: "Personal", currency: "USD", externalProfileID: "p")]
+        doc.businessAccounting = [try book()]
+        let values = [component(doc.accounts[0].id, usd: 120, currency: "EUR"), component(doc.accounts[1].id, usd: -20, currency: "GBP"), component(doc.accounts[2].id, usd: 0)]
+        let groups = BankBalanceGroup.groups(values, document: doc)
+        #expect(groups.count == 2 && groups[0].name == "Agency")
+        #expect(groups[0].total == 100 && groups[1].total == 0)
+        #expect(groups[0].businessID == "agency")
+        var missing = values; missing[0].usdValue = nil
+        #expect(BankBalanceGroup.groups(missing, document: doc)[0].total == nil)
+    }
+    @Test("Company cash and crypto use historical ownership; full balances stay unchanged")
+    func historicalOwnership() throws {
+        var doc = document(); doc.businessAccounting = [try book()]
+        let bank = Account(name: "Agency", currency: "USD")
+        let personal = Account(name: "Personal", currency: "USD")
+        doc.accounts = [bank, personal]
+        let portfolio = Portfolio(name: "Company crypto", ownerBusinessID: "agency")
+        doc.portfolios = [portfolio]
+        let holding = Holding(portfolioID: portfolio.id, assetID: try CanonicalAssetID("bitcoin"), assetName: "Bitcoin")
+        doc.holdings = [holding]
+        let values = [component(bank.id, usd: 300), component(personal.id, usd: 100), component(holding.id, usd: 600, kind: .holding)]
+        #expect(AssetOwnership.personalTotal(values, at: try date("2024-12-31"), document: doc) == 400)
+        #expect(AssetOwnership.personalTotal(values, at: try date("2025-01-01"), document: doc) == 550)
+        #expect(AssetOwnership.sum(values) == 1000)
+        doc.businessAccounting = []
+        #expect(AssetOwnership.personalTotal(values, at: try date("2025-01-01"), document: doc) == nil)
+    }
+    @Test("Historical snapshots are reweighted once, without mutating stored totals")
+    func storedSnapshot() throws {
+        var doc = document(); doc.businessAccounting = [try book()]
+        let account = Account(name: "Agency", currency: "USD"); doc.accounts = [account]
+        let day = try date("2024-12-31"), now = try date("2026-09-06")
+        let values = [component(account.id, usd: 900)]
+        doc.dailyValuations = [DailyValuation(utcDay: day, scope: .allTracked, total: PreciseDecimal(900), isComplete: true, components: values, computedAt: day, includedAccountIDs: [account.id], includedPortfolioIDs: [])]
+        #expect(AssetOwnership.personalValue(at: day, scope: .allTracked, document: doc, now: now).total == 300)
+        #expect(doc.dailyValuations[0].total?.value == 900)
+        doc.accounts[0].ownerBusinessID = ""
+        #expect(AssetOwnership.personalValue(at: day, scope: .allTracked, document: doc, now: now).total == 900)
+    }
+    @Test("Owner fields decode older vault records without migration")
+    func legacyOwners() throws {
+        let portfolio = Portfolio(name: "Legacy")
+        let decoded = try JSONDecoder().decode(Portfolio.self, from: JSONEncoder().encode(portfolio))
+        #expect(decoded.ownerBusinessID == nil)
+        let account = Account(name: "Personal", currency: "USD")
+        #expect(try JSONDecoder().decode(Account.self, from: JSONEncoder().encode(account)).ownerBusinessID == nil)
+    }
+    @Test("The shared period uses calendar boundaries and actual observation dates")
+    func intervals() throws {
+        let now = try date("2026-09-06")
+        let february = DashboardPeriod.interval(month: MonthKey("2024-02")!, period: .monthly, now: now)
+        #expect(february.start == (try date("2024-02-01")))
+        #expect(february.end == (try date("2024-03-01")).addingTimeInterval(-1))
+        let year = DashboardPeriod.interval(month: MonthKey("2024-09")!, period: .annual, now: now)
+        #expect(year.start == (try date("2024-01-01")))
+        #expect(year.end == (try date("2025-01-01")).addingTimeInterval(-1))
+        #expect(DashboardPeriod.interval(month: MonthKey("2026-09")!, period: .monthly, now: now).end == now)
+        #expect(DashboardPeriod.interval(month: MonthKey("2024-09")!, period: .allTime, now: now).end == now)
+        var doc = document()
+        doc.dailyValuations = [DailyValuation(utcDay: try date("2024-02-29"), scope: .banks, total: PreciseDecimal(100), isComplete: true, components: [], computedAt: now, includedAccountIDs: [], includedPortfolioIDs: []), DailyValuation(utcDay: try date("2024-03-01"), scope: .banks, total: PreciseDecimal(200), isComplete: true, components: [], computedAt: now, includedAccountIDs: [], includedPortfolioIDs: [])]
+        #expect(DashboardPeriod.samples(in: february, scope: .banks, document: doc).count == 1)
+        #expect(DashboardPeriod.samples(in: february, scope: .allTracked, document: doc).isEmpty)
+    }
+}
