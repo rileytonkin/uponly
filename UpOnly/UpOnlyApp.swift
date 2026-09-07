@@ -49,6 +49,9 @@ import Observation
             button.target = self; button.action = #selector(toggle)
         }
         popover.delegate = self; popover.animates = false
+        // Extend the same background through the native arrow; keep controls
+        // inside the popover's safe area.
+        popover.hasFullSizeContent = true
         host = NSHostingController(rootView: AnyView(UpOnlyPanel(menuLifecycleManaged: true, closeMenu: { [weak self] in self?.close() }).environment(session)))
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
@@ -74,6 +77,9 @@ import Observation
         guard let button = item.button else { return }
         session.checkInactivity()
         popover.behavior = session.menuStaysOpen ? .applicationDefined : .transient
+        #if UPONLY_FIXTURE
+        popover.appearance = NSApp.appearance
+        #endif
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         host.view.window?.makeKey()

@@ -19,7 +19,7 @@ struct UpOnlyPanel: View {
             }
         }
         .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.regular)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
         .background(UpOnlyPanelKeyboard(close: { if let closeMenu { closeMenu() } else { dismiss() } }).frame(width: 0, height: 0))
         .background {
             if session.state == .unlocked, session.unlockTiming != nil {
