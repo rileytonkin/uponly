@@ -1130,6 +1130,8 @@ private final class UpOnlyFixtureWindow: NSWindow {
         var response: [String: Any] = ["id": id, "success": false]
         if command["action"] as? String == "capture" {
             contentView.layoutSubtreeIfNeeded()
+            setContentSize(contentView.fittingSize)
+            contentView.layoutSubtreeIfNeeded()
             if let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) {
                 contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
                 if let png = bitmap.representation(using: .png, properties: [:]) {
