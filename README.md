@@ -75,7 +75,7 @@ Manage → **Add your info** accepts multiple CSV files, dropped files, and cell
 
 Known Monzo, Wise, and Up Only statement headers are recognized. Other exports have editable column mapping, explicit date and number formats, and optional headers. Use one account per statement file or pasted table; create accounts inline without an opening balance if needed. Statement imports never infer closing balances.
 
-Select rows to classify income, expense, or transfers together. Identical account-scoped transaction IDs are skipped; conflicting IDs are blocked. Without IDs, similar transactions require an explicit decision so legitimate repeated payments are retained. Original statement files and optional import fingerprints remain encrypted in the vault.
+Statements accept uploaded CSV files only; they have no manual-row or spreadsheet-paste action. Imported rows can still be reviewed and corrected. Select rows to classify income, expense, or transfers together. Identical account-scoped transaction IDs are skipped; conflicting IDs are blocked. Without IDs, similar transactions require an explicit decision so legitimate repeated payments are retained. Original statement files and optional import fingerprints remain encrypted in the vault.
 
 Save a CSV template from any input screen. Default templates use ISO dates and decimal points. Supported columns:
 

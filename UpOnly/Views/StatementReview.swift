@@ -537,7 +537,7 @@ struct UpOnlyImportView: View {
                     }
                 }
             }
-            if let batch = session.importDraft { importFooter(batch) }
+            if let batch = session.importDraft, batch.mode != .statements || !batch.rows.isEmpty || busy { importFooter(batch) }
         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
         }.background(Color(nsColor: .windowBackgroundColor))
         }
@@ -572,7 +572,7 @@ struct UpOnlyImportView: View {
                     Button("Cancel review") { invalidateReview() }.buttonStyle(.bordered)
                 } else if review != nil {
                     Button("Back to editing") { invalidateReview() }.buttonStyle(.bordered)
-                } else {
+                } else if batch.mode != .statements {
                     Button { addRow() } label: { Label(addRowTitle(batch.mode), systemImage: "plus") }.buttonStyle(.bordered).disabled(busy)
                 }
                 if let review {
@@ -608,7 +608,21 @@ struct UpOnlyImportView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
-    private var inputActions: some View {
+    @ViewBuilder private var inputActions: some View {
+        if session.importDraft?.mode == .statements {
+            if session.importDraft?.rows.isEmpty == true {
+                Button { prepareExternalInput(); Task { await session.chooseImportFiles() } } label: {
+                    Label("Choose CSV files…", systemImage: "doc.badge.plus")
+                }.buttonStyle(.glassProminent).disabled(busy)
+            } else {
+                Menu {
+                    Button("Add CSV files…") { prepareExternalInput(); Task { await session.chooseImportFiles() } }
+                    Divider()
+                    Button("Discard draft…", role: .destructive) { discard = true }
+                } label: { Label("CSV files", systemImage: "doc.on.doc") }
+                    .modifier(UpOnlyPillMenu()).accessibilityLabel("Statement files").disabled(busy)
+            }
+        } else {
         Menu {
             Button("Choose CSV files…") { prepareExternalInput(); Task { await session.chooseImportFiles() } }
             Button("Paste from spreadsheet") {
@@ -622,6 +636,7 @@ struct UpOnlyImportView: View {
             }
         } label: { Label("Import options", systemImage: "doc.badge.plus") }
             .modifier(UpOnlyPillMenu()).accessibilityLabel("Import options").disabled(busy)
+        }
     }
     private func openMode(_ mode: ImportMode, bulk: Bool = false) {
         guard session.startImport(mode) else { return }; resetView()
@@ -767,15 +782,16 @@ struct UpOnlyImportView: View {
         session.importDraft = batch
     }
     private func addRow() {
-        guard var batch = session.importDraft else { return }; invalidateReview()
+        guard var batch = session.importDraft, batch.mode != .statements else { return }; invalidateReview()
         if !batch.sources.contains(where: { $0.grid.isEmpty }) { batch.sources.append(ImportSourceDraft(filename: "Manual entry", bytes: Data(), grid: [])) }
         let source = batch.sources.first(where: { $0.grid.isEmpty })!
         let previous = batch.mode.isHolding ? batch.rows.last?.holding : nil
         let portfolio = portfolios.count == 1 ? portfolios.first : nil
-        let content: ImportRowContent = switch batch.mode {
-        case .statements: .statement(StatementInput(date: ImportDateFormat.today(), currency: source.account.currency))
-        case .bankBalances: .bankBalance(BankBalanceInput())
-        case .holdings, .metals: .holding(HoldingInput(portfolioID: previous?.portfolioID ?? portfolio?.id, portfolioName: previous?.portfolioName ?? portfolio?.name ?? (batch.mode == .metals ? "My metals" : "My crypto")))
+        let content: ImportRowContent
+        switch batch.mode {
+        case .statements: return
+        case .bankBalances: content = .bankBalance(BankBalanceInput())
+        case .holdings, .metals: content = .holding(HoldingInput(portfolioID: previous?.portfolioID ?? portfolio?.id, portfolioName: previous?.portfolioName ?? portfolio?.name ?? (batch.mode == .metals ? "My metals" : "My crypto")))
         }
         let row = ImportDraftRow(sourceID: source.id, line: batch.rows.filter { $0.sourceID == source.id }.count + 1, content: content)
         if batch.rows.isEmpty { starterRow = (row.id, content) }
