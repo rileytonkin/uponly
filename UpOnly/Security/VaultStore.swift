@@ -78,13 +78,24 @@ actor VaultStore {
         guard payload.count <= VaultLimits.maxVaultFileBytes else { throw VaultError.oversizedVault }
         let recoveryBytes = try VaultJSON.encode(wrapper)
         let opened: VaultSession = try fence.publish(ticket) {
-            try writeRecoveryBytes(recoveryBytes)
-            try writeFirstPayload(payload)
             try keys.store(
                 vaultID: document.vaultID,
                 key: VaultCrypto.keyData(vaultKey),
                 context: authenticator.keychainContext
             )
+            do {
+                try writeRecoveryBytes(recoveryBytes)
+                try writeFirstPayload(payload)
+            } catch {
+                // A failed first save must not strand a vault without its key.
+                // If publication succeeded before a durability error, retain
+                // both recovery paths so the existing file stays readable.
+                if !io.fileExists(at: layout.current) {
+                    try? io.removeItem(at: layout.recovery)
+                    try? keys.delete(vaultID: document.vaultID)
+                }
+                throw error
+            }
             let session = VaultSession(sessionID: UUID(), document: document, fenceTicket: ticket)
             self.session = session
             self.key = vaultKey
@@ -93,16 +104,17 @@ actor VaultStore {
         return opened
     }
 
-    func unlock() async throws -> VaultSession {
+    func unlock(timing: UnlockTiming? = nil) async throws -> VaultSession {
         let ticket = fence.current()
         try await authenticator.evaluate()
+        timing?.mark("authenticated", at: authenticator.successfulAuthenticationUptime ?? ProcessInfo.processInfo.systemUptime)
         guard fence.current() == ticket else { throw VaultError.locked }
         try acquireProcessLock()
         try layout.ensureDirectories(io)
         guard io.fileExists(at: layout.current) else { throw VaultError.notFound }
         let persisted = try readPersisted(layout.current)
-        guard keys.contains(vaultID: persisted.vaultID) else { throw VaultError.needsRecovery }
         let keyData = try keys.load(vaultID: persisted.vaultID, context: authenticator.keychainContext)
+        timing?.mark("key_loaded")
         let vaultKey = try VaultCrypto.key(from: keyData)
         let document: VaultDocument
         do {
@@ -110,6 +122,7 @@ actor VaultStore {
         } catch {
             throw VaultError.corrupt
         }
+        timing?.mark("vault_opened")
         return try fence.publish(ticket) {
             let opened = VaultSession(sessionID: UUID(), document: document, fenceTicket: ticket)
             self.session = opened
@@ -308,7 +321,7 @@ actor VaultStore {
         let temp = layout.current.appendingPathExtension("tmp")
         do {
             try io.write(payload, to: temp, sync: true)
-            try io.replaceItem(at: layout.current, withItemAt: temp)
+            try io.installItem(at: layout.current, from: temp)
         } catch {
             try? io.removeItem(at: temp)
             throw VaultError.diskWriteFailed

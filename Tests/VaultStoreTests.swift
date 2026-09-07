@@ -2,6 +2,25 @@ import Foundation
 import Testing
 @testable import UpOnly
 
+final class SetupTestKeyStore: VaultKeyStoring, @unchecked Sendable {
+    let memory = MemoryKeyStore()
+    var storeError: VaultError?
+    var loadError: VaultError?
+    var probeReturnsMissing = false
+    private(set) var lastStoredID: UUID?
+    func store(vaultID: UUID, key: Data, context: AnyObject?) throws {
+        if let storeError { throw storeError }
+        try memory.store(vaultID: vaultID, key: key, context: context)
+        lastStoredID = vaultID
+    }
+    func load(vaultID: UUID, context: AnyObject?) throws -> Data {
+        if let loadError { throw loadError }
+        return try memory.load(vaultID: vaultID, context: context)
+    }
+    func delete(vaultID: UUID) throws { try memory.delete(vaultID: vaultID) }
+    func contains(vaultID: UUID) -> Bool { !probeReturnsMissing && memory.contains(vaultID: vaultID) }
+}
+
 struct VaultStoreTests {
     private func harness() -> (
         store: VaultStore,
@@ -38,6 +57,58 @@ struct VaultStoreTests {
             try await h.store.create(recovery: h.recovery, confirmation: "DEADBEEF")
         }
         #expect(!h.io.fileExists(at: h.layout.current))
+    }
+
+    @Test("Keychain failure publishes no vault and setup can retry")
+    func creationRequiresStoredKey() async throws {
+        let io = MemoryFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-key-failure-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let code = RecoveryCode.random()
+        keys.storeError = .keychainUnavailable(-34018)
+        await #expect(throws: VaultError.keychainUnavailable(-34018)) {
+            try await store.create(recovery: code, confirmation: code.canonical)
+        }
+        #expect(!io.fileExists(at: layout.current) && !io.fileExists(at: layout.recovery))
+        #expect(await !store.isUnlocked)
+        keys.storeError = nil
+        let created = try await store.create(recovery: code, confirmation: code.canonical)
+        #expect(created.document.generation == 1)
+        #expect(keys.contains(vaultID: created.document.vaultID))
+    }
+
+    @Test("Failed initial writes remove unpublished recovery material and keys", arguments: ["wrapper", "payload", "rename"])
+    func failedFirstSaveIsRetryable(_ failure: String) async throws {
+        let io = MemoryFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-first-save-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let code = RecoveryCode.random()
+        if failure == "rename" { io.failReplace = true }
+        else { io.failWriteMatching = failure == "wrapper" ? "recovery.wrapper" : "vault.uponly.tmp" }
+        await #expect(throws: VaultError.diskWriteFailed) {
+            try await store.create(recovery: code, confirmation: code.canonical)
+        }
+        let id = try #require(keys.lastStoredID)
+        #expect(!keys.contains(vaultID: id))
+        #expect(!io.fileExists(at: layout.current) && !io.fileExists(at: layout.recovery))
+        #expect(await !store.isUnlocked)
+        io.failReplace = false; io.failWriteMatching = nil
+        let created = try await store.create(recovery: code, confirmation: code.canonical)
+        #expect(created.document.generation == 1)
+    }
+
+    @Test("Unlock uses the authenticated read instead of an inconclusive Keychain probe")
+    func unlockDoesNotUsePresenceProbe() async throws {
+        let io = MemoryFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-key-probe-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let code = RecoveryCode.random()
+        let created = try await store.create(recovery: code, confirmation: code.canonical)
+        store.lock(); keys.probeReturnsMissing = true
+        let reopened = try await store.unlock()
+        #expect(reopened.document.vaultID == created.document.vaultID)
+        #expect(reopened.document.generation == created.document.generation)
+        #expect(reopened.document.inboxPrivateKeyX963 == created.document.inboxPrivateKeyX963)
     }
 
     @Test("Replacement keeps one verified previous generation")
@@ -334,6 +405,7 @@ struct VaultStoreTests {
         let signing = VaultCrypto.makeSigningKeyPair()
         var next = session.document
         next.generation += 1
+        next.settings.privacyMode = true
         next.trustedSigners = [
             TrustedSigner(
                 id: UUID(),
@@ -365,7 +437,77 @@ struct VaultStoreTests {
         )
         #expect(restored.document.trustedSigners.first?.highWater.first?.sequence == 4)
         #expect(restored.document.inboxPrivateKeyX963 == session.document.inboxPrivateKeyX963)
+        #expect(restored.document.settings.privacyMode)
         #expect(restored.pending.contains { $0.name == "batch-1.uponlyenv" && $0.bytes == pending })
         #expect(freshKeys.contains(vaultID: restored.document.vaultID))
     }
+    @Test("Large encrypted vault opens and publishes its dashboard with synthetic authentication")
+    @MainActor func largeVaultUnlock() async throws {
+        let h = harness()
+        let opened = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        var doc = opened.document
+        doc.settings.setupComplete = true
+        let now = Date(timeIntervalSince1970: 1788600000.123)
+        doc.fx = (0..<18000).map { index in
+            let date = now.addingTimeInterval(-Double(index) * 3600)
+            return FXObservation(sourceCurrency: "EUR", targetCurrency: "USD", rate: PreciseDecimal(1), providerTime: date, fetchedAt: date, provider: "Synthetic benchmark")
+        }
+        var month = MonthKey.current()
+        for _ in 0..<72 {
+            for index in 0..<20 {
+                doc.entries.append(Entry(month: month, kind: index.isMultiple(of: 2) ? .income : .expense, amount: 10, currency: "EUR", label: "Synthetic entry"))
+            }
+            month = month.previous
+        }
+        doc.generation += 1
+        try await h.store.commit(doc, expectedGeneration: opened.document.generation, sessionID: opened.sessionID)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        let started = Date()
+        await session.unlock()
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(session.state == .unlocked)
+        #expect(session.document?.fx.count == 18000)
+        #expect(session.monthModel?.history.count == 72)
+        #expect(session.document?.entries.count == 1440)
+        let modelStarted = Date()
+        let model = PopoverModel()
+        model.replace(with: try #require(session.document))
+        let modelElapsed = Date().timeIntervalSince(modelStarted)
+        let bytes = try h.io.data(at: h.layout.current).count
+        let evidence: [String: Any] = ["model_only_seconds": modelElapsed, "unlock_and_publish_seconds": elapsed, "encrypted_bytes": bytes, "fx_observations": 18000, "entries": 1440]
+        try JSONSerialization.data(withJSONObject: evidence, options: .sortedKeys).write(to: FileManager.default.temporaryDirectory.appendingPathComponent("uponly-large-unlock.json"), options: .atomic)
+        session.lock()
+        #expect(session.document == nil && session.monthModel == nil)
+    }
+
+    @Test("Fast vault timestamps retain legacy dates, bytes and malformed-input rejection")
+    func timestampCompatibility() async throws {
+        let examples = ["2026-09-07T00:00:00.123Z", "1970-01-01T00:00:00.000Z", "1969-12-31T23:59:59.999Z", "2000-02-29T12:34:56.001Z", "1900-01-01T00:00:00.100Z", "9999-12-31T23:59:59.999Z", "2026-09-07T00:00:00Z", "2026-09-07T00:00:00.123456Z", "2026-09-07T03:00:00.123+03:00"]
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    let fallback = ISO8601DateFormatter()
+                    fallback.formatOptions = [.withInternetDateTime]
+                    for text in examples {
+                        let expected = try #require(formatter.date(from: text) ?? fallback.date(from: text))
+                        let bytes = try JSONEncoder().encode([text])
+                        let dates = try VaultJSON.decode([Date].self, from: bytes)
+                        #expect(dates == [expected])
+                        let encoded = try VaultJSON.encode(dates)
+                        let strings = try JSONDecoder().decode([String].self, from: encoded)
+                        #expect(strings == [formatter.string(from: expected)])
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+        for invalid in ["not a timestamp", "2026-09-07T00:00:00.xyzZ", "2026-09-07"] {
+            let bytes = try JSONEncoder().encode([invalid])
+            #expect(throws: DecodingError.self) { try VaultJSON.decode([Date].self, from: bytes) }
+        }
+    }
+
 }

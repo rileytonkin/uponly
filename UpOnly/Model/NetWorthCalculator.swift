@@ -432,7 +432,7 @@ nonisolated enum NetWorthCalculator {
         document: VaultDocument,
         historical: Bool
     ) -> (usd: Decimal?, fxTime: Date?, missing: String?) {
-        if currency == "USD" {
+        if currency == "USD" || amount == 0 {
             return (amount, nil, nil)
         }
         let candidates = document.fx.filter {
@@ -443,7 +443,7 @@ nonisolated enum NetWorthCalculator {
         let match: FXObservation?
         if historical {
             match = candidates
-                .filter { UTCDay.isSameDay($0.providerTime, date) }
+                .filter { date.timeIntervalSince($0.providerTime) <= 7 * 86400 }
                 .sorted { $0.providerTime < $1.providerTime }
                 .last
         } else {
@@ -522,8 +522,7 @@ nonisolated enum HoldingMutations {
         guard let destination = document.portfolio(id: destinationID), destination.isActive(at: date) else {
             throw VaultError.unknownPortfolio
         }
-        _ = source
-        _ = destination
+        guard source.kind == destination.kind else { throw VaultError.invalidAssetID }
 
         guard let sourceHolding = document.holdings.first(where: {
             $0.portfolioID == sourceID && $0.assetID == assetID && $0.isActive(at: date)
@@ -586,7 +585,7 @@ nonisolated enum HoldingMutations {
         guard let portfolio = document.portfolio(id: portfolioID), portfolio.isActive(at: date) else {
             throw VaultError.unknownPortfolio
         }
-        _ = portfolio
+        guard (PreciousMetal.asset(assetID) != nil) == (portfolio.kind == .metals) else { throw VaultError.invalidAssetID }
         var next = document
         if let existing = next.holdings.first(where: {
             $0.portfolioID == portfolioID && $0.assetID == assetID && $0.isActive(at: date)
@@ -607,5 +606,97 @@ nonisolated enum HoldingMutations {
             )
         )
         return next
+    }
+}
+
+
+/// Raw observations and stored snapshots stay full-value. Ownership is applied
+/// at the observation date when presenting personal wealth, including old samples.
+nonisolated enum AssetOwnership {
+    static func month(at date: Date) -> MonthKey {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
+        return MonthKey.current(now: date, calendar: calendar)
+    }
+    static func profileName(_ account: Account) -> String {
+        var name = account.name
+        if account.externalProfileID != nil, name.hasSuffix(" · " + account.currency) {
+            name.removeLast(3 + account.currency.count)
+        }
+        return name
+    }
+    static func businessID(for account: Account, in document: VaultDocument) -> String? {
+        if let explicit = account.ownerBusinessID { return explicit.isEmpty ? nil : explicit }
+        return (document.businessAccounting ?? []).first {
+            $0.name.caseInsensitiveCompare(profileName(account)) == .orderedSame
+        }?.id
+    }
+    static func businessID(for component: ValuationComponent, in document: VaultDocument) -> String? {
+        if component.kind == .bank {
+            return document.accounts.first { $0.id == component.id }.flatMap { businessID(for: $0, in: document) }
+        }
+        return document.holdings.first { $0.id == component.id }
+            .flatMap { document.portfolio(id: $0.portfolioID)?.ownerBusinessID }
+    }
+    static func sum(_ components: [ValuationComponent]) -> Decimal? {
+        guard components.allSatisfy({ $0.usdValue != nil && $0.missing == nil }) else { return nil }
+        return try? components.reduce(Decimal.zero) { try MoneyInput.add($0, $1.usdValue!.value) }
+    }
+    static func personalTotal(_ components: [ValuationComponent], at date: Date, document: VaultDocument) -> Decimal? {
+        let groups = Dictionary(grouping: components) { businessID(for: $0, in: document) ?? "" }
+        var total = Decimal.zero
+        for (owner, values) in groups {
+            guard let full = sum(values) else { return nil }
+            let share: Decimal
+            if owner.isEmpty { share = full }
+            else {
+                guard let book = document.businessAccounting?.first(where: { $0.id == owner }),
+                      let ownership = book.ownership(at: month(at: date).description),
+                      let portion = try? ownership.portion(full) else { return nil }
+                share = portion
+            }
+            guard let next = try? MoneyInput.add(total, share) else { return nil }; total = next
+        }
+        return total
+    }
+    static func personalValue(at date: Date, scope: ValuationScope, document: VaultDocument, now: Date = Date()) -> ValuationResult {
+        var raw = NetWorthCalculator.value(at: date, scope: scope, document: document, now: now)
+        if raw.total != nil {
+            raw.total = personalTotal(raw.components, at: date, document: document)
+            if raw.total == nil { raw.missing.append(MissingValuation(componentID: UUID(), reason: "ownership")) }
+        }
+        // Never reuse a legacy full-company headline as a personal fallback.
+        raw.lastComplete = raw.total.map { ($0, date) }
+        if raw.total == nil {
+            let samples = document.dailyValuations.filter {
+                $0.scope == scope && $0.isComplete && $0.utcDay <= date && $0.computedAt <= now
+            }.sorted { $0.utcDay > $1.utcDay }
+            for sample in samples {
+                if let total = personalTotal(sample.components, at: sample.utcDay, document: document) {
+                    raw.lastComplete = (total, sample.utcDay); break
+                }
+            }
+        }
+        return raw
+    }
+}
+
+nonisolated struct BankBalanceGroup: Identifiable {
+    var id: String
+    var name: String
+    var image: Data?
+    var businessID: String?
+    var components: [ValuationComponent]
+    var total: Decimal? { AssetOwnership.sum(components) }
+    static func groups(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
+        let accounts = Dictionary(uniqueKeysWithValues: document.accounts.map { ($0.id, $0) })
+        return Dictionary(grouping: components.filter { $0.kind == .bank }) { component in
+            let account = accounts[component.id]
+            return (account?.externalProfileID ?? component.id.uuidString) + ":" + (account.flatMap { AssetOwnership.businessID(for: $0, in: document) } ?? "personal")
+        }.map { id, values in
+            let sorted = values.sorted { $0.id.uuidString < $1.id.uuidString }
+            let account = sorted.first.flatMap { accounts[$0.id] }
+            return BankBalanceGroup(id: id, name: account.map(AssetOwnership.profileName) ?? "Bank account",
+                                    image: account?.profileImage, businessID: account.flatMap { AssetOwnership.businessID(for: $0, in: document) }, components: sorted)
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }

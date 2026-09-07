@@ -33,6 +33,36 @@ protocol VaultAuthenticating: Sendable {
     func evaluate() async throws
     nonisolated func invalidate()
     nonisolated var keychainContext: AnyObject? { get }
+    nonisolated var successfulAuthenticationUptime: TimeInterval? { get }
+}
+extension VaultAuthenticating {
+    nonisolated var successfulAuthenticationUptime: TimeInterval? { nil }
+}
+
+// Explicitly enabled diagnostic: timings only, never document or credential data.
+nonisolated final class UnlockTiming: @unchecked Sendable {
+    private let lock = NSLock()
+    private var phases: [String: TimeInterval] = [:]
+    private let method: String
+    init(method: String) { self.method = method; mark("requested") }
+    func mark(_ phase: String, at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        lock.lock(); defer { lock.unlock() }
+        phases[phase] = uptime
+    }
+    func finish(at url: URL) {
+        mark("menu_displayed")
+        lock.lock(); let snapshot = phases; lock.unlock()
+        guard let authenticated = snapshot["authenticated"] else { return }
+        let milliseconds = snapshot.mapValues { ($0 - authenticated) * 1000 }
+        let method = method
+        Task.detached(priority: .utility) {
+            let record: [String: Any] = ["method": method, "milliseconds_from_authentication": milliseconds,
+                                       "measured_at": Date().timeIntervalSince1970]
+            guard let bytes = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
+            try? bytes.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+    }
 }
 
 final class UnlockFence: @unchecked Sendable {
@@ -434,10 +464,11 @@ final class KeychainVaultKeyStore: VaultKeyStoring, @unchecked Sendable {
                 update[kSecUseAuthenticationContext as String] = context
             }
             let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-            guard status == errSecSuccess else { throw VaultError.corrupt }
+            guard status == errSecSuccess else { throw VaultError.keychainUnavailable(status) }
             return
         }
-        throw VaultError.corrupt
+        if added == errSecUserCanceled || added == errSecAuthFailed { throw VaultError.cancelled }
+        throw VaultError.keychainUnavailable(added)
     }
 
     func load(vaultID: UUID, context: AnyObject?) throws -> Data {
@@ -457,7 +488,8 @@ final class KeychainVaultKeyStore: VaultKeyStoring, @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecUserCanceled || status == errSecAuthFailed { throw VaultError.cancelled }
         if status == errSecItemNotFound { throw VaultError.needsRecovery }
-        guard status == errSecSuccess, let data = result as? Data else { throw VaultError.needsRecovery }
+        guard status == errSecSuccess else { throw VaultError.keychainUnavailable(status) }
+        guard let data = result as? Data else { throw VaultError.corrupt }
         return data
     }
 
@@ -511,22 +543,71 @@ final class FixtureAuthenticator: VaultAuthenticating, @unchecked Sendable {
 final class LiveAuthenticator: VaultAuthenticating, @unchecked Sendable {
     private let lock = NSLock()
     private var context = LAContext()
+    private var embeddedContext: LAContext?
+    private var passwordRequested = false
+    private var successUptime: TimeInterval?
+    nonisolated var successfulAuthenticationUptime: TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        return successUptime
+    }
+    private func authenticated(_ evaluated: LAContext) {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock(); defer { lock.unlock() }
+        if context === evaluated { successUptime = now }
+    }
+
+    func prepareEmbedded(_ next: LAContext) {
+        lock.lock(); defer { lock.unlock() }
+        embeddedContext = next
+        passwordRequested = false
+        context = next
+    }
+
+    func preparePassword() {
+        lock.lock(); defer { lock.unlock() }
+        embeddedContext = nil
+        passwordRequested = true
+    }
+
+    private func nextEvaluation() -> (LAContext, LAPolicy, Bool) {
+        lock.lock(); defer { lock.unlock() }
+        let embedded = embeddedContext
+        let password = passwordRequested
+        embeddedContext = nil
+        passwordRequested = false
+        let next = embedded ?? LAContext()
+        context = next
+        successUptime = nil
+        return (next, embedded == nil ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometrics, password)
+    }
 
     func evaluate() async throws {
-        let next = LAContext()
+        let (next, policy, password) = nextEvaluation()
         next.localizedCancelTitle = "Cancel"
-        lock.lock()
-        context = next
-        lock.unlock()
-        let reason = "Unlock Up Only"
+        next.localizedFallbackTitle = password ? "" : "Use Password"
+        let reason = "access your encrypted finances"
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            next.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
+            let reply: @Sendable (Bool, Error?) -> Void = { success, error in
                 if success {
+                    self.authenticated(next)
                     continuation.resume()
                 } else {
                     continuation.resume(throwing: VaultError.cancelled)
                     _ = error
                 }
+            }
+            if password {
+                // A fresh, unembedded context with a passcode-only constraint opens
+                // the system Mac password field directly. Reuse it for the vault's
+                // existing protected Keychain read; the app never handles the password.
+                var error: Unmanaged<CFError>?
+                guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .devicePasscode, &error) else {
+                    continuation.resume(throwing: VaultError.cancelled)
+                    return
+                }
+                next.evaluateAccessControl(access, operation: .useItem, localizedReason: reason, reply: reply)
+            } else {
+                next.evaluatePolicy(policy, localizedReason: reason, reply: reply)
             }
         }
     }
@@ -534,6 +615,8 @@ final class LiveAuthenticator: VaultAuthenticating, @unchecked Sendable {
     nonisolated func invalidate() {
         lock.lock()
         let current = context
+        embeddedContext = nil
+        passwordRequested = false
         lock.unlock()
         current.invalidate()
     }

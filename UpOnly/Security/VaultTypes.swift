@@ -32,13 +32,14 @@ nonisolated enum CollectionSource: String, Codable, Sendable, Equatable {
     case fx
 }
 
-nonisolated enum VaultError: Error, Equatable, Sendable {
+nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     case cancelled
     case locked
     case alreadyOpen
     case alreadyExists
     case notFound
     case needsRecovery
+    case keychainUnavailable(Int32)
     case corrupt
     case wrongKey
     case wrongRecoveryCode
@@ -76,6 +77,32 @@ nonisolated enum VaultError: Error, Equatable, Sendable {
     case unsafeFilename
     case unavailable
     case overflow
+    var errorDescription: String? {
+        switch self {
+        case .cancelled: "The action was cancelled."
+        case .locked, .staleSession: "Up is locked. Unlock it, then try again."
+        case .invalidAmount, .overflow: "Enter a valid amount within the supported range."
+        case .invalidCurrency: "Enter a three-letter currency code, such as USD or GBP."
+        case .invalidAssetID: "Choose a coin from search or enter its exact CoinGecko ID."
+        case .observationInFuture: "Choose today or an earlier date."
+        case .insufficientQuantity: "You can’t move more than the quantity you hold."
+        case .samePortfolio: "Choose a different destination portfolio."
+        case .unknownHolding, .unknownPortfolio: "This holding or portfolio is no longer available. Choose an active one."
+        case .alreadyExists: "A vault already exists here. Unlock it to continue."
+        case .notFound: "The file could not be found. Choose it again."
+        case .wrongRecoveryCode, .confirmationMismatch: "The recovery code doesn’t match. Check every group and try again."
+        case .needsRecovery, .keychainUnavailable, .wrongKey: "Your vault could not be unlocked. Try your Mac password or saved recovery code."
+        case .diskWriteFailed: "The change couldn’t be saved. Check available disk space and try again."
+        case .oversizedVault: "Your vault has reached its 128 MB limit. Export a backup from Security; new imports cannot be saved."
+        case .oversizedBatch, .oversizedInbox: "This import is too large. Split it into smaller files and try again."
+        case .unknownSchema, .formatNotActive: "This file needs a compatible version of Up Only. Check for an app update."
+        case .staleGeneration, .invalidGeneration, .alreadyOpen, .barrierHeld, .pauseFailed: "Another change is still finishing. Wait a moment, then try again."
+        case .missingRecoveryWrapper: "This backup is missing recovery information. Choose another backup."
+        case .corrupt, .backupIncoherent, .malformedEnvelope, .invalidSignature, .wrongVault, .unauthorizedRole, .staleSequence, .malformedLegacy, .verificationFailed, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
+        case .inboxNotCommitted, .cleanupFailed, .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
+        }
+    }
+
 }
 
 nonisolated enum ValuationScope: Codable, Hashable, Sendable, Equatable {
@@ -237,13 +264,32 @@ nonisolated enum SafeFileName {
     }
 }
 
+// JSON strategies are Sendable. Each coder owns these formatters, and locking
+// also makes explicit reuse of one coder across tasks safe for date conversion.
+nonisolated private final class VaultTimestampFormatter: @unchecked Sendable {
+    private let lock = NSLock()
+    private let formatter = ISO8601DateFormatter()
+    init(fractional: Bool) {
+        formatter.formatOptions = fractional ? [.withInternetDateTime, .withFractionalSeconds] : [.withInternetDateTime]
+    }
+    func string(from date: Date) -> String {
+        lock.lock(); defer { lock.unlock() }
+        return formatter.string(from: date)
+    }
+    func date(from text: String) -> Date? {
+        lock.lock(); defer { lock.unlock() }
+        return formatter.date(from: text)
+    }
+}
+
 nonisolated enum VaultJSON {
     static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
+        // Keep the existing signed/serialized representation, but construct its
+        // formatter once per encoding operation, not once per saved date.
+        let formatter = VaultTimestampFormatter(fractional: true)
         encoder.dateEncodingStrategy = .custom { date, encoder in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             var container = encoder.singleValueContainer()
             try container.encode(formatter.string(from: date))
         }
@@ -252,13 +298,19 @@ nonisolated enum VaultJSON {
 
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
+        let fractional = VaultTimestampFormatter(fractional: true)
+        let fallback = VaultTimestampFormatter(fractional: false)
         decoder.dateDecodingStrategy = .custom { decoder in
             let text = try decoder.singleValueContainer().decode(String.self)
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            // Our encoder writes UTC timestamps with exactly three fractional
+            // digits. Foundation's value-type parser avoids ICU formatter setup
+            // and parsing overhead for this common path. Normalize via Unix
+            // milliseconds to match ISO8601DateFormatter's Date representation.
+            if text.utf8.count == 24, text.hasSuffix("Z"),
+               let date = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(text) {
+                return Date(timeIntervalSince1970: (date.timeIntervalSince1970 * 1000).rounded() / 1000)
+            }
             if let date = fractional.date(from: text) { return date }
-            let fallback = ISO8601DateFormatter()
-            fallback.formatOptions = [.withInternetDateTime]
             if let date = fallback.date(from: text) { return date }
             throw DecodingError.dataCorruptedError(
                 in: try decoder.singleValueContainer(),
