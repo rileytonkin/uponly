@@ -40,8 +40,41 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
 nonisolated struct BackgroundBankProfile: Codable, Sendable {
     var profile: WiseConfiguredProfile
     var balances: [WiseBalance]
+    var activities: [WiseActivity]?
 }
 #endif
+/// Persist the automatic attempt so menu openings, relaunches and reconnects
+/// cannot bypass each source’s refresh interval.
+actor BackgroundRefreshSchedule {
+    static let shared = BackgroundRefreshSchedule()
+    nonisolated static func interval(for source: String) -> TimeInterval {
+        source == "banks" ? 12 * 60 * 60 : ["crypto", "metals", "history"].contains(source) ? 60 * 60 : 15 * 60
+    }
+    nonisolated private struct Record: Codable {
+        var vaultID: UUID
+        var attemptedAt: Date
+        var failed: Bool
+    }
+    private func path(_ root: URL, source: String) -> URL { root.appendingPathComponent("Background-" + source + ".schedule") }
+    private func record(vaultID: UUID, root: URL, source: String) -> Record? {
+        guard let data = try? Data(contentsOf: path(root, source: source)),
+              let record = try? VaultJSON.decode(Record.self, from: data), record.vaultID == vaultID else { return nil }
+        return record
+    }
+    func claim(vaultID: UUID, root: URL, source: String = "banks", now: Date = Date()) throws -> Bool {
+        try Task.checkCancellation()
+        if let last = record(vaultID: vaultID, root: root, source: source),
+           now >= last.attemptedAt, now.timeIntervalSince(last.attemptedAt) < Self.interval(for: source) { return false }
+        try finish(vaultID: vaultID, root: root, failed: false, source: source, now: now)
+        return true
+    }
+    func finish(vaultID: UUID, root: URL, failed: Bool, source: String = "banks", now: Date = Date()) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try VaultJSON.encode(Record(vaultID: vaultID, attemptedAt: now, failed: failed)).write(to: path(root, source: source), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path(root, source: source).path)
+    }
+    func failed(vaultID: UUID, root: URL, source: String = "banks") -> Bool { record(vaultID: vaultID, root: root, source: source)?.failed == true }
+}
 nonisolated struct BackgroundPacket: Codable, Sendable {
     var source: String
     var fetchedAt: Date
@@ -112,9 +145,16 @@ nonisolated enum BackgroundRefresh {
         var errors: [String] = []
         if configuration.pricesEnabled && !configuration.crypto.isEmpty {
             do {
-                let quotes = try await PublicPrices.quotes(ids: configuration.crypto, key: configuration.coinGeckoKey)
-                try save(BackgroundPacket(source: "crypto", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes)), configuration: configuration, root: root)
-            } catch { errors.append("Crypto") }
+                if try await BackgroundRefreshSchedule.shared.claim(vaultID: configuration.vaultID, root: root, source: "crypto") {
+                    let quotes = try await PublicPrices.quotes(ids: configuration.crypto, key: configuration.coinGeckoKey)
+                    try save(BackgroundPacket(source: "crypto", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes)), configuration: configuration, root: root)
+                    try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: false, source: "crypto")
+                }
+                if await BackgroundRefreshSchedule.shared.failed(vaultID: configuration.vaultID, root: root, source: "crypto") { errors.append("Crypto") }
+            } catch {
+                try? await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: true, source: "crypto")
+                errors.append("Crypto")
+            }
         }
         if configuration.fxEnabled && !configuration.currencies.isEmpty {
             do {
@@ -125,6 +165,7 @@ nonisolated enum BackgroundRefresh {
         }
         if configuration.metalsEnabled && !configuration.metals.isEmpty {
             do {
+                if try await BackgroundRefreshSchedule.shared.claim(vaultID: configuration.vaultID, root: root, source: "metals") {
                 var quotes: [QuoteObservation] = []
                 for metal in configuration.metals {
                     try Task.checkCancellation()
@@ -133,19 +174,28 @@ nonisolated enum BackgroundRefresh {
                     try await Task.sleep(for: .seconds(1.1))
                 }
                 try save(BackgroundPacket(source: "metals", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes)), configuration: configuration, root: root)
-            } catch { errors.append("Metals") }
+                try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: false, source: "metals")
+                }
+                if await BackgroundRefreshSchedule.shared.failed(vaultID: configuration.vaultID, root: root, source: "metals") { errors.append("Metals") }
+            } catch {
+                try? await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: true, source: "metals")
+                errors.append("Metals")
+            }
         }
         #if UPONLY_PERSONAL
         if configuration.wiseEnabled {
             do {
-                let connection = try WiseConnection.load()
-                var profiles: [BackgroundBankProfile] = []
-                for profile in connection.profiles {
-                    try Task.checkCancellation()
-                    let data = try await WiseAPI.request(path: "/v4/profiles/\(profile.id)/balances", query: [URLQueryItem(name: "types", value: "STANDARD")], token: connection.token)
-                    profiles.append(BackgroundBankProfile(profile: profile, balances: try JSONDecoder().decode([WiseBalance].self, from: data)))
+                if try await BackgroundRefreshSchedule.shared.claim(vaultID: configuration.vaultID, root: root) {
+                    do {
+                        let snapshot = try await WiseAPI.fetch(WiseConnection.load())
+                        let profiles = snapshot.profiles.map { BackgroundBankProfile(profile: $0.profile, balances: $0.balances, activities: $0.activities) }
+                        try save(BackgroundPacket(source: "banks", fetchedAt: snapshot.fetchedAt, banks: profiles), configuration: configuration, root: root)
+                        try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: false)
+                    } catch {
+                        try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: true)
+                    }
                 }
-                try save(BackgroundPacket(source: "banks", fetchedAt: Date(), banks: profiles), configuration: configuration, root: root)
+                if await BackgroundRefreshSchedule.shared.failed(vaultID: configuration.vaultID, root: root) { errors.append("Bank balances") }
             } catch { errors.append("Bank balances") }
         }
         if configuration.accountingEnabled {
@@ -174,7 +224,7 @@ nonisolated enum BackgroundRefresh {
         #if UPONLY_PERSONAL
         case "banks":
             guard document.settings.automaticWise, let banks = packet.banks else { return next }
-            next = try WiseAPI.apply(WiseSnapshot(profiles: banks.map { WiseProfileSnapshot(profile: $0.profile, balances: $0.balances, activities: []) }, fetchedAt: packet.fetchedAt), to: next)
+            next = try WiseAPI.apply(WiseSnapshot(profiles: banks.map { WiseProfileSnapshot(profile: $0.profile, balances: $0.balances, activities: $0.activities ?? []) }, fetchedAt: packet.fetchedAt), to: next)
         #endif
         default: return next
         }

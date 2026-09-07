@@ -102,7 +102,7 @@ final class UpOnlySession {
                     guard let self else { return }
                     let reconnected = available && !self.networkAvailable
                     self.networkAvailable = available
-                    if reconnected { self.startBackgroundRefresh(); if self.document?.settings.setupComplete == true { await self.refreshPrices(reconnected: true) } }
+                    if reconnected { self.startBackgroundRefresh() }
                 }
             }
             monitor.start(queue: DispatchQueue(label: "org.uponly.network"))
@@ -702,6 +702,10 @@ final class UpOnlySession {
                 wiseRefreshing = status == "updating"
                 wiseError = status == "error" ? "Wise could not refresh. Your saved records are unchanged." : nil
             }
+            if let status = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ACCOUNTING_STATUS"] {
+                accountingRefreshing = status == "updating"
+                accountingError = status == "error" ? "Accounting could not refresh. Your saved results are unchanged." : nil
+            }
             #endif
             if ["missing-rates", "worth-missing-rates", "failed-rates"].contains(preview) {
                 for index in fixture.entries.indices { fixture.entries[index].currency = "CHF" }
@@ -867,6 +871,10 @@ extension UpOnlySession {
             guard token == sessionToken, !Task.isCancelled, !request.isCancelled, document?.settings.automaticWise == true else { return }
             try await mutatePrepared { doc in try WiseAPI.apply(snapshot, to: doc) }
             guard token == sessionToken else { return }
+            if let document {
+                try? await BackgroundRefreshSchedule.shared.finish(vaultID: document.vaultID, root: Config.supportDirectory, failed: false)
+            }
+            backgroundIssues.removeAll { $0 == "Bank balances" }
             wiseMessage = "Wise updated " + Date().formatted(date: .omitted, time: .shortened)
         } catch {
             if token == sessionToken, !Task.isCancelled, !(error is CancellationError) {
@@ -929,23 +937,26 @@ extension UpOnlySession {
                 guard let self, self.state == .unlocked else { return }
                 await self.configureBackground()
                 await self.applyBackgroundCache()
-                #if UPONLY_PERSONAL
-                if self.document?.settings.setupComplete == true { await self.refreshAccounting(); await self.refreshWise() }
-                #endif
-                await self.refreshPrices()
+                await self.refreshPrices(automatic: true)
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
         }
     }
-    func refreshPrices(reconnected: Bool = false) async {
-        guard state == .unlocked, !refreshing, !isFixture, let doc = document else { return }
+    func refreshPrices(reconnected: Bool = false, automatic: Bool = false) async {
+        guard state == .unlocked, !refreshing, priceRequest == nil, !isFixture, let doc = document else { return }
         let token = sessionToken, revision = sourceRevision
-        refreshing = true
+        if automatic {
+            guard priceRequest == nil,
+                  (try? await BackgroundRefreshSchedule.shared.claim(vaultID: doc.vaultID, root: Config.supportDirectory, source: "history")) == true,
+                  token == sessionToken, state == .unlocked, priceRequest == nil else { return }
+        } else {
+            refreshing = true
+            sourceMessage = "Updating prices and checking for missed history…"
+        }
         fxIssues = [:]
-        sourceMessage = "Updating prices and checking for missed history…"
         defer { if token == sessionToken, revision == sourceRevision { refreshing = false; priceRequest = nil } }
         do {
-            let request = Task.detached(priority: .utility) { try await PublicPrices.update(document: doc, reconnected: reconnected) }
+            let request = Task.detached(priority: .utility) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
             priceRequest = request
             let update = try await request.value
             guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
@@ -953,12 +964,12 @@ extension UpOnlySession {
                 try await commitPriceUpdate(update)
             }
             guard token == sessionToken, revision == sourceRevision else { return }
-            sourceMessage = update.messages.isEmpty ? "Updated " + Date().formatted(date: .omitted, time: .shortened) : update.messages.joined(separator: "\n")
+            if !automatic { sourceMessage = update.messages.isEmpty ? "Updated " + Date().formatted(date: .omitted, time: .shortened) : update.messages.joined(separator: "\n") }
             fxIssues = update.fxIssues
         } catch {
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled {
                 let issue = (error as? PriceError)?.localizedDescription ?? "Prices could not be saved. Your saved observations are unchanged; catch-up will retry."
-                sourceMessage = issue
+                if !automatic { sourceMessage = issue }
                 if doc.settings.automaticFX {
                     fxIssues = Dictionary(uniqueKeysWithValues: Set(doc.accounts.map(\.currency) + doc.entries.map(\.currency)).subtracting(["USD"]).map { ($0, issue) })
                 }

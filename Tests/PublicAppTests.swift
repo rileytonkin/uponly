@@ -1331,6 +1331,62 @@ struct AccountingPerformanceTests {
 }
 
 struct BackgroundRefreshTests {
+    @Test("Crypto and metals refresh hourly without advancing the bank schedule")
+    func independentSourceCadences() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000)
+        let schedule = BackgroundRefreshSchedule()
+        #expect(try await schedule.claim(vaultID: vault, root: root, now: now))
+        for source in ["crypto", "metals"] {
+            #expect(try await schedule.claim(vaultID: vault, root: root, source: source, now: now))
+            #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, root: root, source: source, now: now.addingTimeInterval(3599)))
+            #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, root: root, source: source, now: now.addingTimeInterval(3600)))
+        }
+        #expect(try await !schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(3600)))
+        #expect(try await schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(43200)))
+    }
+    @Test("Automatic bank attempts survive relaunch and become due after twelve hours")
+    func bankCadence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now))
+        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now.addingTimeInterval(60)))
+        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now.addingTimeInterval(43199)))
+        #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now.addingTimeInterval(43200)))
+        #expect(try await BackgroundRefreshSchedule().claim(vaultID: UUID(), root: root, now: now.addingTimeInterval(43201)))
+    }
+    @Test("Failed bank attempts stay visible without causing repeated automatic requests")
+    func failedBankCadence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule()
+        try await schedule.finish(vaultID: vault, root: root, failed: true, now: now)
+        #expect(await BackgroundRefreshSchedule().failed(vaultID: vault, root: root))
+        #expect(try await !schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(900)))
+        try await schedule.finish(vaultID: vault, root: root, failed: false, now: now.addingTimeInterval(1000))
+        #expect(await !schedule.failed(vaultID: vault, root: root))
+        #expect(try await !schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(43200)))
+        #expect(try await schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(-60)))
+    }
+    #if UPONLY_PERSONAL
+    @Test("Encrypted bank prefetch retains transactions and accepts older balance-only packets")
+    func bankActivities() throws {
+        var (doc, config) = pair(); doc.settings.automaticWise = true
+        let profile = WiseConfiguredProfile(id: 1, name: "Personal", bucket: .personal)
+        let activity = WiseActivity(id: "payment", type: "CARD_PAYMENT", title: "Sample payment", primaryAmount: "10 USD", status: "COMPLETED", createdOn: "2026-01-02T12:00:00Z")
+        let bank = BackgroundBankProfile(profile: profile, balances: [], activities: [activity])
+        let packet = BackgroundPacket(source: "banks", fetchedAt: Date(), banks: [bank])
+        let decoded = try BackgroundEnvelope.seal(packet, configuration: config).open(document: doc)
+        let updated = try BackgroundRefresh.applying(decoded, to: doc)
+        #expect(updated.entries.first?.sourceRef == "wise:1:payment")
+        #expect(updated.entries.first?.amount == 10)
+        #expect(try BackgroundRefresh.applying(decoded, to: updated) == updated)
+        let legacy = try JSONEncoder().encode(BackgroundBankProfile(profile: profile, balances: []))
+        #expect(try JSONDecoder().decode(BackgroundBankProfile.self, from: legacy).activities == nil)
+    }
+    #endif
     private func pair() -> (VaultDocument, BackgroundConfiguration) {
         let inbox = VaultCrypto.makeInboxKeyPair(), signing = VaultCrypto.makeSigningKeyPair()
         var doc = VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)

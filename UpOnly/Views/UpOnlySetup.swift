@@ -398,9 +398,9 @@ struct UpOnlySources: View {
                 Divider().opacity(0.5)
                 UpOnlyFlow(spacing: 12) {
                     Button { Task { await session.refreshWise() } } label: {
-                        Label(session.wiseRefreshing ? "Syncing Wise…" : "Sync now", systemImage: "arrow.clockwise")
+                        Label("Sync now", systemImage: "arrow.clockwise")
                     }.disabled(hasChanges || session.wiseRefreshing || session.isBusy || session.document?.settings.automaticWise != true)
-                    Text("Checks every 15 minutes in the background").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("Updates automatically every 12 hours").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 }
                 if let message = session.wiseMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }

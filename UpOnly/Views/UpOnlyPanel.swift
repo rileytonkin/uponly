@@ -301,39 +301,27 @@ private struct UpOnlyUnlockedPanel: View {
             }.frame(minHeight: 32)
         }
     }
-    private var wiseUpdating: Bool {
+    private var syncNeedsAttention: Bool {
+        if !session.backgroundIssues.isEmpty { return true }
         #if UPONLY_PERSONAL
-        return session.document?.settings.automaticWise == true && session.wiseRefreshing
-        #else
-        return false
-        #endif
-    }
-    private var wiseNeedsRetry: Bool {
-        #if UPONLY_PERSONAL
-        return session.document?.settings.automaticWise == true && session.wiseError != nil
+        return session.accountingError != nil || session.backgroundIssues.contains { $0 == "Accounting" || $0.hasSuffix(" accounting") }
+            || (session.document?.settings.automaticWise == true && (session.wiseError != nil || session.backgroundIssues.contains("Bank balances")))
         #else
         return false
         #endif
     }
     @ViewBuilder private var dataStatusButton: some View {
-        let needsAttention = session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true || wiseNeedsRetry
-        if needsAttention || wiseUpdating {
+        let needsAttention = session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true || syncNeedsAttention
+        if needsAttention {
             Button { manage("Needs attention") } label: {
-                ZStack(alignment: .topTrailing) {
-                    Group {
-                        if wiseUpdating { ProgressView().controlSize(.mini) }
-                        else { Image(systemName: "bell.badge").font(.system(size: 13, weight: .medium)) }
-                    }.frame(width: 16, height: 16)
-                    if wiseUpdating && needsAttention {
-                        Circle().fill(.orange).frame(width: 5, height: 5).offset(x: 3, y: -2)
-                    }
-                }.accessibilityHidden(true)
+                Image(systemName: "bell.badge").font(.system(size: 13, weight: .medium))
+                    .frame(width: 16, height: 16).accessibilityHidden(true)
             }.buttonStyle(UpOnlyToolbarButtonStyle())
                 .glassEffect(.regular, in: .circle)
-                .accessibilityLabel(needsAttention ? "Needs attention" : "Data status")
-                .accessibilityValue(wiseUpdating ? "Updating Wise" : wiseNeedsRetry ? "Wise needs a refresh" : "Missing information")
+                .accessibilityLabel("Needs attention")
+                .accessibilityValue(syncNeedsAttention ? "Saved data needs a refresh" : "Missing information")
                 .accessibilityIdentifier("DataAttention")
-                .help(wiseUpdating ? "Updating Wise. View data status." : wiseNeedsRetry ? "Wise needs a refresh. View data status." : "View missing information")
+                .help("View data status")
         }
     }
     private func destination(_ title: String, value: Int) -> some View {
@@ -569,15 +557,6 @@ private struct UpOnlyUnlockedPanel: View {
                     }
                 }.padding(.top, 10)
             }
-            #if UPONLY_PERSONAL
-            if detail != "personal" {
-            if session.accountingRefreshing { Text("Updating accounting…").font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 10) }
-            else if let error = session.accountingError {
-                HStack { Text(error).fixedSize(horizontal: false, vertical: true); Button("Retry") { Task { await session.refreshAccounting() } } }
-                    .font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 10)
-            }
-            }
-            #endif
         }
         .onChange(of: model.scope) { detail = nil }
     }

@@ -500,10 +500,20 @@ private struct UpOnlyDataAttention: View {
     }
     private var hasBankStatus: Bool {
         #if UPONLY_PERSONAL
-        return session.document?.settings.automaticWise == true && (session.wiseRefreshing || session.wiseError != nil)
+        return session.document?.settings.automaticWise == true && (session.wiseError != nil || session.backgroundIssues.contains("Bank balances"))
         #else
         return false
         #endif
+    }
+    private var hasAccountingStatus: Bool {
+        #if UPONLY_PERSONAL
+        return session.accountingError != nil || session.backgroundIssues.contains { $0 == "Accounting" || $0.hasSuffix(" accounting") }
+        #else
+        return false
+        #endif
+    }
+    private var hasPriceStatus: Bool {
+        session.backgroundIssues.contains { $0 != "Bank balances" && $0 != "Accounting" && !$0.hasSuffix(" accounting") }
     }
     var body: some View {
         let attention = report
@@ -513,19 +523,18 @@ private struct UpOnlyDataAttention: View {
                 #if UPONLY_PERSONAL
                 if hasBankStatus {
                     attentionCard("Wise", symbol: "arrow.triangle.2.circlepath") {
-                        if session.wiseRefreshing {
-                            HStack(spacing: 8) {
-                                ProgressView().controlSize(.small)
-                                Text("Updating accounts…").font(.system(size: 12)).foregroundStyle(.secondary)
-                            }
-                        } else if let error = session.wiseError {
-                            note(error)
-                            Button("Retry Wise") { Task { await session.refreshWise() } }.disabled(session.isBusy)
-                        }
+                        note(session.wiseError ?? "Wise could not refresh. Your saved balances and transactions are still available.")
+                        Button("Retry Wise") { Task { await session.refreshWise() } }.disabled(session.isBusy || session.wiseRefreshing)
+                    }
+                }
+                if hasAccountingStatus {
+                    attentionCard("Accounting", symbol: "doc.text") {
+                        note(session.accountingError ?? "Accounting could not refresh. Your saved results are still available.")
+                        Button("Retry accounting") { Task { await session.refreshAccounting() } }.disabled(session.isBusy || session.accountingRefreshing)
                     }
                 }
                 #endif
-                if attention.count == 0 && !hasBankStatus {
+                if attention.count == 0 && !hasBankStatus && !hasAccountingStatus && !hasPriceStatus {
                     Label("No known gaps in this view", systemImage: "checkmark.circle")
                         .font(.headline)
                     note("Up can only check the accounts and holdings you have added.")
@@ -555,8 +564,9 @@ private struct UpOnlyDataAttention: View {
                         }
                     }
                 }
-                if attention.pricesNeeded || !attention.accountingNames.isEmpty {
+                if attention.pricesNeeded || !attention.accountingNames.isEmpty || hasPriceStatus {
                     attentionCard("Sources need attention", symbol: "arrow.triangle.2.circlepath") {
+                        if hasPriceStatus { note("A background source could not refresh. Your saved values are still available.") }
                         if attention.pricesNeeded { note("Some prices or exchange rates are missing.") }
                         if !attention.accountingNames.isEmpty { note(attention.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                         Button("Review sources") { session.managementSection = "Sources" }
