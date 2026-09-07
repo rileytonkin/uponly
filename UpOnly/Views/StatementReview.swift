@@ -13,7 +13,7 @@ struct UpOnlyDateButton: View {
                 Image(systemName: "calendar").font(.system(size: 13))
                 Text(label).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-            }.foregroundStyle(Color.accentColor).padding(.vertical, 4).contentShape(Rectangle())
+            }.foregroundStyle(Color.accentColor).contentShape(Rectangle())
         }.buttonStyle(.bordered)
             .accessibilityLabel("Observation date").accessibilityValue(label)
             .popover(isPresented: $showingCalendar) {
@@ -609,22 +609,19 @@ struct UpOnlyImportView: View {
         }
     }
     private var inputActions: some View {
-        UpOnlyFlow {
-            Menu {
-                Button("Choose CSV files…") { prepareExternalInput(); Task { await session.chooseImportFiles() } }
-                Button("Download CSV template…") { Task { await session.saveImportTemplate() } }
-            } label: { Label("Import", systemImage: "doc.badge.plus") }
-                .menuStyle(.borderedButton).fixedSize().accessibilityLabel("Import CSV")
-            Button("Paste") {
+        Menu {
+            Button("Choose CSV files…") { prepareExternalInput(); Task { await session.chooseImportFiles() } }
+            Button("Paste from spreadsheet") {
                 guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { error = "Copy some spreadsheet cells first."; return }
                 prepareExternalInput(); Task { await session.pasteImport(text) }
-            }.accessibilityLabel("Paste from spreadsheet")
-            if let batch = session.importDraft, !batch.rows.isEmpty {
-                Spacer(minLength: 0)
-                Button(role: .destructive) { discard = true } label: { Image(systemName: "trash") }
-                    .accessibilityLabel("Discard draft")
             }
-        }.disabled(busy)
+            Button("Download CSV template…") { Task { await session.saveImportTemplate() } }
+            if let batch = session.importDraft, !batch.rows.isEmpty {
+                Divider()
+                Button("Discard draft…", role: .destructive) { discard = true }
+            }
+        } label: { Label("Import options", systemImage: "doc.badge.plus") }
+            .modifier(UpOnlyPillMenu()).accessibilityLabel("Import options").disabled(busy)
     }
     private func openMode(_ mode: ImportMode, bulk: Bool = false) {
         guard session.startImport(mode) else { return }; resetView()
@@ -712,9 +709,10 @@ struct UpOnlyImportView: View {
     }
     private func rowActions(_ batch: ImportBatchDraft) -> some View {
         UpOnlyFlow {
-            Button(selection.count == batch.rows.count ? "Clear selection" : "Select all rows") { selection = selection.count == batch.rows.count ? [] : Set(batch.rows.map(\.id)) }
-            if !selection.isEmpty {
-                Menu("Selected rows (\(selection.count))") {
+            Menu(selection.isEmpty ? "Select rows" : "Selected rows (\(selection.count))") {
+                Button(selection.count == batch.rows.count ? "Clear selection" : "Select all rows") { selection = selection.count == batch.rows.count ? [] : Set(batch.rows.map(\.id)) }
+                if !selection.isEmpty {
+                    Divider()
                     if batch.mode == .statements {
                         Button("Mark as Income") { editSelected { $0.statement.kind = .income } }
                         Button("Mark as Expense") { editSelected { $0.statement.kind = .expense } }

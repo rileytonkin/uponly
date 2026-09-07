@@ -219,7 +219,7 @@ struct UpOnlySetup: View {
                         }
                     }
                 }
-                Text("Choose at least one.").fixedSize(horizontal: false, vertical: true).font(.system(size: 11)).foregroundStyle(.secondary)
+                if tracked.isEmpty { Text("Choose at least one.").font(.system(size: 11)).foregroundStyle(.secondary) }
                 Button { Task { await continueSetup() } } label: {
                     Text("Continue").frame(maxWidth: .infinity)
                 }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction).disabled(tracked.isEmpty || session.isBusy)
