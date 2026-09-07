@@ -541,6 +541,29 @@ struct WiseInputTests {
         let source = try ImportParser.source(bytes: Data("Account,Currency,Balance,ObservedOn\nSample,USD,42,2026-01-02".utf8), filename: "example.csv", mode: .bankBalances)
         return ImportBatchDraft(mode: .bankBalances, sources: [source], rows: try ImportParser.rows(source: source, mode: .bankBalances))
     }
+    @Test("Statements accept CSV uploads and reject other files without changing the draft")
+    func statementsCSVOnly() async throws {
+        let (session, _, _) = harness()
+        await session.create(recovery: .random())
+        session.startImport(.statements)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let csv = directory.appendingPathComponent("statement.CSV")
+        try Data("TransactionID,Date,Description,Amount,Currency,Type\nsample,2026-01-02,Sample expense,12.50,USD,expense\n".utf8).write(to: csv)
+        await session.readImportFiles([csv])
+        #expect(session.importMessage == nil)
+        #expect(session.importDraft?.rows.count == 1)
+        let draft = try #require(session.importDraft)
+        #expect(draft.sources.count == 1 && draft.sources[0].filename == "statement.CSV")
+        #expect(!draft.sources[0].grid.isEmpty)
+        await session.readImportFiles([csv, directory.appendingPathComponent("statement.tsv")])
+        #expect(session.importMessage == "Choose CSV files for statements.")
+        #expect(session.importDraft?.rows.map(\.id) == draft.rows.map(\.id))
+        #expect(session.importDraft?.sources.map(\.id) == draft.sources.map(\.id))
+        #expect(session.importDraft?.rows.first?.statement.amount == "12.50" && !session.importLoading)
+        #expect(session.document?.entries.isEmpty == true)
+    }
     @Test("Setup completes with one generation and correct navigation")
     func setup() async throws {
         let (session, _, _) = harness()

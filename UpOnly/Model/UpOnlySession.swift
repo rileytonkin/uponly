@@ -487,7 +487,7 @@ final class UpOnlySession {
         guard state == .unlocked, !importLoading else { return }
         pickerDepth += 1; defer { pickerFinished() }
         let token = sessionToken
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
+        let panel = NSOpenPanel(); panel.allowedContentTypes = importDraft?.mode == .statements ? [.commaSeparatedText] : [.commaSeparatedText, .tabSeparatedText, .plainText]
         panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
         guard await panel.begin() == .OK, token == sessionToken else { return }
         await readImportFiles(panel.urls)
@@ -496,6 +496,10 @@ final class UpOnlySession {
         guard state == .unlocked, !importLoading else { return }
         if importDraft == nil { startImport(importMode) }
         guard let draft = importDraft else { return }
+        if draft.mode == .statements, urls.contains(where: { $0.pathExtension.lowercased() != "csv" }) {
+            importMessage = "Choose CSV files for statements."
+            return
+        }
         let token = sessionToken, revision = UUID(); importRevision = revision
         importLoading = true; importMessage = "Reading files…"
         let task = Task.detached(priority: .userInitiated) { () throws -> ImportBatchDraft in
