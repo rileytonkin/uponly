@@ -274,17 +274,17 @@ nonisolated enum PriceHistory {
     }
 }
 extension PublicPrices {
-    static func update(document: VaultDocument, now: Date = Date(), reconnected: Bool = false) async throws -> PriceUpdate {
+    static func update(document: VaultDocument, now: Date = Date(), reconnected: Bool = false, includeCurrent: Bool = true) async throws -> PriceUpdate {
         var result = PriceUpdate()
         let active = document.holdings.filter { $0.isActive(at: now) && document.portfolio(id: $0.portfolioID)?.isActive(at: now) == true }
         let crypto = active.filter { PreciousMetal.asset($0.assetID) == nil }.map { $0.assetID.rawValue }
         let metals = Set(active.compactMap { PreciousMetal.asset($0.assetID) })
         func message(_ error: Error) -> String { (error as? PriceError)?.localizedDescription ?? "A price source is unavailable. Missing history will be retried." }
-        if document.settings.automaticPrices && !crypto.isEmpty {
+        if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
             do { result.quotes += try await quotes(ids: crypto, key: document.settings.coinGeckoKey) }
             catch { try Task.checkCancellation(); result.messages.append(message(error)) }
         }
-        if document.settings.automaticMetals {
+        if includeCurrent && document.settings.automaticMetals {
             for metal in metals.sorted(by: { $0.rawValue < $1.rawValue }) {
                 do {
                     try await Task.sleep(for: .seconds(1.1))
@@ -294,7 +294,7 @@ extension PublicPrices {
             }
             if !metals.isEmpty && document.settings.metalHistoryKey.isEmpty { result.messages.append("Add a free Gold API key in Sources to recover metal price history after time offline.") }
         }
-        if document.settings.automaticFX {
+        if includeCurrent && document.settings.automaticFX {
             do {
                 let update = try await fx(currencies: Set(document.accounts.map(\.currency) + document.entries.map(\.currency)))
                 result.rates += update.rates; result.messages += update.messages; result.fxIssues = update.fxIssues
@@ -392,8 +392,8 @@ nonisolated struct WiseBalance: Codable, Sendable {
     var currency: String
     var amount: WiseAmount
 }
-nonisolated struct WiseActivity: Decodable, Sendable {
-    struct Resource: Decodable, Sendable { var type: String; var id: String }
+nonisolated struct WiseActivity: Codable, Sendable {
+    struct Resource: Codable, Sendable { var type: String; var id: String }
     var id: String
     var type: String
     var resource: Resource?

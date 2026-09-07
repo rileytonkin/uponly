@@ -14,4 +14,6 @@ The synthetic vault-unlock/dashboard benchmark previously improved from 14.2 sec
 
 Real unlock diagnostics are opt-in (`UPONLY_MEASURE_UNLOCK=1`). They record only elapsed phase timings, using the macOS authentication-success callback and completion of the first AppKit menu display. Physical monitor scan-out is outside the measurement. See the README for the diagnostic file location and privacy scope.
 
+The quiet-refresh follow-up passed 31 targeted public/private checks for source scheduling, encrypted bank activities, Wise imports and historical FX, plus eight focused status-view checks. Crypto/metals use independent hourly schedules and Wise uses a 12-hour schedule; reopening the menu does not bypass them. Routine refreshes do not add dashboard progress indicators or rows. Idle, refreshing and error states retained the same dashboard dimensions; errors and retry actions open through Data status.
+
 Build and visual evidence, source transfer hashes, recovery transcripts and local installation records are retained in the workspace's ignored `.context` directory. Financial data, credentials, private source mappings and personal profile artwork are local vault/Keychain configuration, not repository contents. Synthetic preview and source-verification switches compile out of the installed app.
