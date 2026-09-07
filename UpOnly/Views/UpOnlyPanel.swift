@@ -232,42 +232,17 @@ private struct UpOnlyUnlockedPanel: View {
     }
     var body: some View {
         VStack(spacing: 0) {
+            navigationHeader.padding(.top, 14).padding(.bottom, 18)
             HStack(spacing: 8) {
                 periodSelector
                 Spacer(minLength: 0)
-                if detail == nil && companySelection == nil {
-                GlassEffectContainer {
-                HStack(spacing: 0) {
-                    Button { manage("Manage") } label: {
-                        Image(systemName: "slider.horizontal.3").frame(width: 16, height: 16)
-                    }.buttonStyle(UpOnlyToolbarButtonStyle())
-                        .help("Add and manage").accessibilityLabel("Add and manage").accessibilityIdentifier("ManageUpOnly")
-                    Divider().frame(height: 13)
-                    UpOnlyPrivacyButton()
-                    Divider().frame(height: 13)
-                    Button { session.lockAndAuthenticate() } label: { Image(systemName: "lock").frame(width: 16, height: 16) }
-                        .buttonStyle(UpOnlyToolbarButtonStyle()).help("Lock Up Only (⌘L)").keyboardShortcut("l", modifiers: .command).accessibilityLabel("Lock Up Only")
-                }.font(.system(size: 13, weight: .medium))
-                    .glassEffect(.regular, in: .capsule)
-                }
-                }
-            }.padding(.top, 14).padding(.bottom, 18)
-            if companySelection == nil && detail == nil {
-                HStack(spacing: 8) {
-                    if shows(.cashFlow) && showsNetWorth {
-                        Picker("Dashboard section", selection: Binding(get: { session.destination }, set: { session.destination = $0; detail = nil })) {
-                            Text("Performance").tag(0)
-                            Text("Net worth").tag(1)
-                        }.pickerStyle(.segmented).controlSize(.small).font(.system(size: 12)).labelsHidden().frame(width: 178)
-                    } else if shows(.cashFlow) { destination("Performance", value: 0) }
-                    else if showsNetWorth { destination("Net worth", value: 1) }
-                    Spacer(minLength: 0)
+                if detail == nil, companySelection == nil, selectedPortfolio == nil {
                     if hasData { dataStatusButton }
                     if hasData, session.destination == 0, !model.books.isEmpty { performanceScopeSelector }
                     else if hasData, session.destination == 1, showsNetWorth,
                             (session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) }.count ?? 0) + (shows(.banks) ? 1 : 0) > 1 { worthScopeSelector }
-                }.frame(minHeight: 32).padding(.bottom, 16)
-            }
+                }
+            }.frame(minHeight: 32).padding(.bottom, 16)
             if let companySelection { companyContent(companySelection) }
             else if !hasData, shows(.cashFlow) || showsNetWorth { firstDataContent }
             else if session.destination == 0 && shows(.cashFlow) { monthContent }
@@ -288,6 +263,42 @@ private struct UpOnlyUnlockedPanel: View {
         .onChange(of: session.document?.settings.tracked) { _, _ in scope = .allTracked; detail = nil }
         .onChange(of: session.document?.portfolios) { _, _ in
             if case .portfolio(let id) = scope, session.document?.portfolio(id: id)?.isArchived != false { scope = .allTracked }
+        }
+    }
+    @ViewBuilder private var navigationHeader: some View {
+        if let selection = companySelection {
+            UpOnlyPageHeader(title: model.books.first { $0.id == selection.group.businessID }?.name ?? selection.group.name,
+                             backLabel: "Back to net worth", profileImage: selection.group.image) {
+                model.selectScope(selection.previousScope); companySelection = nil
+            }
+        } else if let portfolio = selectedPortfolio {
+            UpOnlyPageHeader(title: portfolio.name, backLabel: "Back to net worth") { scope = .allTracked }
+        } else if let detail {
+            UpOnlyPageHeader(title: detail == "personal" ? "Personal" : selectedBusiness?.book.name ?? "Company",
+                             backLabel: "Back to performance overview") { self.detail = nil }
+        } else {
+            HStack(spacing: 8) {
+                if shows(.cashFlow) && showsNetWorth {
+                    Picker("Dashboard section", selection: Binding(get: { session.destination }, set: { session.destination = $0; detail = nil })) {
+                        Text("Performance").tag(0)
+                        Text("Net worth").tag(1)
+                    }.pickerStyle(.segmented).controlSize(.small).font(.system(size: 12)).labelsHidden().frame(width: 178)
+                } else if shows(.cashFlow) { destination("Performance", value: 0) }
+                else if showsNetWorth { destination("Net worth", value: 1) }
+                Spacer(minLength: 0)
+                GlassEffectContainer {
+                    HStack(spacing: 0) {
+                        Button { manage("Manage") } label: { Image(systemName: "slider.horizontal.3").frame(width: 16, height: 16) }
+                            .buttonStyle(UpOnlyToolbarButtonStyle())
+                            .help("Add and manage").accessibilityLabel("Add and manage").accessibilityIdentifier("ManageUpOnly")
+                        Divider().frame(height: 13)
+                        UpOnlyPrivacyButton()
+                        Divider().frame(height: 13)
+                        Button { session.lockAndAuthenticate() } label: { Image(systemName: "lock").frame(width: 16, height: 16) }
+                            .buttonStyle(UpOnlyToolbarButtonStyle()).help("Lock Up Only (⌘L)").keyboardShortcut("l", modifiers: .command).accessibilityLabel("Lock Up Only")
+                    }.font(.system(size: 13, weight: .medium)).glassEffect(.regular, in: .capsule)
+                }
+            }.frame(minHeight: 32)
         }
     }
     private var wiseUpdating: Bool {
@@ -496,10 +507,6 @@ private struct UpOnlyUnlockedPanel: View {
     }
     private var monthContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let detail {
-                UpOnlyPageHeader(title: detail == "personal" ? "Personal" : selectedBusiness?.book.name ?? "Company", backLabel: "Back to performance overview") { self.detail = nil }
-                    .padding(.bottom, 12)
-            }
             if detail == "personal" {
                 personalContent
             } else if let row = selectedBusiness {
@@ -724,21 +731,50 @@ private struct UpOnlyUnlockedPanel: View {
                             }.padding(.vertical, 3)
                         }.buttonStyle(.bordered)
                     }
-                } else if case .portfolio = scope {
-                    ForEach(valuation?.components ?? [], id: \.id) { component in
-                        UpOnlyValueRow(label: component.label, value: component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"))
-                            .padding(.vertical, 5)
-                    }
+                } else if let portfolio = selectedPortfolio, !(valuation?.components.isEmpty ?? true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Holdings").font(.system(size: 12, weight: .semibold))
+                            Spacer()
+                            Button(portfolio.kind == .metals ? "Update weights" : "Update holdings") {
+                                if session.startImport(portfolio.kind == .metals ? .metals : .holdings, prefill: true, portfolioID: portfolio.id) { session.addingInMenu = true }
+                            }.buttonStyle(.bordered).controlSize(.small)
+                        }
+                        ForEach(valuation?.components ?? [], id: \.id) { component in
+                            Divider().opacity(0.5)
+                            UpOnlyValueRow(label: component.label, value: component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"), primaryLabel: true)
+                        }
+                    }.padding(12).modifier(UpOnlyContentSurface())
                 }
             }.padding(.top, 14)
             if valuation?.isUnavailable ?? true {
-                Text(shows(.banks) && !isPortfolioScope ? "Add a bank balance to start your history." : "Add a holding and its quantity to start your history.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button(worthEmptyTitle) {
-                    session.startImport(shows(.banks) ? .bankBalances : shows(.crypto) ? .holdings : .metals)
-                    session.addingInMenu = true
-                }.buttonStyle(.bordered).font(.system(size: 12)).padding(.top, 12)
+                worthEmptyState
             }
         }
+    }
+    private var worthEmptyState: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                UpOnlySymbolBadge(symbol: selectedPortfolio?.kind == .metals ? TrackedKind.metals.symbol : "chart.line.uptrend.xyaxis", tint: UpOnlyTint.netWorth, size: 30)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("No value recorded").font(.system(size: 15, weight: .semibold))
+                    Text("No balances or holdings for this period.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            HStack(spacing: 8) {
+                Button(selectedPortfolio?.kind == .metals ? "Add gold or silver" : selectedPortfolio != nil ? "Add holding" : "Add assets") {
+                    if let portfolio = selectedPortfolio {
+                        guard session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id) else { return }
+                    }
+                    session.addingInMenu = true
+                }.buttonStyle(.glassProminent)
+                if selectedInterval.end < Date(), let document = session.document,
+                   AssetOwnership.personalValue(at: Date(), scope: scope, document: document).total != nil {
+                    Button("Latest") { model.selectPeriod(.monthly); model.select(.current()) }.buttonStyle(.bordered)
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(14).modifier(UpOnlyContentSurface())
     }
     private func bankGroups(_ valuation: ValuationResult?) -> [BankBalanceGroup] {
         guard let document = session.document else { return [] }
@@ -764,15 +800,6 @@ private struct UpOnlyUnlockedPanel: View {
         let portfolios = document?.portfolios.filter { $0.isActive(at: selectedInterval.end) && $0.ownerBusinessID == companyID } ?? []
         let book = model.books.first { $0.id == companyID }
         return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Button {
-                    model.selectScope(selection.previousScope); companySelection = nil
-                } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.glass).controlSize(.small).accessibilityLabel("Back to net worth")
-                if let image = selection.group.image { UpOnlyProfileImage(data: image, name: selection.group.name, size: 24) }
-                Text(book?.name ?? selection.group.name).font(.headline)
-                Spacer(minLength: 0)
-            }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Bank balance · USD").font(.system(size: 11)).foregroundStyle(.secondary)
                 if !bankValues.isEmpty, let total = AssetOwnership.sum(bankValues) { UpOnlyAmount(value: total) }
@@ -828,10 +855,12 @@ private struct UpOnlyUnlockedPanel: View {
         let valuation = session.document.map { NetWorthCalculator.value(at: selectedInterval.end, scope: .portfolio(portfolio.id), document: $0) }
         return UpOnlyValueRow(label: portfolio.name, value: valuation?.total.map(UpOnlyFormat.exactMoney) ?? "Review holdings", chevron: true, primaryLabel: true)
     }
-    private var isPortfolioScope: Bool { if case .portfolio = scope { return true }; return false }
+    private var selectedPortfolio: Portfolio? {
+        guard session.destination == 1, case .portfolio(let id) = scope else { return nil }
+        return session.document?.portfolio(id: id)
+    }
     private var showsHoldings: Bool { session.document?.showsHoldings == true }
     private var allScopeTitle: String { "All assets" }
-    private var worthEmptyTitle: String { shows(.banks) && showsHoldings ? "Add your balances" : shows(.crypto) ? "Add your first crypto holdings" : shows(.metals) ? "Add your first precious metals" : "Add your first bank balance" }
     private var scopeTitle: String {
         switch scope {
         case .allTracked: allScopeTitle
@@ -846,8 +875,7 @@ private struct UpOnlyUnlockedPanel: View {
         }.buttonStyle(.bordered)
     }
     private var worthCaption: String {
-        guard let result else { return worthEmptyTitle }
-        if result.isUnavailable { return worthEmptyTitle }
+        guard let result, !result.isUnavailable else { return "No value recorded" }
         if result.total == nil {
             if let last = result.lastComplete { return "Needs update · Last complete " + last.at.formatted(date: .abbreviated, time: .omitted) }
             return "Needs update · Some balances or prices are missing"

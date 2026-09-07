@@ -266,19 +266,26 @@ private struct UpOnlyManagementContent: View {
             }
             if let doc = session.document {
                 ForEach(doc.portfolios.filter { !$0.isArchived && $0.kind == .metals }) { portfolio in
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text(portfolio.name).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 12)
-                            Button(editingPortfolio == portfolio.id ? "Done" : "Edit") {
-                                editingPortfolio = editingPortfolio == portfolio.id ? nil : portfolio.id
-                            }.accessibilityLabel("Edit " + portfolio.name)
-                        }
-                        if editingPortfolio == portfolio.id {
-                            portfolioOwner(portfolio)
-                            Button("Archive collection…", role: .destructive) { archive = portfolio }
+                            Menu {
+                                Button("Update weights") { session.startImport(.metals, prefill: true, portfolioID: portfolio.id) }
+                                Menu("Owner") {
+                                    Button("Personal") { setPortfolioOwner(portfolio, owner: nil) }
+                                    ForEach(doc.businessAccounting ?? []) { book in
+                                        Button(book.name) { setPortfolioOwner(portfolio, owner: book.id) }
+                                    }
+                                }
+                                Divider()
+                                Button("Archive collection…", role: .destructive) { archive = portfolio }
+                            } label: { Text("Edit") }
+                                .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize()
+                                .accessibilityLabel("Edit " + portfolio.name)
                         }
                         ForEach(doc.activeHoldings(in: portfolio.id, at: Date())) { holding in
+                            Divider().opacity(0.5)
                             HStack {
                                 Text(holding.assetName).fixedSize(horizontal: false, vertical: true)
                                 Spacer()
@@ -286,10 +293,7 @@ private struct UpOnlyManagementContent: View {
                                     .monospacedDigit().fixedSize(horizontal: false, vertical: true)
                             }.font(.system(size: 13))
                         }
-                        UpOnlyFlow {
-                            Button("Update weights") { session.startImport(.metals, prefill: true, portfolioID: portfolio.id) }.buttonStyle(.bordered)
-                        }
-                    }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
+                    }.padding(12).modifier(UpOnlyContentSurface())
                 }
                 ForEach(PreciousMetal.allCases.filter { metal in doc.holdings.contains { $0.assetID == metal.assetID && $0.isActive(at: Date()) && doc.portfolio(id: $0.portfolioID)?.isActive(at: Date()) == true } }, id: \.self) { metal in
                     DisclosureGroup(metal.name + " price history") {
@@ -301,10 +305,13 @@ private struct UpOnlyManagementContent: View {
     }
     private func portfolioOwner(_ portfolio: Portfolio) -> some View {
         UpOnlyOwnerPicker(owner: Binding(get: { portfolio.ownerBusinessID }, set: { owner in
-            Task { await session.perform { doc in
-                if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].ownerBusinessID = owner }
-            } }
+            setPortfolioOwner(portfolio, owner: owner)
         })).disabled(session.isBusy)
+    }
+    private func setPortfolioOwner(_ portfolio: Portfolio, owner: String?) {
+        Task { await session.perform { doc in
+            if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].ownerBusinessID = owner }
+        } }
     }
     private var portfolios: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -351,7 +358,7 @@ private struct UpOnlyManagementContent: View {
         let matching = filteredEntries
         let visible = Array(matching.prefix(entryLimit))
         let groups = Dictionary(grouping: visible, by: \.month)
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -386,11 +393,15 @@ private struct UpOnlyManagementContent: View {
             } else {
                 ForEach(groups.keys.sorted(by: >), id: \.self) { month in
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(MonthKey(month)?.title ?? month).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 8)
-                        ForEach(groups[month] ?? []) { entry in
-                            transactionRow(entry)
-                            if entry.id != groups[month]?.last?.id { Divider().opacity(0.5) }
-                        }
+                        Text(MonthKey(month)?.title ?? month).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                            .padding(.leading, 10).padding(.bottom, 6)
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(groups[month] ?? []) { entry in
+                                transactionRow(entry)
+                                if entry.id != groups[month]?.last?.id { Divider().opacity(0.5) }
+                            }
+                        }.padding(.horizontal, 10).padding(.vertical, 2)
+                            .modifier(UpOnlyContentSurface())
                     }
                 }
                 if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.bordered) }
@@ -398,27 +409,39 @@ private struct UpOnlyManagementContent: View {
         }
     }
     private func transactionRow(_ entry: Entry) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-        HStack(alignment: .top, spacing: 12) {
-            UpOnlySymbolBadge(symbol: entry.kind == .income ? "arrow.down.left" : entry.kind == .expense ? "arrow.up.right" : "arrow.left.arrow.right", tint: entry.kind == .income ? UpOnlyTint.cashFlow : .secondary, size: 30)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.label).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                if entry.kind == .transfer { Text("Transfer").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+        VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.label).font(.system(size: 13, weight: .medium))
+                        .lineLimit(2).help(entry.label)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    UpOnlyPrivateText((entry.kind == .expense ? "−" : entry.kind == .income ? "+" : "") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency))
+                        .font(.system(size: 13, weight: .medium).monospacedDigit())
+                        .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : .primary)
+                        .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
+                }
+                HStack(spacing: 4) {
+                    Text(entry.currency)
+                    if entry.kind == .transfer { Text("· Transfer") }
                 #if UPONLY_PERSONAL
                 if entry.source == .wise, let profileID = entry.sourceRef?.split(separator: ":").dropFirst().first,
                    let profile = session.wiseProfiles.first(where: { String($0.id) == profileID }) {
-                    HStack(spacing: 6) { UpOnlyProfileImage(data: profile.image, name: profile.name, size: 18); Text(profile.name).font(.system(size: 11)).foregroundStyle(.secondary) }
+                    Text("·")
+                    Text(profile.name).lineLimit(1).help(profile.name)
                 }
                 #endif
+                }.font(.system(size: 11)).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .trailing, spacing: 4) {
-                UpOnlyPrivateText((entry.kind == .expense ? "−" : entry.kind == .income ? "+" : "") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency))
-                    .font(.system(size: 14, weight: .medium).monospacedDigit()).foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : .primary).fixedSize(horizontal: false, vertical: true)
-                Text(entry.currency).font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            Button(editingEntry == entry.id ? "Done" : "Edit") {
+            Button {
                 editingEntry = editingEntry == entry.id ? nil : entry.id
-            }.accessibilityLabel("Edit " + entry.label)
+            } label: {
+                Image(systemName: editingEntry == entry.id ? "checkmark" : "pencil")
+                    .frame(width: 12, height: 16)
+            }.buttonStyle(.bordered).controlSize(.small)
+                .help(editingEntry == entry.id ? "Done editing" : "Edit transaction")
+                .accessibilityLabel("Edit " + entry.label)
+                .accessibilityValue(editingEntry == entry.id ? "Editing" : "")
         }
         if editingEntry == entry.id {
             Picker("Transaction type", selection: Binding(get: { entry.kind }, set: { reclassify(entry, as: $0) })) {
@@ -430,7 +453,7 @@ private struct UpOnlyManagementContent: View {
                 Button("Remove entry…", role: .destructive) { entryToRemove = entry }
             }
         }
-        }.padding(.vertical, 12)
+        }.padding(.vertical, 6)
     }
     private func reclassify(_ entry: Entry, as kind: EntryKind) {
         Task { await session.perform { doc in

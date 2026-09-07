@@ -11,11 +11,13 @@ enum UpOnlyLayout {
 struct UpOnlyPageHeader: View {
     let title: String
     var backLabel = "Back"
+    var profileImage: Data?
     let back: () -> Void
     var body: some View {
         HStack(spacing: 12) {
             Button(action: back) { Label("Back", systemImage: "chevron.left") }
                 .buttonStyle(.glass).accessibilityLabel(backLabel)
+            if let profileImage { UpOnlyProfileImage(data: profileImage, name: title, size: 24) }
             Text(title).font(.system(size: 14, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
