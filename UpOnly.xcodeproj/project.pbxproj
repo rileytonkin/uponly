@@ -57,6 +57,16 @@
 		EC4B64B397855211A36ECE69 /* CSVReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = D180EDF0610BC67774AB7415 /* CSVReader.swift */; };
 		F2365B36E18D55F729195236 /* Ledger.swift in Sources */ = {isa = PBXBuildFile; fileRef = E507EAC3074AC2B97A73DD43 /* Ledger.swift */; };
 		F8AD9C29BFF283EB9D97265F /* MonthKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 958DD98DBE39E2BEF1639434 /* MonthKey.swift */; };
+		CDA41EC98958A816FF718697 /* UpOnlyWordmark.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */; };
+		21CB9CEDED02E71D94DF7CFE /* UpOnlyWordmark.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */; };
+		EB6F657D1DB867F45E7E55FA /* UpOnlyWordmarkLight.pdf in Resources */ = {isa = PBXBuildFile; fileRef = A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */; };
+		200A64E089B9FF1C247B187B /* UpOnlyWordmarkLight.pdf in Resources */ = {isa = PBXBuildFile; fileRef = A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */; };
+		19FCCCF32A0CADDF1BA5CA9A /* UpOnlyStatus.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */; };
+		8531F2D29BDD34E4C9056800 /* UpOnlyStatus.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */; };
+		ACCF10000000000000000002 /* BusinessAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF10000000000000000001 /* BusinessAccounting.swift */; };
+		ACCF10000000000000000003 /* BusinessAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF10000000000000000001 /* BusinessAccounting.swift */; };
+		ACCF20000000000000000002 /* BackgroundRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF20000000000000000001 /* BackgroundRefresh.swift */; };
+		ACCF20000000000000000003 /* BackgroundRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF20000000000000000001 /* BackgroundRefresh.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -74,7 +84,7 @@
 		0A7A55B23DFF557FE2C7E1D4 /* VaultStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VaultStoreTests.swift; sourceTree = "<group>"; };
 		11C08C503E9A3A8F6D2A5E6F /* PublicAppTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PublicAppTests.swift; sourceTree = "<group>"; };
 		126BDC3C9A4A1979B2C758AA /* PopoverModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PopoverModel.swift; path = Model/PopoverModel.swift; sourceTree = "<group>"; };
-		15329A954164ED55D99396ED /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
+		15329A954164ED55D99396ED /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		1A96F7B1FE84B960918B4DF7 /* NetWorthCalculator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NetWorthCalculator.swift; path = Model/NetWorthCalculator.swift; sourceTree = "<group>"; };
 		1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PublicPrices.swift; path = Ingest/PublicPrices.swift; sourceTree = "<group>"; };
 		25507AF43A97D41B240765B2 /* VaultTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VaultTypes.swift; path = Security/VaultTypes.swift; sourceTree = "<group>"; };
@@ -100,6 +110,11 @@
 		E026F1FCD21F5DE102BF4E3C /* VaultCrypto.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VaultCrypto.swift; path = Security/VaultCrypto.swift; sourceTree = "<group>"; };
 		E176ABBBFCE9A2BAD8326050 /* UpOnlyFixture.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyFixture.swift; path = Model/UpOnlyFixture.swift; sourceTree = "<group>"; };
 		E507EAC3074AC2B97A73DD43 /* Ledger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Ledger.swift; path = Model/Ledger.swift; sourceTree = "<group>"; };
+		4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; name = UpOnlyWordmark.pdf; path = Resources/UpOnlyWordmark.pdf; sourceTree = "<group>"; };
+		A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; name = UpOnlyWordmarkLight.pdf; path = Resources/UpOnlyWordmarkLight.pdf; sourceTree = "<group>"; };
+		6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; name = UpOnlyStatus.pdf; path = Resources/UpOnlyStatus.pdf; sourceTree = "<group>"; };
+		ACCF10000000000000000001 /* BusinessAccounting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BusinessAccounting.swift; path = Model/BusinessAccounting.swift; sourceTree = "<group>"; };
+		ACCF20000000000000000001 /* BackgroundRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BackgroundRefresh.swift; path = Ingest/BackgroundRefresh.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -151,10 +166,15 @@
 		6C748F260DA855563EC38B19 /* UpOnly */ = {
 			isa = PBXGroup;
 			children = (
+				4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */,
+				A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */,
+				6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */,
 				4300C3E4D76D618517D899CD /* Config.swift */,
 				D180EDF0610BC67774AB7415 /* CSVReader.swift */,
 				1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */,
 				E507EAC3074AC2B97A73DD43 /* Ledger.swift */,
+				ACCF10000000000000000001 /* BusinessAccounting.swift */,
+				ACCF20000000000000000001 /* BackgroundRefresh.swift */,
 				958DD98DBE39E2BEF1639434 /* MonthKey.swift */,
 				1A96F7B1FE84B960918B4DF7 /* NetWorthCalculator.swift */,
 				126BDC3C9A4A1979B2C758AA /* PopoverModel.swift */,
@@ -305,6 +325,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				8531F2D29BDD34E4C9056800 /* UpOnlyStatus.pdf in Resources */,
+				200A64E089B9FF1C247B187B /* UpOnlyWordmarkLight.pdf in Resources */,
+				21CB9CEDED02E71D94DF7CFE /* UpOnlyWordmark.pdf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -312,6 +335,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				19FCCCF32A0CADDF1BA5CA9A /* UpOnlyStatus.pdf in Resources */,
+				EB6F657D1DB867F45E7E55FA /* UpOnlyWordmarkLight.pdf in Resources */,
+				CDA41EC98958A816FF718697 /* UpOnlyWordmark.pdf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -326,6 +352,8 @@
 				6BD73C030333610D235627A6 /* CSVReader.swift in Sources */,
 				13D67285E7EEA4233526A25D /* PublicPrices.swift in Sources */,
 				647D7514013E30025118C430 /* Ledger.swift in Sources */,
+				ACCF10000000000000000002 /* BusinessAccounting.swift in Sources */,
+				ACCF20000000000000000002 /* BackgroundRefresh.swift in Sources */,
 				F8AD9C29BFF283EB9D97265F /* MonthKey.swift in Sources */,
 				DE6608A0C1C8539CB3E6DE2D /* NetWorthCalculator.swift in Sources */,
 				1AB0F7656EAC5C19E47DB328 /* PopoverModel.swift in Sources */,
@@ -365,6 +393,8 @@
 				EC4B64B397855211A36ECE69 /* CSVReader.swift in Sources */,
 				1F26FED116CE862F792D0F56 /* PublicPrices.swift in Sources */,
 				F2365B36E18D55F729195236 /* Ledger.swift in Sources */,
+				ACCF10000000000000000003 /* BusinessAccounting.swift in Sources */,
+				ACCF20000000000000000003 /* BackgroundRefresh.swift in Sources */,
 				CD2EE9B5B6CB336328D0AF8A /* MonthKey.swift in Sources */,
 				A6F3101AD0A24AA094AAE960 /* NetWorthCalculator.swift in Sources */,
 				0551FD5B53556BD683780365 /* PopoverModel.swift in Sources */,
@@ -405,7 +435,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.uponly.tests;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.0;
@@ -472,7 +502,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = UpOnly/UpOnly.entitlements;
+				CODE_SIGN_ENTITLEMENTS = UpOnly/UpOnlyFixture.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -484,7 +514,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.uponly.preview;
 				PRODUCT_MODULE_NAME = UpOnly;
@@ -503,7 +533,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = UpOnly/UpOnly.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -514,7 +544,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.uponly.app;
 				PRODUCT_MODULE_NAME = UpOnly;
@@ -531,7 +561,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = UpOnly/UpOnly.entitlements;
+				CODE_SIGN_ENTITLEMENTS = UpOnly/UpOnlyFixture.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -543,7 +573,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.uponly.preview;
 				PRODUCT_MODULE_NAME = UpOnly;
@@ -562,7 +592,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = UpOnly/UpOnly.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -573,7 +603,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.uponly.app;
 				PRODUCT_MODULE_NAME = UpOnly;
@@ -592,7 +622,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.uponly.tests;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.0;

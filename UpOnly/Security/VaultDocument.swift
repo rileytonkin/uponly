@@ -27,6 +27,10 @@ struct VaultDocument: Codable, Sendable, Equatable {
     var settings: AppSettings = AppSettings()
     var importedStatements: [ImportedStatement] = []
     var reviewedMonths: [String] = []
+    var priceHistoryCoverage: [PriceHistoryCoverage]?
+    var businessAccounting: [BusinessBook]?
+    var backgroundSignerPublicKey: Data?
+    var backgroundAppliedAt: [String: Date]?
 
     static func empty(
         vaultID: UUID = UUID(),

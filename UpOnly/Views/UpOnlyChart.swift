@@ -1,108 +1,245 @@
 import SwiftUI
 
-struct UpOnlyChartPoint: Identifiable {
+struct UpOnlyChartPoint: Identifiable, Equatable {
     var id: String
     var label: String
     var value: Decimal?
     var provisional = false
+    var detailLabel: String?
+}
+
+/// Rendering-only scale. Exact money stays Decimal in the ledger and tooltip.
+nonisolated struct UpOnlyChartScale {
+    var lower: Double
+    var upper: Double
+    var ticks: [Double]
+    init(values: [Decimal], includesZero: Bool) {
+        let values = values.map { NSDecimalNumber(decimal: $0).doubleValue }.filter(\.isFinite)
+        guard let minimum = values.min(), let maximum = values.max() else {
+            lower = 0; upper = 1; ticks = [0, 0.5, 1]; return
+        }
+        var low = includesZero ? min(0, minimum) : minimum
+        var high = includesZero ? max(0, maximum) : maximum
+        let minimumSpan = max(max(abs(low), abs(high)) * 0.04, 0.01)
+        if high - low < minimumSpan {
+            let midpoint = (low + high) / 2
+            low = includesZero && low == 0 ? 0 : midpoint - minimumSpan / 2
+            high = midpoint + minimumSpan / 2
+        }
+        let raw = (high - low) / 2
+        let magnitude = pow(10, floor(log10(raw)))
+        let normalized = raw / magnitude
+        let nice = [1.0, 2, 2.5, 5, 10].first { $0 >= normalized } ?? 10
+        let step = nice * magnitude
+        lower = floor(low / step) * step; upper = ceil(high / step) * step
+        let count = min(6, Int(((upper - lower) / step).rounded()) + 1)
+        let first = lower
+        let allTicks = (0..<count).map { first + Double($0) * step }
+        ticks = allTicks.count > 3 ? [lower, (lower + upper) / 2, upper] : allTicks
+    }
+    func fraction(_ value: Decimal) -> Double {
+        (NSDecimalNumber(decimal: value).doubleValue - lower) / (upper - lower)
+    }
+    static func label(_ value: Double) -> String {
+        let magnitude = abs(value)
+        let divisor: Double = magnitude >= 1_000_000_000 ? 1_000_000_000 : magnitude >= 1_000_000 ? 1_000_000 : magnitude >= 1_000 ? 1_000 : 1
+        let suffix = divisor == 1_000_000_000 ? "B" : divisor == 1_000_000 ? "M" : divisor == 1_000 ? "k" : ""
+        let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US")
+        formatter.maximumFractionDigits = divisor > 1 ? 2 : magnitude < 1 ? 4 : 2
+        return (value < 0 ? "−" : "") + "$" + (formatter.string(from: NSNumber(value: magnitude / divisor)) ?? "0") + suffix
+    }
+}
+
+// Tick selection uses measured text bounds, including edge clamping. Omitting
+// intermediate labels never removes data points, markers or hover targets.
+nonisolated enum UpOnlyChartAxis {
+    struct Tick: Identifiable, Equatable {
+        var index: Int
+        var center: CGFloat
+        var width: CGFloat
+        var id: Int { index }
+    }
+    static func ticks(widths: [CGFloat], plotWidth: CGFloat, gap: CGFloat = 10) -> [Tick] {
+        guard !widths.isEmpty, plotWidth > 0 else { return [] }
+        let count = widths.count
+        let candidates: [Int]
+        if count <= 8 { candidates = Array(widths.indices) }
+        else if count <= 12 { candidates = Array(Set(stride(from: 0, to: count - 2, by: 2)).union([count - 1])).sorted() }
+        else { candidates = [0, count / 2, count - 1] }
+        let ticks = candidates.compactMap { index -> Tick? in
+            let width = widths[index]
+            guard width <= plotWidth else { return nil }
+            let anchor = count > 1 ? CGFloat(index) / CGFloat(count - 1) * plotWidth : 12
+            return Tick(index: index, center: min(max(anchor, width / 2), plotWidth - width / 2), width: width)
+        }
+        guard let first = ticks.first, let last = ticks.last, first.index != last.index else { return ticks }
+        func fits(_ a: Tick, before b: Tick) -> Bool { a.center + a.width / 2 + gap <= b.center - b.width / 2 }
+        guard fits(first, before: last) else { return [last] }
+        var result = [first]
+        for tick in ticks.dropFirst().dropLast() where fits(tick, before: last) {
+            if fits(result[result.count - 1], before: tick) { result.append(tick) }
+        }
+        result.append(last)
+        return result
+    }
 }
 
 struct UpOnlyChart: View {
+    @Environment(UpOnlySession.self) private var session
+    @Environment(\.colorSchemeContrast) private var contrast
     var points: [UpOnlyChartPoint]
     var includesZero = false
+    var showsAllMarkers = false
     var selected: String?
     var tint: Color = .accentColor
     var onSelect: ((String) -> Void)?
     @State private var hovered: Int?
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    private var numbers: [Double] { points.compactMap { $0.value.map { NSDecimalNumber(decimal: $0).doubleValue } } }
-    private var low: Double { let v = numbers.min() ?? 0; return includesZero ? min(0, v) : v }
-    private var high: Double { let v = numbers.max() ?? 1; return includesZero ? max(0, v) : v }
-    private var domainPadding: Double { max((high - low) * 0.12, max(abs(high) * 0.01, 1)) }
-    private func x(_ i: Int, _ width: CGFloat) -> CGFloat { points.count > 1 ? CGFloat(i) / CGFloat(points.count - 1) * width : width / 2 }
-    private func y(_ value: Decimal, _ height: CGFloat) -> CGFloat {
-        let number = NSDecimalNumber(decimal: value).doubleValue
-        return height * (1 - (number - low + domainPadding) / (high - low + 2 * domainPadding))
+    private let plotHeight: CGFloat = 112
+    // Do not reserve empty leading/trailing history before the first actual observation.
+    // Interior missing months remain explicit gaps in the line.
+    private var visiblePoints: [UpOnlyChartPoint] {
+        guard let first = points.firstIndex(where: { $0.value != nil }), let last = points.lastIndex(where: { $0.value != nil }) else { return points }
+        return Array(points[first...last])
     }
-    private func segment(_ i: Int, size: CGSize) -> Path {
-        Path { path in
-            guard i > 0, let a = points[i-1].value, let b = points[i].value else { return }
-            let p = CGPoint(x: x(i-1, size.width), y: y(a, size.height))
-            let q = CGPoint(x: x(i, size.width), y: y(b, size.height))
-            let middle = (p.x + q.x) / 2
-            path.move(to: p)
-            path.addCurve(to: q, control1: CGPoint(x: middle, y: p.y), control2: CGPoint(x: middle, y: q.y))
+    private var scale: UpOnlyChartScale { UpOnlyChartScale(values: visiblePoints.compactMap(\.value), includesZero: includesZero) }
+    private var runs: [[Int]] {
+        var result: [[Int]] = [], run: [Int] = []
+        for i in visiblePoints.indices {
+            if visiblePoints[i].value != nil { run.append(i) }
+            else if !run.isEmpty { result.append(run); run = [] }
         }
+        if !run.isEmpty { result.append(run) }
+        return result
+    }
+    private func x(_ i: Int, width: CGFloat) -> CGFloat {
+        visiblePoints.count > 1 ? CGFloat(i) / CGFloat(visiblePoints.count - 1) * width : 12
+    }
+    private func y(_ value: Decimal, scale: UpOnlyChartScale) -> CGFloat { 6 + (1 - scale.fraction(value)) * (plotHeight - 12) }
+    private func nearest(_ location: CGFloat, width: CGFloat) -> Int? {
+        guard !visiblePoints.isEmpty else { return nil }
+        return max(0, min(visiblePoints.count - 1, Int((location / max(width, 1) * CGFloat(visiblePoints.count - 1)).rounded())))
+    }
+    private func line(_ run: [Int], width: CGFloat, scale: UpOnlyChartScale) -> Path {
+        let coordinates = run.compactMap { index -> CGPoint? in
+            visiblePoints[index].value.map { CGPoint(x: x(index, width: width), y: y($0, scale: scale)) }
+        }
+        return Path { path in
+            guard let first = coordinates.first else { return }
+            path.move(to: first)
+            // Match the admin's low-tension line. Clamped controls cannot invent
+            // a higher peak or lower loss between the actual monthly observations.
+            let tension: CGFloat = 0.08
+            for i in coordinates.indices.dropFirst() {
+                let p = coordinates[i - 1], q = coordinates[i]
+                let before = coordinates[max(0, i - 2)], after = coordinates[min(coordinates.count - 1, i + 1)]
+                let low = min(p.y, q.y), high = max(p.y, q.y)
+                let c1 = CGPoint(x: p.x + (q.x - before.x) * tension, y: min(high, max(low, p.y + (q.y - before.y) * tension)))
+                let c2 = CGPoint(x: q.x - (after.x - p.x) * tension, y: min(high, max(low, q.y - (after.y - p.y) * tension)))
+                path.addCurve(to: q, control1: c1, control2: c2)
+            }
+        }
+    }
+    private var accessibilitySummary: String {
+        session.privacyMode ? "Values hidden" : points.map { "\($0.detailLabel ?? $0.label): \($0.value.map(UpOnlyFormat.exactMoney) ?? "Not reported")" }.joined(separator: ". ")
     }
     var body: some View {
-        VStack(spacing: 6) {
-            GeometryReader { geometry in
-                let size = geometry.size
-                ZStack(alignment: .topLeading) {
-                    Canvas { context, canvasSize in
-                        for row in 0..<3 {
-                            var grid = Path()
-                            let yy = CGFloat(row) / 2 * canvasSize.height
-                            grid.move(to: CGPoint(x: 0, y: yy)); grid.addLine(to: CGPoint(x: canvasSize.width, y: yy))
-                            context.stroke(grid, with: .color(.primary.opacity(contrast == .increased ? 0.18 : 0.055)), lineWidth: 0.5)
-                        }
-                        if includesZero {
-                            var zero = Path()
-                            zero.move(to: CGPoint(x: 0, y: y(0, canvasSize.height)))
-                            zero.addLine(to: CGPoint(x: canvasSize.width, y: y(0, canvasSize.height)))
-                            context.stroke(zero, with: .color(.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
-                        }
-                        for i in points.indices {
-                            if i > 0, points[i-1].value != nil, points[i].value != nil {
-                                var area = segment(i, size: canvasSize)
-                                area.addLine(to: CGPoint(x: x(i, canvasSize.width), y: canvasSize.height))
-                                area.addLine(to: CGPoint(x: x(i-1, canvasSize.width), y: canvasSize.height))
-                                area.closeSubpath()
-                                context.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.065), tint.opacity(0.005)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: canvasSize.height)))
-                                context.stroke(segment(i, size: canvasSize), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: points[i].provisional || points[i-1].provisional ? [4, 4] : []))
-                            }
-                            if let value = points[i].value, points.count == 1 || points[i].provisional || selected == points[i].id || hovered == i {
-                                let dot = Path(ellipseIn: CGRect(x: x(i, canvasSize.width)-3, y: y(value, canvasSize.height)-3, width: 6, height: 6))
-                                context.fill(dot, with: .color(points[i].provisional ? Color(nsColor: .windowBackgroundColor) : tint))
-                                context.stroke(dot, with: .color(tint), lineWidth: 1.5)
-                            }
-                        }
-                    }.accessibilityHidden(true)
-                    if numbers.isEmpty {
-                        Text("History begins with your first observation")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                    if let hovered, points.indices.contains(hovered) {
-                        Text(points[hovered].label + " · " + (points[hovered].value.map { UpOnlyFormat.money($0) } ?? "No observation"))
-                            .font(.system(size: 11, weight: .medium)).padding(.horizontal, 6).padding(.vertical, 4)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 5))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .offset(y: -8)
-                    }
-                }
-                .contentShape(Rectangle())
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let location):
-                        guard !points.isEmpty else { return }
-                        hovered = max(0, min(points.count - 1, Int((location.x / max(size.width, 1) * Double(points.count - 1)).rounded())))
-                    case .ended: hovered = nil
-                    }
-                }
-                .onTapGesture { if let hovered, points.indices.contains(hovered) { onSelect?(points[hovered].id) } }
-            }.frame(height: 104)
-            HStack {
-                Text(points.first?.label ?? "")
-                Spacer()
-                if points.count > 2 { Text(points[points.count / 2].label); Spacer() }
-                if points.count > 1 { Text(points.last?.label ?? "") }
-            }.font(.system(size: 11)).foregroundStyle(.secondary)
+        Group {
+            if !points.contains(where: { $0.value != nil }) {
+                Text("No recorded values in this period").font(.system(size: 11)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+            } else { historyChart }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("History")
-        .accessibilityValue(points.map { "\($0.label): \($0.value.map(UpOnlyFormat.money) ?? "No observation")" }.joined(separator: ". "))
+        .accessibilityRepresentation {
+            Text(accessibilitySummary).accessibilityLabel("History, " + accessibilitySummary)
+        }
+    }
+    private var historyChart: some View {
+        GeometryReader { geometry in
+            let bounds = scale
+            let axisWidth = (bounds.ticks.map { (UpOnlyChartScale.label($0) as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)]).width }.max() ?? 24) + 9
+            let plotWidth = max(1, geometry.size.width - axisWidth - 3)
+            ZStack(alignment: .topLeading) {
+                Canvas { context, size in
+                    for tick in bounds.ticks where !runs.isEmpty {
+                        let yy = y(Decimal(tick), scale: bounds)
+                        var grid = Path(); grid.move(to: CGPoint(x: axisWidth, y: yy)); grid.addLine(to: CGPoint(x: size.width, y: yy))
+                        context.stroke(grid, with: .color(.primary.opacity(tick == 0 && includesZero ? 0.17 : contrast == .increased ? 0.15 : 0.07)), lineWidth: 0.5)
+                        if !session.privacyMode && !runs.isEmpty {
+                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary), at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
+                        }
+                    }
+                    var plot = context; plot.translateBy(x: axisWidth, y: 0)
+                    for run in runs {
+                        guard let first = run.first, let last = run.last else { continue }
+                        if visiblePoints.count == 1, let value = visiblePoints[first].value {
+                            let baseline = includesZero ? y(0, scale: bounds) : plotHeight - 6
+                            let yy = y(value, scale: bounds)
+                            let bar = Path(roundedRect: CGRect(x: 0, y: min(yy, baseline), width: 24, height: max(1, abs(baseline - yy))), cornerRadius: 3)
+                            plot.fill(bar, with: .color(tint.opacity(0.25)))
+                        }
+                        if run.count > 1 {
+                            var area = line(run, width: plotWidth, scale: bounds)
+                            let baseline = includesZero ? y(0, scale: bounds) : plotHeight - 6
+                            area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: baseline)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: baseline)); area.closeSubpath()
+                            plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.14), tint.opacity(0.01)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                            // Only the still-provisional tail is dashed. Historical review
+                            // warnings do not turn an entire timeline into dotted noise.
+                            let provisionalTail = last == visiblePoints.count - 1 && visiblePoints[last].provisional
+                            let solid = provisionalTail ? Array(run.dropLast()) : run
+                            plot.stroke(line(solid, width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            if provisionalTail { plot.stroke(line(Array(run.suffix(2)), width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 4])) }
+                        }
+                        for index in run where showsAllMarkers || run.count == 1 || visiblePoints.count <= 12 || selected == visiblePoints[index].id || hovered == index {
+                            let isSelected = selected == visiblePoints[index].id
+                            let radius: CGFloat = hovered == index || isSelected ? 4 : visiblePoints.count > 60 ? 1.5 : 2.5
+                            let dot = Path(ellipseIn: CGRect(x: x(index, width: plotWidth) - radius, y: y(visiblePoints[index].value!, scale: bounds) - radius, width: radius * 2, height: radius * 2))
+                            plot.fill(dot, with: .color(tint))
+                            if hovered == index || isSelected { plot.stroke(dot, with: .color(Color(nsColor: .windowBackgroundColor)), lineWidth: 1.5) }
+                        }
+                    }
+                    if let active = hovered ?? visiblePoints.firstIndex(where: { $0.id == selected }), visiblePoints.indices.contains(active) {
+                        var crosshair = Path(); let xx = x(active, width: plotWidth)
+                        crosshair.move(to: CGPoint(x: xx, y: 6)); crosshair.addLine(to: CGPoint(x: xx, y: plotHeight - 6))
+                        plot.stroke(crosshair, with: .color(.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                    }
+                }.frame(height: plotHeight).accessibilityHidden(true)
+                if runs.isEmpty {
+                    Text("No recorded result in this period").font(.system(size: 11)).foregroundStyle(.secondary)
+                        .frame(width: plotWidth, height: plotHeight).offset(x: axisWidth)
+                }
+                if let hovered, visiblePoints.indices.contains(hovered) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(visiblePoints[hovered].detailLabel ?? visiblePoints[hovered].label).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(session.privacyMode ? "Value hidden" : visiblePoints[hovered].value.map(UpOnlyFormat.exactMoney) ?? "No observation")
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    }.padding(8).frame(width: 142, alignment: .leading)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.12)))
+                        .offset(x: min(max(axisWidth + x(hovered, width: plotWidth) - 71, axisWidth), max(axisWidth, geometry.size.width - 142)), y: -8)
+                        .allowsHitTesting(false)
+                }
+                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth, height: plotHeight)
+                    .onContinuousHover { phase in
+                        switch phase { case .active(let location): hovered = nearest(location.x, width: plotWidth); case .ended: hovered = nil }
+                    }
+                    .gesture(SpatialTapGesture().onEnded { value in if let index = nearest(value.location.x, width: plotWidth) { onSelect?(visiblePoints[index].id) } })
+                    .offset(x: axisWidth)
+                ZStack(alignment: .topLeading) {
+                    let widths = visiblePoints.map { ($0.label as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10)]).width }
+                    ForEach(UpOnlyChartAxis.ticks(widths: widths, plotWidth: plotWidth)) { tick in
+                        Text(visiblePoints[tick.index].label).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
+                            .position(x: tick.center, y: 6)
+                    }
+                }.frame(width: plotWidth, height: 14).offset(x: axisWidth, y: plotHeight + 6)
+
+            }
+        }.frame(height: plotHeight + 20)
+            .onChange(of: points) { hovered = nil }
+            .accessibilityElement(children: .ignore).accessibilityLabel("History")
+            .accessibilityValue(session.privacyMode ? "Values hidden" : points.map { "\($0.detailLabel ?? $0.label): \($0.value.map(UpOnlyFormat.exactMoney) ?? "No observation")" }.joined(separator: ". "))
+            #if UPONLY_FIXTURE
+            .onAppear { if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_CHART_HOVER"] == "1", !visiblePoints.isEmpty { hovered = visiblePoints.count / 2 } }
+            #endif
     }
 }
 
@@ -119,5 +256,30 @@ enum UpOnlyFormat {
         formatter.maximumFractionDigits = 0
         return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
     }
+    static func currencyMoney(_ value: Decimal, currency: String) -> String {
+        let formatter = NumberFormatter(); formatter.numberStyle = .currency; formatter.currencyCode = currency
+        formatter.locale = Locale(identifier: "en_US"); formatter.minimumFractionDigits = 2; formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? currency + " —"
+    }
+    static func exactMoney(_ value: Decimal) -> String {
+        let formatter = NumberFormatter(); formatter.numberStyle = .currency; formatter.currencyCode = "USD"
+        formatter.locale = Locale(identifier: "en_US"); formatter.minimumFractionDigits = 2; formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
+    }
     static func quantity(_ value: Decimal) -> String { NSDecimalNumber(decimal: value).stringValue }
+}
+
+enum UpOnlyTint {
+    static let metals = Color(red: 0.60, green: 0.47, blue: 0.23)
+    static let cashFlow = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.36, green: 0.78, blue: 0.62, alpha: 1)
+            : NSColor(srgbRed: 0.13, green: 0.51, blue: 0.39, alpha: 1)
+    })
+    static let netWorth = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.52, green: 0.64, blue: 0.94, alpha: 1)
+            : NSColor(srgbRed: 0.29, green: 0.39, blue: 0.67, alpha: 1)
+    })
+    static let crypto = Color(red: 0.82, green: 0.52, blue: 0.18)
 }
