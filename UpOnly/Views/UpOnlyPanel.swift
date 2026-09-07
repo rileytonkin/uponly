@@ -238,9 +238,6 @@ private struct UpOnlyUnlockedPanel: View {
                 Spacer(minLength: 0)
                 if detail == nil, companySelection == nil, selectedPortfolio == nil {
                     if hasData { dataStatusButton }
-                    if hasData, session.destination == 0, !model.books.isEmpty { performanceScopeSelector }
-                    else if hasData, session.destination == 1, showsNetWorth,
-                            (session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) }.count ?? 0) + (shows(.banks) ? 1 : 0) > 1 { worthScopeSelector }
                 }
             }.frame(minHeight: 32).padding(.bottom, 16)
             if let companySelection { companyContent(companySelection) }
@@ -314,14 +311,14 @@ private struct UpOnlyUnlockedPanel: View {
         let needsAttention = session.document.map { model.attention(in: $0, includePerformance: session.destination == 0).count > 0 } == true || syncNeedsAttention
         if needsAttention {
             Button { manage("Needs attention") } label: {
-                Image(systemName: "bell.badge").font(.system(size: 13, weight: .medium))
+                Image(systemName: "checklist").font(.system(size: 13, weight: .medium))
                     .frame(width: 16, height: 16).accessibilityHidden(true)
             }.buttonStyle(UpOnlyToolbarButtonStyle())
                 .glassEffect(.regular, in: .circle)
-                .accessibilityLabel("Needs attention")
+                .accessibilityLabel("Review data")
                 .accessibilityValue(syncNeedsAttention ? "Saved data needs a refresh" : "Missing information")
                 .accessibilityIdentifier("DataAttention")
-                .help("View data status")
+                .help("Review missing data")
         }
     }
     private func destination(_ title: String, value: Int) -> some View {
@@ -471,27 +468,39 @@ private struct UpOnlyUnlockedPanel: View {
             }.glassEffect(.regular, in: .capsule).fixedSize(horizontal: true, vertical: false)
         }
     }
+    private func scopeControl<Selection: Hashable>(_ options: [(Selection, String)], selection: Binding<Selection>, label: String, item: String) -> some View {
+        let index = options.firstIndex { $0.0 == selection.wrappedValue } ?? 0
+        return GlassEffectContainer {
+            HStack(spacing: 0) {
+                Button { selection.wrappedValue = options[(index + options.count - 1) % options.count].0 } label: { Image(systemName: "chevron.left") }
+                    .buttonStyle(UpOnlyToolbarButtonStyle()).accessibilityLabel("Previous " + item)
+                Divider().frame(height: 12)
+                Text(options[index].1).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    .padding(.horizontal, 10).frame(maxWidth: 160).help(options[index].1)
+                Divider().frame(height: 12)
+                Button { selection.wrappedValue = options[(index + 1) % options.count].0 } label: { Image(systemName: "chevron.right") }
+                    .buttonStyle(UpOnlyToolbarButtonStyle()).accessibilityLabel("Next " + item)
+            }.glassEffect(.regular, in: .capsule).fixedSize(horizontal: true, vertical: false)
+                .accessibilityElement(children: .contain).accessibilityLabel(label).accessibilityValue(options[index].1)
+        }
+    }
     private var performanceScopeSelector: some View {
-        Menu {
-            Toggle("All", isOn: Binding(get: { model.scope == .all }, set: { _ in model.selectScope(.all) }))
-            Toggle("Personal", isOn: Binding(get: { model.scope == .personal }, set: { _ in model.selectScope(.personal) }))
-            ForEach(model.books) { book in
-                Toggle(book.name, isOn: Binding(get: { model.scope == .business(book.id) }, set: { _ in model.selectScope(.business(book.id)) }))
+        HStack(spacing: 8) {
+            scopeControl([(.all, "All accounts"), (.personal, "Personal")] + model.books.map { (.business($0.id), $0.name) },
+                         selection: Binding(get: { model.scope }, set: { model.selectScope($0) }), label: "Performance accounts", item: "account")
+            if model.state.missingMonths > 0 || model.state.isEstimated || (model.state.totals == nil && model.availableTotals != nil) {
+                Text("Partial").font(.system(size: 11)).foregroundStyle(.secondary)
             }
-        } label: { Text(model.scopeTitle).font(.system(size: 12, weight: .medium)).lineLimit(1) }
-            .modifier(UpOnlyPillMenu()).accessibilityLabel("Performance scope").accessibilityValue(model.scopeTitle)
+        }.help(performanceCaption)
+    }
+    private var worthScopeOptions: [(ValuationScope, String)] {
+        var options: [(ValuationScope, String)] = [(.allTracked, allScopeTitle)]
+        if shows(.banks) && showsHoldings { options.append((.banks, "Bank balances")) }
+        options += (session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) } ?? []).map { (.portfolio($0.id), $0.name) }
+        return options
     }
     private var worthScopeSelector: some View {
-        Menu {
-            Toggle(allScopeTitle, isOn: Binding(get: { scope == .allTracked }, set: { _ in scope = .allTracked }))
-            if shows(.banks) && showsHoldings {
-                Toggle("Bank balances", isOn: Binding(get: { scope == .banks }, set: { _ in scope = .banks }))
-            }
-            ForEach(session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) } ?? []) { portfolio in
-                Toggle(portfolio.name, isOn: Binding(get: { scope == .portfolio(portfolio.id) }, set: { _ in scope = .portfolio(portfolio.id) }))
-            }
-        } label: { Text(scopeTitle).font(.system(size: 12, weight: .medium)).lineLimit(1) }
-            .modifier(UpOnlyPillMenu()).accessibilityLabel("Net worth scope").accessibilityValue(scopeTitle)
+        scopeControl(worthScopeOptions, selection: $scope, label: "Net worth accounts", item: "asset group")
     }
     private var monthContent: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -506,7 +515,6 @@ private struct UpOnlyUnlockedPanel: View {
             } else {
             if let totals = model.availableTotals {
                 UpOnlyAmount(value: totals.net, signed: true, tint: totals.net < 0 ? Color(nsColor: .systemRed) : UpOnlyTint.cashFlow).padding(.top, 8)
-                Text(performanceCaption).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
             } else if case .exchangeRates? = model.state.unavailable {
                 nativeMonthContent.padding(.top, 16)
             } else {
@@ -517,6 +525,8 @@ private struct UpOnlyUnlockedPanel: View {
                         .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.padding(.top, 18)
             }
+            if !model.books.isEmpty { performanceScopeSelector.padding(.top, 6) }
+            else if model.availableTotals != nil { Text(performanceCaption).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 4) }
             if !personalRateGaps.isEmpty {
                 if case .exchangeRates? = model.state.unavailable {
                     if model.availableTotals != nil { exchangeRateAction.padding(.top, 12) }
@@ -655,8 +665,9 @@ private struct UpOnlyUnlockedPanel: View {
         return VStack(alignment: .leading, spacing: 0) {
             if let valuation, !valuation.isUnavailable, let value = valuation.total ?? valuation.lastComplete?.value {
                 UpOnlyAmount(value: value).padding(.top, 8)
-                Text(worthCaption).fixedSize(horizontal: false, vertical: true).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 5)
             }
+            if worthScopeOptions.count > 1 { worthScopeSelector.padding(.top, 6) }
+            if valuation?.isUnavailable == false { Text(worthCaption).fixedSize(horizontal: false, vertical: true).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 5) }
             if valuation?.missing.contains(where: { $0.reason == "ownership" }) == true {
                 Text("Ownership history is needed to calculate your share.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 10)
                 Button("Review sources") { manage("Sources") }.buttonStyle(.bordered)

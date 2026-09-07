@@ -62,6 +62,7 @@ private struct UpOnlyManagementContent: View {
     @State private var entryToRemove: Entry?
     @State private var editingPortfolio: UUID?
     @State private var editingEntry: UUID?
+    @State private var returnToReview = false
     @State private var entrySearch = ""
     @State private var entryMonth = ""
     @State private var entryProfile = ""
@@ -74,14 +75,14 @@ private struct UpOnlyManagementContent: View {
         VStack(spacing: 0) {
             if !hasGuidedHeader {
             UpOnlyPageHeader(title: editor?.title ?? pageTitle,
-                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) ? "Back to overview" : session.managementSection == "Review spending" ? "Back to needs attention" : "Back to manage") {
+                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage") {
                 if discardSources { discardSources = false }
                 else if archive != nil { archive = nil }
                 else if entryToRemove != nil { entryToRemove = nil }
                 else if session.managementSection == "Sources", sourceEditsPending { discardSources = true }
                 else if editor != nil { finishEditing() }
                 else if ["Manage", "Needs attention"].contains(session.managementSection) { session.managementInMenu = false }
-                else if session.managementSection == "Review spending" { session.managementSection = "Needs attention" }
+                else if returnToReview { session.managementSection = "Needs attention" }
                 else { session.managementSection = "Manage" }
             }.padding(UpOnlyLayout.inset)
             Divider()
@@ -118,7 +119,7 @@ private struct UpOnlyManagementContent: View {
                     VStack(alignment: .leading, spacing: 16) {
                         switch session.managementSection {
                         case "Manage": navigation
-                        case "Needs attention", "Review spending":
+                        case "Needs attention":
                             UpOnlyDataAttention(addEntry: { editor = .entry }, addRate: { editor = .exchangeRate })
                         case "Accounts":
                             Button { session.startImport(.bankBalances) } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.glassProminent)
@@ -139,6 +140,10 @@ private struct UpOnlyManagementContent: View {
         }
         .buttonStyle(.bordered).buttonBorderShape(.capsule)
         .onAppear { entryMonth = session.entryMonthForManagement; if session.requestedRateCurrency != nil { editor = .exchangeRate } }
+        .onChange(of: session.managementSection) { previous, next in
+            if next == "Needs attention" || next == "Manage" { returnToReview = false }
+            else if previous == "Needs attention" { returnToReview = true }
+        }
         .onChange(of: session.entryMonthForManagement) { _, month in entryMonth = month; entryLimit = 100 }
         .onChange(of: session.requestedRateCurrency) { _, currency in if currency != nil { editor = .exchangeRate } }
     }
@@ -146,7 +151,7 @@ private struct UpOnlyManagementContent: View {
     private var pageTitle: String {
         switch session.managementSection {
         case "Entries": "Transactions"
-        case "Needs attention": "Data status"
+        case "Needs attention": "Review data"
         case "Portfolios": "Crypto"
         case "Add your info": session.importDraft?.mode.title ?? "Add your info"
         default: session.managementSection
@@ -518,8 +523,7 @@ private struct UpOnlyDataAttention: View {
     var body: some View {
         let attention = report
         VStack(alignment: .leading, spacing: 16) {
-            if session.managementSection == "Review spending" { spendingReview }
-            else {
+            Group {
                 #if UPONLY_PERSONAL
                 if hasBankStatus {
                     attentionCard("Wise", symbol: "arrow.triangle.2.circlepath") {
@@ -535,14 +539,11 @@ private struct UpOnlyDataAttention: View {
                 }
                 #endif
                 if attention.count == 0 && !hasBankStatus && !hasAccountingStatus && !hasPriceStatus {
-                    Label("No known gaps in this view", systemImage: "checkmark.circle")
-                        .font(.headline)
-                    note("Up can only check the accounts and holdings you have added.")
+                    Label("Nothing to review", systemImage: "checkmark.circle").font(.headline)
                 }
                 if !attention.spendingMonths.isEmpty {
                     attentionCard("Income & spending", symbol: "checklist") {
-                        note(attention.spendingMonths.count == 1 ? "Check " + attention.spendingMonths[0].title + " includes all your personal accounts." : "\(attention.spendingMonths.count) months need a personal income and spending review.")
-                        Button("Review spending") { session.managementSection = "Review spending" }
+                        spendingReview
                     }
                 }
                 if !attention.balances.isEmpty {
@@ -572,25 +573,34 @@ private struct UpOnlyDataAttention: View {
                         Button("Review sources") { session.managementSection = "Sources" }
                     }
                 }
-                Button { session.managementSection = "Add your info"; session.importTableMode = false } label: {
-                    Label("Add your info", systemImage: "plus")
-                }.buttonStyle(.bordered)
             }
         }.controlSize(.regular)
-            .onAppear { if reviewMonth.isEmpty { reviewMonth = (attention.spendingMonths.last ?? session.monthModel?.month ?? .current()).description } }
+            .onAppear {
+                if reviewMonth.isEmpty {
+                    reviewMonth = attention.spendingMonths.first { $0.description == session.entryMonthForManagement }?.description
+                        ?? (attention.spendingMonths.last ?? session.monthModel?.month ?? .current()).description
+                }
+            }
             .onChange(of: reviewMonth) { session.entryMonthForManagement = month.description }
     }
     private var spendingReview: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Menu(month.title) {
-                ForEach(report.spendingMonths.reversed(), id: \.self) { item in
-                    Button(item.title) { reviewMonth = item.description }
+            if report.spendingMonths.count > 1 {
+                Menu(month.title) {
+                    ForEach(report.spendingMonths.reversed(), id: \.self) { item in
+                        Button(item.title) { reviewMonth = item.description }
+                    }
+                }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review")
+            } else { Text(month.title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
+            if let doc = session.document, let totals = MonthlyLedger.personal(month, document: doc).totals {
+                HStack(spacing: 16) {
+                    reviewTotal("Income", value: totals.moneyIn)
+                    reviewTotal("Spending", value: totals.moneyOut)
                 }
-            }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review")
-            note("Check that income and spending from all personal accounts and cards are included.")
+            }
             HStack(spacing: 8) {
-                Button("View entries") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
-                Menu("Add") {
+                Button("Transactions") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
+                Menu("Add missing") {
                     Button("Import statements…") { session.startImport(.statements) }
                     Button("Add entry") { session.entryMonthForManagement = month.description; addEntry() }
                 }.menuStyle(.borderedButton).fixedSize()
@@ -608,22 +618,32 @@ private struct UpOnlyDataAttention: View {
                         addRate()
                     }
                 }
-                Divider()
-                if month == .current() { note("This month is still in progress. Review it after month end.") }
-                else if state.totals == nil { note("No complete personal result is recorded yet. Add the missing entries or rates first; zero income or spending can be recorded explicitly.") }
+                if month == .current() { note("Review this month after it ends.") }
+                else if state.totals == nil { note("Add the missing entries or rates before marking this month complete.") }
                 else if doc.reviewedMonths.contains(month.description) {
                     Label("Month reviewed", systemImage: "checkmark.circle").font(.headline)
                 } else {
-                    note("Confirm only when all personal income and spending for this month is included.")
-                    Button("Confirm month complete") {
+                    note("All personal accounts included?")
+                    Button("Mark month complete") {
                         let selected = month.description
-                        Task { await session.perform { doc in
-                            if !doc.reviewedMonths.contains(selected) { doc.reviewedMonths.append(selected) }
-                        } }
+                        Task {
+                            await session.perform { doc in
+                                if !doc.reviewedMonths.contains(selected) { doc.reviewedMonths.append(selected) }
+                            }
+                            if session.document?.reviewedMonths.contains(selected) == true, let next = report.spendingMonths.last {
+                                reviewMonth = next.description
+                            }
+                        }
                     }.buttonStyle(.glassProminent).disabled(session.isBusy)
                 }
             }
         }
+    }
+    private func reviewTotal(_ title: String, value: Decimal) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
+            UpOnlyPrivateText(UpOnlyFormat.exactMoney(value)).font(.system(size: 14, weight: .medium)).monospacedDigit()
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func note(_ text: String) -> some View {
         Text(text).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
