@@ -219,6 +219,7 @@ nonisolated enum BackgroundRefresh {
         case "accounting":
             if let books = packet.books {
                 next.businessAccounting = AccountingHistory.merging(books, into: document.businessAccounting ?? [])
+                OwnerPayments.reconcile(in: &next)
                 next.track(.cashFlow)
             }
         #if UPONLY_PERSONAL

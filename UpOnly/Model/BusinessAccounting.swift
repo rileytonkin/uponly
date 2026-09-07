@@ -22,6 +22,7 @@ nonisolated struct BusinessBook: Codable, Sendable, Equatable, Identifiable {
     var fetchedAt: Date
     var modifiedAt: Date?
     var warning: String?
+    var transferCounterparties: [String]?
 }
 nonisolated struct BusinessContribution: Identifiable {
     var book: BusinessBook
@@ -192,6 +193,7 @@ nonisolated struct AccountingConnection: Codable, Sendable {
         var layout: String
         var firstMonth: String
         var ownership: [OwnershipPeriod]
+        var transferCounterparties: [String]?
     }
     var email: String
     var privateKeyDER: Data
@@ -305,6 +307,7 @@ nonisolated enum AccountingAPI {
             var book = BusinessBook(id: source.id, name: source.name, ownership: source.ownership, firstMonth: source.firstMonth,
                                     sourceURL: "https://docs.google.com/spreadsheets/d/" + source.sheetID + "/edit",
                                     basis: source.layout == "profitFirst" ? "Actual revenue less operating expenses, before all owner payouts." : "Accounting P&L NET PROFIT, before owner draws.", fetchedAt: Date())
+            book.transferCounterparties = source.transferCounterparties ?? OwnerPayments.privateCounterparties[source.id]
             let path = "/v4/spreadsheets/" + source.sheetID
             // Drive timestamps are optional metadata, not a prerequisite for reading profit.
             if let modified = try? await request(host: "www.googleapis.com", path: "/drive/v3/files/" + source.sheetID, query: [URLQueryItem(name: "fields", value: "modifiedTime")], token: accessToken),
@@ -345,3 +348,36 @@ private final class NoAccountingRedirects: NSObject, URLSessionTaskDelegate, @un
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 #endif
+
+/// Exact configured bank counterparties only. Merchant substrings are not evidence
+/// that an expense is already in the books. Ownership profit includes owner draws.
+nonisolated enum OwnerPayments {
+    // Non-secret, private-build configuration. Credentials stay untouched in Keychain.
+    static let privateCounterparties: [String: [String]] = {
+        #if UPONLY_PERSONAL
+        let url = Config.supportDirectory.appendingPathComponent("payment-counterparties.json")
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 16384,
+              let data = try? Data(contentsOf: url), let names = try? JSONDecoder().decode([String: [String]].self, from: data),
+              names.count <= 10, names.values.allSatisfy({ $0.count <= 20 && $0.allSatisfy { !$0.isEmpty && $0.count <= 100 } }) else { return [:] }
+        return names
+        #else
+        return [:]
+        #endif
+    }()
+
+    static func reconcile(in document: inout VaultDocument) {
+        for index in document.entries.indices {
+            let entry = document.entries[index]
+            guard entry.source != .manual, entry.bucket == .personal, entry.kindIsUserEdited != true else { continue }
+            if isCompanyCounterparty(entry.label, month: entry.month, document: document) { document.entries[index].kind = .transfer }
+        }
+    }
+    static func isCompanyCounterparty(_ label: String, month: String, document: VaultDocument) -> Bool {
+        let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        return (document.businessAccounting ?? []).contains { book in
+            guard let ownership = book.ownership(at: month), ownership.numerator > 0 else { return false }
+            return (book.transferCounterparties ?? privateCounterparties[book.id] ?? []).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        }
+    }
+}

@@ -131,11 +131,12 @@ nonisolated enum ImportColumn: String, CaseIterable, Sendable {
     }
 }
 nonisolated enum ImportDateFormat: String, CaseIterable, Sendable {
-    case iso = "yyyy-MM-dd", dayFirst = "dd/MM/yyyy", monthFirst = "MM/dd/yyyy"
+    case iso = "yyyy-MM-dd", dayFirst = "dd/MM/yyyy", monthFirst = "MM/dd/yyyy", monzoSearch = "dd/MM/yy, HH:mm"
     func date(_ raw: String) throws -> Date {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = UTCDay.timeZone
         formatter.dateFormat = rawValue; formatter.isLenient = false
+        if self == .monzoSearch { formatter.twoDigitStartDate = Date(timeIntervalSince1970: 946684800) }
         let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let date = formatter.date(from: clean), formatter.string(from: date) == clean else {
             throw ImportFailure("Use the selected date format: \(rawValue).")
@@ -190,6 +191,7 @@ nonisolated struct StatementInput: Sendable, Equatable {
     var transactionID = ""
     var kind: EntryKind = .expense
     var originalType = ""
+    var kindIsUserEdited = false
 }
 nonisolated struct BankBalanceInput: Sendable, Equatable {
     var account = ImportAccount()
@@ -283,6 +285,11 @@ nonisolated enum ImportParser {
             }
             for (index, column) in order.enumerated() where index < first.count { source.mapping[column] = index }
         }
+        if isMonzoSearch(grid) {
+            source.dateFormat = .monzoSearch
+            source.account.currency = "GBP"
+            source.account.name = "Monzo"
+        }
         if first.contains("Transaction ID") || first.contains("TransferWise ID") {
             source.dateFormat = .dayFirst
             // Bank transaction types (card payment, transfer, etc.) are not Up Only classifications.
@@ -290,9 +297,20 @@ nonisolated enum ImportParser {
         }
         return source
     }
+    static func account(for source: ImportSourceDraft, preferred: ImportAccount, saved: [Account]) -> ImportAccount {
+        if preferred.existingID != nil || !preferred.name.isEmpty { return preferred }
+        var inferred = source.account
+        let matches = saved.filter { $0.name.caseInsensitiveCompare(inferred.name) == .orderedSame && $0.currency == inferred.currency && $0.ownerBusinessID == nil }
+        if matches.count == 1 { inferred.existingID = matches[0].id }
+        return inferred
+    }
+    static func isMonzoSearch(_ grid: [[String]]) -> Bool {
+        guard let header = grid.first else { return false }
+        return Set(["id", "created", "title", "subtitle", "amount", "currency", "categories"]).isSubset(of: Set(header.map { $0.lowercased() }))
+    }
     static func guessMapping(_ header: [String], mode: ImportMode) -> [ImportColumn: Int] {
         let aliases: [ImportColumn: [String]] = [
-            .date: ["date", "observedon", "observedat", "transactiondate"], .description: ["description", "name", "memo", "narrative"],
+            .date: ["date", "observedon", "observedat", "transactiondate", "created"], .description: ["description", "name", "memo", "narrative", "title"],
             .amount: ["amount", "transactionamount"], .debit: ["debit", "moneyout", "withdrawal", "withdrawals"],
             .credit: ["credit", "moneyin", "deposit", "deposits"], .currency: ["currency", "currencycode"],
             .transactionID: ["transactionid", "transferwiseid", "id", "reference"], .type: ["type", "kind"],
@@ -321,13 +339,20 @@ nonisolated enum ImportParser {
                 let rawType = field(.type).lowercased()
                 let inferred: EntryKind = (try? source.numberFormat.decimal(field(.amount))) .map { $0 < 0 ? .expense : .income } ?? (!field(.credit).isEmpty && (try? source.numberFormat.decimal(field(.credit))) != 0 ? .income : .expense)
                 let typed = EntryKind(rawValue: rawType)
-                content = .statement(StatementInput(date: field(.date), label: field(.description), amount: field(.amount), debit: field(.debit), credit: field(.credit), currency: field(.currency).isEmpty ? source.account.currency : field(.currency), transactionID: field(.transactionID), kind: typed ?? inferred, originalType: rawType))
+                let categoryIndex = isMonzoSearch(source.grid) ? source.grid[0].firstIndex(where: { $0.lowercased() == "categories" }) : nil
+                let isTransfer = categoryIndex.map { cells.indices.contains($0) && cells[$0].lowercased() == "transfers" } == true
+                content = .statement(StatementInput(date: field(.date), label: field(.description), amount: field(.amount), debit: field(.debit), credit: field(.credit), currency: field(.currency).isEmpty ? source.account.currency : field(.currency), transactionID: field(.transactionID), kind: isTransfer ? .transfer : typed ?? inferred, originalType: rawType))
             case .bankBalances:
                 content = .bankBalance(BankBalanceInput(account: ImportAccount(name: field(.account), currency: field(.currency).isEmpty ? "USD" : field(.currency)), balance: field(.balance), date: field(.date).isEmpty ? ImportDateFormat.today() : field(.date)))
             case .holdings, .metals:
                 content = .holding(HoldingInput(portfolioName: field(.portfolio), coin: field(.coin), quantity: field(.quantity), unit: mode == .metals ? field(.unit) : "g"))
             }
             var row = ImportDraftRow(sourceID: source.id, line: offset + (source.hasHeader ? 2 : 1), content: content)
+            if mode == .statements, isMonzoSearch(source.grid), field(.amount).isEmpty,
+               let subtitle = source.grid[0].firstIndex(where: { $0.lowercased() == "subtitle" }), cells.indices.contains(subtitle),
+               cells[subtitle].lowercased().hasPrefix("declined") {
+                row.included = false
+            }
             if cells.count != source.grid.first?.count { row.parseError = "This row has a different number of cells. Correct the fields or exclude it." }
             result.append(row)
         }
@@ -515,6 +540,9 @@ nonisolated enum ImportBatchProcessor {
                         result.states[row.id] = .needsReview("Looks like another transaction. Confirm it is a separate payment or exclude it."); continue
                     }
                     var entry = Entry(month: month, kind: input.kind, amount: abs(signed), currency: currency, label: label, source: .csv, sourceRef: reference)
+                    if next.accounts.first(where: { $0.id == accountID })?.ownerBusinessID != nil { entry.bucket = .otherBusiness }
+                    if !input.kindIsUserEdited && input.originalType.isEmpty && entry.kind != .transfer && OwnerPayments.isCompanyCounterparty(label, month: month.description, document: next) { entry.kind = .transfer }
+                    entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
                     entry.importFingerprint = fingerprint
                     next.entries.append(entry); next.track(.cashFlow)
                     seenReferences[reference] = entry; fingerprints.insert(fingerprintKey)

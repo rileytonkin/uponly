@@ -1,34 +1,90 @@
 import SwiftUI
+import Observation
 
-final class UpOnlyApplicationDelegate: NSObject, NSApplicationDelegate {
+@MainActor final class UpOnlyApplicationDelegate: NSObject, NSApplicationDelegate {
+    let session = UpOnlySession()
+    private var menu: UpOnlyMenuController?
+    func startMenu() {
+        guard menu == nil else { return }
+        if !session.isFixture || ProcessInfo.processInfo.environment["UPONLY_PREVIEW_MENU_BAR"] == "1" {
+            menu = UpOnlyMenuController(session: session)
+        }
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 @main
-struct UpOnlyApp: App {
-    @NSApplicationDelegateAdaptor(UpOnlyApplicationDelegate.self) private var applicationDelegate
-    @State private var session = UpOnlySession()
-    var body: some Scene {
-        MenuBarExtra(isInserted: .constant(!session.isFixture || ProcessInfo.processInfo.environment["UPONLY_PREVIEW_MENU_BAR"] == "1")) {
-            UpOnlyPanel().environment(session)
-        } label: {
+@MainActor enum UpOnlyApp {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = UpOnlyApplicationDelegate()
+        app.setActivationPolicy(.accessory)
+        app.delegate = delegate
+        delegate.startMenu()
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
+
+/// The same compact menu content, with explicit lifetime while importing or
+/// presenting system dialogs. Finder can become active without losing the drop target.
+@MainActor final class UpOnlyMenuController: NSObject, NSPopoverDelegate {
+    private let session: UpOnlySession
+    private let item: NSStatusItem
+    private let popover = NSPopover()
+    private var host: NSHostingController<AnyView>!
+    init(session: UpOnlySession) {
+        self.session = session
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+        item.isVisible = true
+        if let button = item.button {
             #if UPONLY_FIXTURE
-            Text("up*")
-                .accessibilityLabel("Up Only Preview")
-                .accessibilityIdentifier("UpOnlyStatusItem")
+            button.title = "up*"
+            button.setAccessibilityLabel("Up Only Preview")
             #else
-            Image(nsImage: UpOnlyArtwork.status).renderingMode(.template)
-                .accessibilityLabel("Up Only")
-                .accessibilityIdentifier("UpOnlyStatusItem")
+            button.image = UpOnlyArtwork.status
+            button.setAccessibilityLabel("Up Only")
             #endif
-        }.menuBarExtraStyle(.window)
+            button.setAccessibilityIdentifier("UpOnlyStatusItem")
+            button.target = self; button.action = #selector(toggle)
+        }
+        popover.delegate = self; popover.animates = false
+        host = NSHostingController(rootView: AnyView(UpOnlyPanel(menuLifecycleManaged: true, closeMenu: { [weak self] in self?.close() }).environment(session)))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        observeLifetime()
         #if UPONLY_FIXTURE
-        Window("Up Only Preview", id: "preview") {
-            UpOnlyPanel().environment(session)
-        }.defaultSize(width: 344, height: 470).windowResizability(.contentSize)
-            .defaultLaunchBehavior(.suppressed)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            print("UPONLY_STATUS visible=\(item.isVisible) frame=\(String(describing: item.button?.window?.frame))")
+            fflush(stdout)
+        }
         #endif
     }
+    private func observeLifetime() {
+        withObservationTracking {
+            popover.behavior = session.menuStaysOpen ? .applicationDefined : .transient
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeLifetime() }
+        }
+    }
+    @objc private func toggle() {
+        if session.filePickerIsOpen { session.focusFilePicker(); return }
+        if popover.isShown { close(); return }
+        guard let button = item.button else { return }
+        session.checkInactivity()
+        popover.behavior = session.menuStaysOpen ? .applicationDefined : .transient
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        host.view.window?.makeKey()
+    }
+    private func close() {
+        guard !session.filePickerIsOpen else { session.focusFilePicker(); return }
+        popover.performClose(nil)
+    }
+    func popoverWillShow(_ notification: Notification) { session.menuOpened() }
+    func popoverDidClose(_ notification: Notification) { session.surfaceClosed() }
+    func popoverShouldClose(_ popover: NSPopover) -> Bool { !session.filePickerIsOpen }
 }
 
 enum UpOnlyArtwork {

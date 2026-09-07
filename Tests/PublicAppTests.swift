@@ -299,6 +299,44 @@ struct BulkInputTests {
         source.account = ImportAccount(name: name)
         return ImportBatchDraft(mode: mode, sources: [source], rows: try ImportParser.rows(source: source, mode: mode))
     }
+    @Test("Monzo search exports span months, exclude declines and merge overlaps")
+    func monzoSearchMonths() throws {
+        let csv = "id,created,title,subtitle,amount,currency,categories\na,\"02/01/26, 12:03\",Coffee,,-5,GBP,General\nb,\"03/08/26, 01:47\",Deposit,,20,GBP,Transfers\nc,\"04/08/26, 01:47\",Card,Declined,,,General"
+        let source = try ImportParser.source(bytes: Data(csv.utf8), filename: "sample.csv", mode: .statements)
+        #expect(source.dateFormat == .monzoSearch && source.account.name == "Monzo" && source.account.currency == "GBP")
+        var draft = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        #expect(saved.entries.map(\.month) == ["2026-01", "2026-08"])
+        #expect(saved.entries[1].kind == .transfer && !draft.rows[2].included)
+        draft.sources[0].account = ImportParser.account(for: source, preferred: ImportAccount(), saved: saved.accounts)
+        #expect(draft.sources[0].account.existingID == saved.accounts[0].id)
+        #expect(ImportBatchProcessor.evaluate(draft, document: saved).duplicates == 2)
+        var overlap = try ImportParser.source(bytes: Data((csv + "\nd,\"05/08/26, 12:00\",New,,-3,GBP,General").utf8), filename: "overlap.csv", mode: .statements)
+        overlap.account = draft.sources[0].account
+        let next = ImportBatchDraft(mode: .statements, sources: [overlap], rows: try ImportParser.rows(source: overlap, mode: .statements))
+        let review = ImportBatchProcessor.evaluate(next, document: saved)
+        #expect(review.duplicates == 2 && review.document?.entries.count == 3 && !review.hasErrors)
+        let explicit = ImportAccount(name: "My card", currency: "GBP")
+        #expect(ImportParser.account(for: source, preferred: explicit, saved: saved.accounts) == explicit)
+    }
+    @Test("Exact owner payments are transfers while unrelated costs and edits remain")
+    func ownerPayments() throws {
+        var doc = empty()
+        doc.businessAccounting = [BusinessBook(id: "studio", name: "Studio", ownership: [OwnershipPeriod(fromMonth: "2026-02", numerator: 1, denominator: 2)], firstMonth: "2026-02", sourceURL: "", basis: "Profit before draws", fetchedAt: Date(), transferCounterparties: ["Studio Holdings", "Studio App"])]
+        var draft = try batch("Date,Description,Amount,Currency\n2026-02-01,Studio Holdings,500,USD\n2026-02-02,Studio App,-100,USD\n2026-02-03,Studio Holdings Store,-20,USD\n2026-01-01,Studio Holdings,30,USD", mode: .statements)
+        var saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries.map(\.kind) == [.transfer, .transfer, .expense, .income])
+        #expect(try MonthlyLedger.nativeTotals(MonthKey("2026-02")!, document: saved).first?.totals.moneyOut == 20)
+        draft.rows[0].statement.kindIsUserEdited = true
+        saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries[0].kind == .income && saved.entries[0].kindIsUserEdited == true)
+        saved.entries[1].kind = .expense
+        OwnerPayments.reconcile(in: &saved)
+        #expect(saved.entries[0].kind == .income && saved.entries[1].kind == .transfer)
+        draft.sources[0].account.ownerBusinessID = "studio"
+        saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries.allSatisfy { $0.bucket == .otherBusiness })
+    }
     @Test("Legacy settings and empty settings preserve defaults")
     func legacySettings() throws {
         for json in ["{}", "{\"setupComplete\":true,\"automaticFX\":true}"] {
@@ -551,7 +589,8 @@ struct WiseInputTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let csv = directory.appendingPathComponent("statement.CSV")
         try Data("TransactionID,Date,Description,Amount,Currency,Type\nsample,2026-01-02,Sample expense,12.50,USD,expense\n".utf8).write(to: csv)
-        await session.readImportFiles([csv])
+        let reference = try #require((csv as NSURL).fileReferenceURL())
+        await session.readImportFiles([reference])
         #expect(session.importMessage == nil)
         #expect(session.importDraft?.rows.count == 1)
         let draft = try #require(session.importDraft)
