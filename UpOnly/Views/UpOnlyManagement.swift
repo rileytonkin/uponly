@@ -231,7 +231,7 @@ private struct UpOnlyManagementContent: View {
                         if let observation = session.document?.bankBalances.filter({ $0.accountID == account.id }).max(by: { $0.observedAt < $1.observedAt }) {
                             UpOnlyPrivateText(UpOnlyFormat.currencyMoney(observation.amount.value, currency: account.currency))
                                 .font(.system(size: 18, weight: .medium).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
-                            Text(observation.observedAt.formatted(date: .abbreviated, time: .omitted))
+                            Text(observation.observedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                         } else { Text("Balance needed").font(.system(size: 12)).foregroundStyle(.secondary) }
                         if let document = session.document, let owner = AssetOwnership.businessID(for: account, in: document) {

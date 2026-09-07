@@ -824,7 +824,7 @@ private struct UpOnlyUnlockedPanel: View {
     private var worthCaption: String {
         guard let result, !result.isUnavailable else { return "No value recorded" }
         if result.total == nil {
-            if let last = result.lastComplete { return "Needs update · Last complete " + last.at.formatted(date: .abbreviated, time: .omitted) }
+            if let last = result.lastComplete { return "Needs update · Last complete " + last.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) }
             return ""
         }
         if !result.stale.isEmpty { return "Last-known values · Some sources need an update" }
