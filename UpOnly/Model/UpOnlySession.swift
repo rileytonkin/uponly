@@ -77,10 +77,9 @@ final class UpOnlySession {
     private var pickerDepth = 0
     @ObservationIgnored private var activeFilePanel: NSSavePanel?
     var filePickerIsOpen: Bool { pickerDepth > 0 }
-    var menuStaysOpen: Bool {
-        filePickerIsOpen || (state == .unlocked && importDraft != nil &&
-            (addingInMenu || (managementInMenu && managementSection == "Add your info")))
-    }
+    /// True while the statement drop zone is on screen, so a drag from Finder does not dismiss the menu.
+    var dropZoneVisible = false
+    var menuStaysOpen: Bool { filePickerIsOpen || (state == .unlocked && dropZoneVisible) }
     func focusFilePicker() {
         NSApp.activate(ignoringOtherApps: true)
         activeFilePanel?.makeKeyAndOrderFront(nil)
@@ -474,6 +473,7 @@ final class UpOnlySession {
     }
     func surfaceOpened() { financeSurfaces += 1; handleActivity() }
     func surfaceClosed() {
+        dropZoneVisible = false
         financeSurfaces = max(0, financeSurfaces - 1)
         // Dismissing a popover keeps the vault available for the remaining idle period.
         if financeSurfaces == 0, authenticationContext != nil { lock() }

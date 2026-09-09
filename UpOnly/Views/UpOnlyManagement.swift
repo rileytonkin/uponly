@@ -83,7 +83,7 @@ private struct UpOnlyManagementContent: View {
         VStack(spacing: 0) {
             if !hasGuidedHeader {
             UpOnlyPageHeader(title: editor?.title ?? pageTitle,
-                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) || session.importReturnsHome ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage") {
+                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) || session.importReturnsHome ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage", back: {
                 if discardSources { discardSources = false }
                 else if archive != nil { archive = nil }
                 else if entryToRemove != nil { entryToRemove = nil }
@@ -93,7 +93,7 @@ private struct UpOnlyManagementContent: View {
                 else if ["Manage", "Needs attention"].contains(session.managementSection) { session.managementInMenu = false }
                 else if returnToReview { session.managementSection = "Needs attention" }
                 else { session.managementSection = "Manage" }
-            }.padding(UpOnlyLayout.inset)
+            }, subtitle: editor == nil ? pageSubtitle : nil, trailing: editor == nil ? headerTrailing : nil).padding(UpOnlyLayout.inset)
             Divider()
             }
             if let portfolio = archive {
@@ -164,8 +164,33 @@ private struct UpOnlyManagementContent: View {
         .onChange(of: session.requestedRateCurrency) { _, currency in if currency != nil { editor = .exchangeRate } }
     }
     private func shows(_ kind: TrackedKind) -> Bool { session.document?.shows(kind) == true }
+    /// Months whose spending still needs confirming. When there are any, the attention page is titled by month.
+    private var reviewMonths: [MonthKey] {
+        guard session.managementSection == "Needs attention", let document = session.document else { return [] }
+        return session.monthModel?.attention(in: document, includePerformance: session.attentionIncludesPerformance || session.destination == 0).spendingMonths ?? []
+    }
+    private var reviewMonth: MonthKey? {
+        let months = reviewMonths
+        guard !months.isEmpty else { return nil }
+        return months.first { $0.description == session.entryMonthForManagement } ?? months.last
+    }
+    private var pageSubtitle: String? { reviewMonth == nil ? nil : "Is this month complete?" }
+    private var headerTrailing: AnyView? {
+        let months = reviewMonths
+        guard months.count > 1, let current = reviewMonth else { return nil }
+        return AnyView(Menu {
+            ForEach(months.reversed(), id: \.self) { item in
+                Button { session.entryMonthForManagement = item.description } label: {
+                    if item == current { Label(item.title, systemImage: "checkmark") } else { Text(item.title) }
+                }
+            }
+        } label: {
+            Label("Month", systemImage: "chevron.up.chevron.down").labelStyle(.iconOnly).font(.system(size: 10, weight: .semibold))
+        }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review"))
+    }
     private var pageTitle: String {
-        switch session.managementSection {
+        if let month = reviewMonth { return month.title }
+        return switch session.managementSection {
         case "Entries": "Transactions"
         case "Needs attention": "Needs attention"
         case "Portfolios": "Crypto"
@@ -623,19 +648,8 @@ private struct UpOnlyDataAttention: View {
                     Label("You’re all caught up", systemImage: "checkmark.circle").font(.headline)
                 }
                 if !attention.spendingMonths.isEmpty {
-                    attentionCard(month.title, symbol: "checklist", subtitle: "Is this month complete?") {
-                        if report.spendingMonths.count > 1 {
-                            Menu {
-                                ForEach(report.spendingMonths.reversed(), id: \.self) { item in
-                                    Button(item.title) { reviewMonth = item.description }
-                                }
-                            } label: {
-                                Label("Month", systemImage: "chevron.up.chevron.down").labelStyle(.iconOnly).font(.system(size: 10, weight: .semibold))
-                            }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review")
-                        }
-                    } content: {
-                        spendingReview
-                    }
+                    // The page header names the month; this card starts straight at the figures.
+                    spendingReview.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !attention.balances.isEmpty {
                     attentionCard("Balances needed", symbol: "building.columns") {
@@ -673,6 +687,9 @@ private struct UpOnlyDataAttention: View {
                 }
             }
             .onChange(of: reviewMonth) { session.entryMonthForManagement = month.description }
+            .onChange(of: session.entryMonthForManagement) { _, next in
+                if next != reviewMonth, attention.spendingMonths.contains(where: { $0.description == next }) { reviewMonth = next }
+            }
     }
     private var spendingReview: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -832,19 +849,8 @@ private struct UpOnlyDataAttention: View {
         Text(text).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
     private func attentionCard<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
-        attentionCard(title, symbol: symbol, subtitle: nil, trailing: { EmptyView() }, content: content)
-    }
-    /// Header with an optional subtitle and a trailing control, such as the month picker.
-    private func attentionCard<Trailing: View, Content: View>(_ title: String, symbol: String, subtitle: String?, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(title, systemImage: symbol).font(.headline)
-                    if let subtitle { Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary) }
-                }
-                Spacer(minLength: 8)
-                trailing()
-            }
+            Label(title, systemImage: symbol).font(.headline)
             content()
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
