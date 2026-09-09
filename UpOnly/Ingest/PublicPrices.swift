@@ -316,16 +316,23 @@ extension PublicPrices {
         result.messages += historicalFX.messages
         result.fxIssues.merge(historicalFX.fxIssues) { _, latest in latest }
         let pending = PriceHistory.requests(document: document, now: now, reconnected: reconnected)
-        var count = 0, metalCount = 0
-        for item in pending where count < 4 {
-            // At most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
-            if item.source == .metal {
-                if metalCount >= 4 { continue }
-                let last = (document.priceHistoryCoverage ?? []).filter { $0.key.hasPrefix("asset:metal-") }.map(\.checkedAt).max()
-                if let last, now.timeIntervalSince(last) < 3600 { continue }
-                metalCount += 1
+        var count = 0, metalCount = 0, fxCount = 0
+        for item in pending {
+            // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
+            // Prices stay at four calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
+            if item.source == .fx {
+                guard fxCount < 16 else { continue }
+                fxCount += 1
+            } else {
+                guard count < 4 else { continue }
+                if item.source == .metal {
+                    if metalCount >= 4 { continue }
+                    let last = (document.priceHistoryCoverage ?? []).filter { $0.key.hasPrefix("asset:metal-") }.map(\.checkedAt).max()
+                    if let last, now.timeIntervalSince(last) < 3600 { continue }
+                    metalCount += 1
+                }
+                count += 1
             }
-            count += 1
             do {
                 try Task.checkCancellation()
                 let observations: [Date]
@@ -357,7 +364,7 @@ extension PublicPrices {
                 result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false))
             }
         }
-        if pending.count > count { result.messages.append("More price history is queued for the next refresh.") }
+        if pending.count > count + fxCount { result.messages.append("More price history is queued for the next refresh.") }
         if document.settings.automaticPrices && document.holdings.contains(where: { PreciousMetal.asset($0.assetID) == nil && $0.createdAt < now.addingTimeInterval(-365 * 86400) }) {
             result.messages.append("CoinGecko Demo can recover the past 365 days. Previously saved older observations remain available.")
         }

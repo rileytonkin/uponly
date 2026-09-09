@@ -685,6 +685,16 @@ struct UpOnlyImportView: View {
                                 .modifier(UpOnlyPillMenu()).accessibilityLabel("File options")
                         }.disabled(busy)
                         if batch.mode == .statements, !batch.rows.isEmpty { Text(source.filename).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(source.filename) }
+                        if batch.mode == .statements, !batch.rows.isEmpty, editingStatementAccount != source.id {
+                            // One real balance anchors the history rebuilt from these transactions.
+                            HStack(spacing: 8) {
+                                Text("Balance now").font(.system(size: 12)).foregroundStyle(.secondary)
+                                UpOnlyValueField("0.00", text: sourceBinding(source, \.balance)).textFieldStyle(.roundedBorder).frame(width: 110)
+                                    .accessibilityLabel("Current balance for " + (source.account.name.isEmpty ? source.filename : source.account.name))
+                                Text(source.account.currency).font(.system(size: 12)).foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                            }
+                        }
                         if editingStatementAccount == source.id {
                             UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
                             HStack(spacing: 8) {
