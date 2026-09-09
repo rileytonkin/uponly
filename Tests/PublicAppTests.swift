@@ -72,6 +72,9 @@ struct PublicAppTests {
     func excessivePrecision() throws {
         #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact("1.1234567890123456789012345678901234567890123456789") }
         #expect(try MoneyInput.parseExact("0.00000001") == Decimal(string: "0.00000001"))
+        #expect(try MoneyInput.parseExact(".12") == Decimal(string: "0.12"))
+        #expect(try MoneyInput.parseExact("-.5") == Decimal(string: "-0.5"))
+        #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact(".") }
         #expect(try MoneyInput.parseExact("-0.0100") == Decimal(string: "-0.01"))
         #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact("123oops") }
     }
