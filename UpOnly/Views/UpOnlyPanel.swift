@@ -611,6 +611,27 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var monthEntryCount: Int { session.document?.entries.filter { $0.month == model.month.description }.count ?? 0 }
+    /// Revenue, expenses, profit and your share summed over the months in the selected range.
+    private func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String) {
+        let end = MonthKey.current()
+        var months: [MonthKey] = [end]
+        while months.count < worthRange.months { months.insert(months[0].previous, at: 0) }
+        let rows = months.compactMap { key in book.months.first { $0.month == key.description } }
+        guard !rows.isEmpty else { return (nil, nil, nil, nil, "No accounting for the " + worthRange.phrase + ".") }
+        let profit = rows.reduce(Decimal(0)) { $0 + $1.profitUSD }
+        let revenue = rows.allSatisfy { $0.revenueUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.revenueUSD ?? 0) } : nil
+        let expenses = rows.allSatisfy { $0.expensesUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.expensesUSD ?? 0) } : nil
+        let share = rows.reduce(Decimal?.some(0)) { sum, row in
+            guard let sum, let portion = book.ownership(at: row.month).flatMap({ try? $0.portion(row.profitUSD) }) else { return nil }
+            return sum + portion
+        }
+        let missing = months.count - rows.count
+        var caption = rows.count == 1 ? months.last!.title : (rows.first!.month) + " to " + (rows.last!.month)
+        if let first = MonthKey(rows.first!.month), let last = MonthKey(rows.last!.month) { caption = rows.count == 1 ? first.title : first.title + " to " + last.title }
+        if missing > 0 { caption += " · \(missing) month\(missing == 1 ? "" : "s") without accounting" }
+        if rows.contains(where: \.estimated) { caption += " · current month is provisional" }
+        return (revenue, expenses, profit, share, caption)
+    }
     /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.
     private var rangeMonthPoints: [UpOnlyChartPoint] {
         let end = MonthKey.current()
@@ -889,11 +910,15 @@ private struct UpOnlyUnlockedPanel: View {
             if let share, let total, share != total {
                 UpOnlyValueRow(label: "Your share" + (book?.ownership(at: AssetOwnership.month(at: selectedInterval.end).description).map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
             }
-            if let row = model.state.businesses.first(where: { $0.id == companyID }) {
+            if let companyID, let book = model.books.first(where: { $0.id == companyID }) {
+                let totals = rangeTotals(book)
                 VStack(spacing: 6) {
-                    UpOnlyValueRow(label: "Company profit / loss", value: row.observation.map { UpOnlyFormat.exactMoney($0.profitUSD) } ?? "Not reported")
-                    UpOnlyValueRow(label: "Your profit / loss", value: row.share.map(UpOnlyFormat.exactMoney) ?? "Not reported")
+                    UpOnlyValueRow(label: "Revenue", value: totals.revenue.map(UpOnlyFormat.exactMoney) ?? "Not reported")
+                    UpOnlyValueRow(label: "Expenses", value: totals.expenses.map { UpOnlyFormat.exactMoney(-$0) } ?? "Not reported")
+                    UpOnlyValueRow(label: "Profit / loss", value: totals.profit.map(UpOnlyFormat.exactMoney) ?? "Not reported")
+                    if let share = totals.share, share != totals.profit { UpOnlyValueRow(label: "Your profit / loss", value: UpOnlyFormat.exactMoney(share)) }
                 }
+                Text(totals.caption).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if companyID != nil { Text("Accounting unavailable for this period").font(.system(size: 12)).foregroundStyle(.secondary) }
             let hasBalanceChart = points.contains(where: { $0.value != nil })
             if hasBalanceChart || companyID != nil {
