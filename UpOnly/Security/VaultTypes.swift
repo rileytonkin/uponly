@@ -145,7 +145,10 @@ nonisolated enum MoneyInput {
     }
 
     static func parseExact(_ text: String) throws -> Decimal {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // ".12" and "-.5" are how people type small quantities; read them as "0.12" and "-0.5".
+        guard trimmed != ".", trimmed != "-." else { throw VaultError.invalidAmount }
+        if trimmed.hasPrefix(".") { trimmed = "0" + trimmed } else if trimmed.hasPrefix("-.") { trimmed = "-0" + trimmed.dropFirst() }
         guard !trimmed.isEmpty, trimmed.count <= 160 else { throw VaultError.invalidAmount }
         let allowed = CharacterSet(charactersIn: "0123456789.-")
         guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
