@@ -71,6 +71,7 @@ private struct UpOnlyManagementContent: View {
     @State private var entrySearch = ""
     @State private var entryMonth = ""
     @State private var entryProfile = ""
+    @State private var entryAccount = ""
     @State private var entryLimit = 100
     private var hasGuidedHeader: Bool {
         guard editor == nil, session.managementSection == "Add your info" else { return false }
@@ -411,6 +412,12 @@ private struct UpOnlyManagementContent: View {
                     Text("All months").tag("")
                     ForEach(Array(Set((session.document?.entries ?? []).map(\.month) + (entryMonth.isEmpty ? [] : [entryMonth]))).sorted(by: >), id: \.self) { Text(MonthKey($0)?.title ?? $0).tag($0) }
                 }.labelsHidden().fixedSize().accessibilityLabel("Filter transactions by month").onChange(of: entryMonth) { session.entryMonthForManagement = entryMonth; entryLimit = 100 }
+                if importedEntryAccounts.count > 1 {
+                    Picker("Account", selection: $entryAccount) {
+                        Text("All accounts").tag("")
+                        ForEach(importedEntryAccounts) { Text($0.name).tag($0.id.uuidString) }
+                    }.labelsHidden().fixedSize().accessibilityLabel("Filter transactions by account").onChange(of: entryAccount) { entryLimit = 100 }
+                }
                 #if UPONLY_PERSONAL
                 if session.wiseProfiles.contains(where: { profile in
                     session.document?.entries.contains(where: { $0.sourceRef?.hasPrefix("wise:" + String(profile.id) + ":") == true }) == true
@@ -425,7 +432,7 @@ private struct UpOnlyManagementContent: View {
             if matching.isEmpty {
                 managementEmpty(entrySearch.isEmpty ? "No transactions here yet" : "No matching transactions", detail: entrySearch.isEmpty ? "Add an entry, import a statement, or choose another month." : "Try another description or clear your filters.", symbol: "list.bullet.rectangle")
                 UpOnlyFlow {
-                    if !entryMonth.isEmpty || !entryProfile.isEmpty || !entrySearch.isEmpty { Button("Clear filters") { entryMonth = ""; entryProfile = ""; entrySearch = "" }.buttonStyle(.bordered) }
+                    if !entryMonth.isEmpty || !entryProfile.isEmpty || !entryAccount.isEmpty || !entrySearch.isEmpty { Button("Clear filters") { entryMonth = ""; entryProfile = ""; entryAccount = ""; entrySearch = "" }.buttonStyle(.bordered) }
                 }
             } else {
                 ForEach(groups.keys.sorted(by: >), id: \.self) { month in
@@ -453,7 +460,7 @@ private struct UpOnlyManagementContent: View {
                     Text(entry.label).font(.system(size: 13, weight: .medium))
                         .lineLimit(2).help(entry.label)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    UpOnlyPrivateText((entry.kind == .expense ? "−" : entry.kind == .income ? "+" : "") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency))
+                    UpOnlyPrivateText((entry.kind == .expense ? "−" : entry.kind == .transfer ? "" : "+") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency))
                         .font(.system(size: 13, weight: .medium).monospacedDigit())
                         .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : .primary)
                         .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
@@ -461,6 +468,11 @@ private struct UpOnlyManagementContent: View {
                 HStack(spacing: 4) {
                     Text(entry.currency)
                     if entry.kind == .transfer { Text("· Transfer") }
+                    if entry.kind == .refund { Text("· Refund") }
+                    if importedEntryAccounts.count > 1, let account = session.document?.accounts.first(where: { $0.id == entry.accountID }) {
+                        Text("·")
+                        Text(account.name).lineLimit(1).help(account.name)
+                    }
                 #if UPONLY_PERSONAL
                 if entry.source == .wise, let profileID = entry.sourceRef?.split(separator: ":").dropFirst().first,
                    let profile = session.wiseProfiles.first(where: { String($0.id) == profileID }) {
@@ -484,13 +496,26 @@ private struct UpOnlyManagementContent: View {
             Picker("Transaction type", selection: Binding(get: { entry.kind }, set: { reclassify(entry, as: $0) })) {
                 Text("Income").tag(EntryKind.income)
                 Text("Spending").tag(EntryKind.expense)
+                Text("Refund").tag(EntryKind.refund)
                 Text("Transfer").tag(EntryKind.transfer)
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transaction type")
+            if entry.source != .manual, entry.bucket == .personal, let doc = session.document {
+                let always = OwnerPayments.isPersonalTransferCounterparty(entry.label, document: doc)
+                Toggle(isOn: Binding(get: { always }, set: { setTransferCounterparty(entry.label, enabled: $0) })) {
+                    Text(always ? "Payments to “\(entry.label)” are always transfers" : "Always treat “\(entry.label)” as a transfer")
+                        .font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                }.toggleStyle(.switch).controlSize(.small).accessibilityLabel("Always treat " + entry.label + " as a transfer")
+                Text("Use this for money moved to your own company or another account you own. Imports and syncs apply it automatically.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if entry.source != .wise {
                 Button("Remove entry…", role: .destructive) { entryToRemove = entry }
             }
         }
         }.padding(.vertical, 6)
+    }
+    private func setTransferCounterparty(_ label: String, enabled: Bool) {
+        Task { await session.perform { doc in OwnerPayments.setTransferCounterparty(label, enabled: enabled, in: &doc) } }
     }
     private func reclassify(_ entry: Entry, as kind: EntryKind) {
         Task { await session.perform { doc in
@@ -502,7 +527,14 @@ private struct UpOnlyManagementContent: View {
             (entryMonth.isEmpty || entry.month == entryMonth)
                 && (entrySearch.isEmpty || entry.label.localizedCaseInsensitiveContains(entrySearch))
                 && (entryProfile.isEmpty || entry.sourceRef?.hasPrefix("wise:" + entryProfile + ":") == true)
+                && (entryAccount.isEmpty || entry.accountID?.uuidString == entryAccount)
         }.sorted { $0.month == $1.month ? $0.id.uuidString < $1.id.uuidString : $0.month > $1.month }
+    }
+    /// Bank accounts that statements have been imported into. The account filter only appears when there is more than one.
+    private var importedEntryAccounts: [Account] {
+        guard let doc = session.document else { return [] }
+        let used = Set(doc.entries.compactMap(\.accountID))
+        return doc.accounts.filter { used.contains($0.id) }
     }
     private var security: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -803,7 +835,7 @@ struct UpOnlyEditSheet: View {
                     amountField
                     HStack { Text("Rate date").foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: $date) }
                 case .entry:
-                    Picker("Type", selection: $kind) { Text("Spending").tag("expense"); Text("Income").tag("income"); Text("Transfer").tag("transfer") }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Entry type")
+                    Picker("Type", selection: $kind) { Text("Spending").tag("expense"); Text("Income").tag("income"); Text("Refund").tag("refund"); Text("Transfer").tag("transfer") }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Entry type")
                     HStack(alignment: .firstTextBaseline, spacing: 16) {
                         amountField
                         TextField("USD", text: $currency).textFieldStyle(.plain).font(.system(size: 14, weight: .medium)).frame(width: 50).accessibilityLabel("Currency")

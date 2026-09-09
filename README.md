@@ -17,7 +17,7 @@ Up Only starts empty. Two short setup steps save your recovery code and offer au
 - Encrypts the ledger, holdings, settings, API key and imported statement originals in one local vault.
 - Supports Touch ID or Mac-password unlock, a recovery code, and encrypted backup export/restore.
 
-Personal Performance describes recorded outside income less personal spending. All adds ownership-weighted company profit from connected accounting, independent of owner draws; a company scope shows its full profit and your share separately. Missing accounting and personal records produce gaps or explicitly partial period totals. These are not investment returns. Net-worth changes include deposits, withdrawals and market moves. Missing observations remain missing; history is not invented. A month stays provisional until reviewed. Bank balances need manual updates; importing transactions does not infer a closing balance.
+Personal Performance describes recorded income less personal spending, including what a connected company paid you. All swaps those company payments for your ownership-weighted share of company profit from connected accounting, so nothing is counted twice; a company scope shows its full profit and your share separately. Missing accounting and personal records produce gaps or explicitly partial period totals. These are not investment returns. Net-worth changes include deposits, withdrawals and market moves. Missing observations remain missing; history is not invented. A month stays provisional until reviewed. Bank balances need manual updates; importing transactions does not infer a closing balance.
 
 ## Build and run
 
@@ -88,7 +88,7 @@ Save a CSV template from any input screen. Default templates use ISO dates and d
 | Crypto holdings | `Portfolio`, `Coin`, `Quantity` |
 | Precious metals | `Portfolio`, `Metal`, `Weight`, `Unit` |
 
-Statement mapping also supports separate Debit/Credit columns. With a Type column, amounts are nonnegative and types are `income`, `expense`, or `transfer`; otherwise the amount sign determines the initial classification. Headerless statement paste starts with Date, Description, Amount, Currency, Type, TransactionID.
+Statement mapping also supports separate Debit/Credit columns. With a Type column, amounts are nonnegative and types are `income`, `expense`, `refund`, or `transfer`; otherwise the amount sign determines the initial classification. A refund reduces spending instead of counting as income; Monzo exports file merchant refunds and cashback as refunds automatically. Headerless statement paste starts with Date, Description, Amount, Currency, Type, TransactionID.
 
 Bank balances may be negative or zero. Today's observations use the save time, allowing multiple updates in a day. Historical dates remain historical observations. Crypto quantities replace the total for the listed coin and portfolio; omitted holdings remain unchanged. Explicit zero sets the quantity to zero. Coin tickers need an explicit selection; exact CoinGecko IDs and a bundled common-coin list also work offline.
 

@@ -369,7 +369,40 @@ nonisolated enum OwnerPayments {
         for index in document.entries.indices {
             let entry = document.entries[index]
             guard entry.source != .manual, entry.bucket == .personal, entry.kindIsUserEdited != true else { continue }
-            if isCompanyCounterparty(entry.label, month: entry.month, document: document) { document.entries[index].kind = .transfer }
+            if isPersonalTransferCounterparty(entry.label, document: document) { document.entries[index].kind = .transfer }
+            else if entry.kind == .transfer, isCompanyCounterparty(entry.label, month: entry.month, document: document) {
+                // Money a connected company paid you is income in Personal. Earlier versions saved it as a transfer.
+                document.entries[index].kind = .income
+            }
+        }
+    }
+    /// Classifies an imported personal transaction. Payees marked as always transfers, and money you send to a
+    /// connected company, are transfers. Money a connected company pays you stays income; "All" nets it against profit.
+    static func classify(_ kind: EntryKind, label: String, month: String, document: VaultDocument) -> EntryKind {
+        if isPersonalTransferCounterparty(label, document: document) { return .transfer }
+        if kind == .expense, isCompanyCounterparty(label, month: month, document: document) { return .transfer }
+        return kind
+    }
+    static func isPersonalTransferCounterparty(_ label: String, document: VaultDocument) -> Bool {
+        let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        return (document.transferCounterparties ?? []).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+    }
+    /// Remembers `label` as a transfer payee and reclassifies matching imported personal entries the user has not edited.
+    /// Removing a payee keeps existing classifications; a saved entry does not record its original direction.
+    static func setTransferCounterparty(_ label: String, enabled: Bool, in document: inout VaultDocument) {
+        let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 500 else { return }
+        var names = document.transferCounterparties ?? []
+        names.removeAll { $0.caseInsensitiveCompare(name) == .orderedSame }
+        if enabled { names.append(name) }
+        document.transferCounterparties = names.isEmpty ? nil : names
+        guard enabled else { return }
+        for index in document.entries.indices {
+            let entry = document.entries[index]
+            guard entry.source != .manual, entry.bucket == .personal, entry.kindIsUserEdited != true,
+                  entry.label.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(name) == .orderedSame else { continue }
+            document.entries[index].kind = .transfer
         }
     }
     static func isCompanyCounterparty(_ label: String, month: String, document: VaultDocument) -> Bool {
