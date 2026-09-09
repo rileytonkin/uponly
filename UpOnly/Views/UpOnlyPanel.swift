@@ -216,6 +216,8 @@ private struct UpOnlyUnlockedPanel: View {
     @State private var detail: String?
     @State private var companySelection: CompanySelection?
     @State private var worthRange: WorthRange = .year
+    @State private var companyChart: CompanyChart = .balance
+    enum CompanyChart { case balance, profit }
     /// Net worth is always today's value; the range only sets how much history the chart shows.
     /// Cash flow keeps the month, year or all-time selector.
     private var isWorthPage: Bool { !(session.destination == 0 && shows(.cashFlow)) }
@@ -609,13 +611,6 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var monthEntryCount: Int { session.document?.entries.filter { $0.month == model.month.description }.count ?? 0 }
-    private func chartTitle(_ title: String, detail: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title).font(.system(size: 12, weight: .semibold))
-            Spacer(minLength: 8)
-            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-        }.padding(.top, 18)
-    }
     /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.
     private var rangeMonthPoints: [UpOnlyChartPoint] {
         let start = AssetOwnership.month(at: selectedInterval.start), end = MonthKey.current()
@@ -900,15 +895,30 @@ private struct UpOnlyUnlockedPanel: View {
                     UpOnlyValueRow(label: "Your profit / loss", value: row.share.map(UpOnlyFormat.exactMoney) ?? "Not reported")
                 }
             } else if companyID != nil { Text("Accounting unavailable for this period").font(.system(size: 12)).foregroundStyle(.secondary) }
-            if points.contains(where: { $0.value != nil }) {
-                chartTitle("Bank balance", detail: visibleSamples.first.map { "Daily, since " + UpOnlyFormat.utcDay($0.utcDay) } ?? "")
-                UpOnlyChart(points: points, tint: UpOnlyTint.netWorth)
-            }
-            if companyID != nil {
-                chartTitle("Profit / loss", detail: "By month, " + worthRange.phrase)
-                UpOnlyChart(points: rangeMonthPoints, includesZero: true, showsAllMarkers: true,
-                            selected: nil, tint: UpOnlyTint.cashFlow,
-                            onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
+            let hasBalanceChart = points.contains(where: { $0.value != nil })
+            if hasBalanceChart || companyID != nil {
+                // One chart; the toggle chooses balance history or monthly profit.
+                let showProfit = companyChart == .profit && companyID != nil
+                HStack(alignment: .center, spacing: 8) {
+                    if companyID != nil && hasBalanceChart {
+                        Picker("Chart", selection: $companyChart) {
+                            Text("Balance").tag(CompanyChart.balance)
+                            Text("Profit / loss").tag(CompanyChart.profit)
+                        }.pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize().accessibilityLabel("Company chart")
+                    } else {
+                        Text(showProfit ? "Profit / loss" : "Bank balance").font(.system(size: 12, weight: .semibold))
+                    }
+                    Spacer(minLength: 8)
+                    Text(showProfit ? "By month, " + worthRange.phrase : visibleSamples.first.map { "Daily, since " + UpOnlyFormat.utcDay($0.utcDay) } ?? "")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }.padding(.top, 18)
+                if showProfit || !hasBalanceChart {
+                    UpOnlyChart(points: rangeMonthPoints, includesZero: true, showsAllMarkers: true,
+                                selected: nil, tint: UpOnlyTint.cashFlow,
+                                onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
+                } else {
+                    UpOnlyChart(points: points, tint: UpOnlyTint.netWorth)
+                }
             }
             VStack(alignment: .leading, spacing: 8) {
                 Text(bankValues.count > 1 ? "Balances" : "Balance").font(.system(size: 12, weight: .semibold))
