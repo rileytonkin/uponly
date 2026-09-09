@@ -613,10 +613,10 @@ private struct UpOnlyUnlockedPanel: View {
     private var monthEntryCount: Int { session.document?.entries.filter { $0.month == model.month.description }.count ?? 0 }
     /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.
     private var rangeMonthPoints: [UpOnlyChartPoint] {
-        let start = AssetOwnership.month(at: selectedInterval.start), end = MonthKey.current()
-        var months: [MonthKey] = [], cursor = start
-        while cursor <= end && months.count < 120 { months.append(cursor); cursor = cursor.next }
-        let showYear = months.count > 12
+        let end = MonthKey.current()
+        var months: [MonthKey] = [end]
+        while months.count < worthRange.months { months.insert(months[0].previous, at: 0) }
+        let showYear = months.first?.year != end.year
         return months.map { key in
             let row = model.history.first { $0.month == key } ?? (key, nil, false)
             return UpOnlyChartPoint(id: key.description, label: String(key.shortName.prefix(3)) + (showYear ? " " + String(key.year).suffix(2) : ""), value: row.net, provisional: !row.settled, detailLabel: key.title)
@@ -909,8 +909,8 @@ private struct UpOnlyUnlockedPanel: View {
                         Text(showProfit ? "Profit / loss" : "Bank balance").font(.system(size: 12, weight: .semibold))
                     }
                     Spacer(minLength: 8)
-                    Text(showProfit ? "By month, " + worthRange.phrase : visibleSamples.first.map { "Daily, since " + UpOnlyFormat.utcDay($0.utcDay) } ?? "")
-                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(showProfit ? "Monthly" : visibleSamples.first.map { "Since " + UpOnlyFormat.utcDay($0.utcDay) } ?? "Daily")
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                 }.padding(.top, 18)
                 if showProfit || !hasBalanceChart {
                     UpOnlyChart(points: rangeMonthPoints, includesZero: true, showsAllMarkers: true,
@@ -1257,6 +1257,10 @@ enum WorthRange: CaseIterable {
         switch self { case .month: "Last 30 days"; case .quarter: "Last 3 months"; case .year: "Last 12 months"; case .twoYears: "Last 24 months"; case .fiveYears: "Last 5 years" }
     }
     var phrase: String { title.lowercased() }
+    /// Whole months shown on monthly charts, ending with the current month.
+    var months: Int {
+        switch self { case .month: 1; case .quarter: 3; case .year: 12; case .twoYears: 24; case .fiveYears: 60 }
+    }
     var seconds: TimeInterval {
         switch self { case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .twoYears: 730 * 86400; case .fiveYears: 1826 * 86400 }
     }
