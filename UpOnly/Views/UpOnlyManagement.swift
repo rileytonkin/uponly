@@ -72,6 +72,7 @@ private struct UpOnlyManagementContent: View {
     @State private var entryMonth = ""
     @State private var entryProfile = ""
     @State private var entryAccount = ""
+    @State private var diagnosticsMessage: String?
     @State private var entryLimit = 100
     private var hasGuidedHeader: Bool {
         guard editor == nil, session.managementSection == "Add your info" else { return false }
@@ -660,6 +661,12 @@ private struct UpOnlyManagementContent: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button { Task { await session.exportBackup() } } label: { Label("Export encrypted backup…", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.glassProminent)
+            }
+            UpOnlySettingsCard(title: "Diagnostics", subtitle: "", symbol: "stethoscope") {
+                Text("Writes a plain-text summary of what the net worth chart can and cannot value, with no amounts, to the app's support folder.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Write diagnostics file") { diagnosticsMessage = session.writeDiagnostics() }.buttonStyle(.bordered)
+                if let diagnosticsMessage { Text(diagnosticsMessage).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled) }
             }
         }
     }
