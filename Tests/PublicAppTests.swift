@@ -1776,6 +1776,9 @@ struct CoinSuggestionTests {
         #expect(ImportCoins.suggestions("  ", coins: coins).isEmpty)
         #expect(ImportCoins.suggestions(" BItCoin ", coins: coins).first?.id == "bitcoin")
         #expect(ImportCoins.suggestions("BTC", coins: coins).prefix(2).map(\.id) == ["bitcoin", "wrapped-bitcoin"])
+        let lookalikes = coins + [CatalogCoin(id: "batcat", symbol: "btc", name: "batcat"), CatalogCoin(id: "big-tom-coin", symbol: "btc", name: "Big Tom Coin")]
+        #expect(ImportCoins.suggestions("btc", coins: lookalikes).first?.id == "bitcoin")
+        #expect(ImportCoins.suggestions("eth", coins: lookalikes + [CatalogCoin(id: "ethena-usde", symbol: "usde", name: "Ethena USDe")]).first?.id == "ethereum")
         #expect(ImportCoins.suggestions("bsv", coins: coins).first?.id == "bitcoin-cash-sv")
         #expect(Set(ImportCoins.common.map(\.id)).count == ImportCoins.common.count)
         #expect(ImportCoins.suggestions("no-such-coin", coins: coins).isEmpty)

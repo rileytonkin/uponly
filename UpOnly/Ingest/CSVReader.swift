@@ -529,11 +529,12 @@ nonisolated enum ImportCoins {
     static func suggestions(_ raw: String, coins: [CatalogCoin]) -> [CatalogCoin] {
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
-        func rank(_ coin: CatalogCoin) -> Int {
+        // Well-known coins come first, in market-cap order, so "btc" shows Bitcoin before the many lookalike tickers.
+        let prominence = Dictionary(uniqueKeysWithValues: common.enumerated().map { ($1.id, $0) })
+        func rank(_ coin: CatalogCoin) -> (Int, Int) {
             let fields = [coin.id, coin.symbol, coin.name].map { $0.lowercased() }
-            if fields.contains(query) { return 0 }
-            if fields.contains(where: { $0.hasPrefix(query) }) { return 1 }
-            return 2
+            let match = fields.contains(query) ? 0 : fields.contains(where: { $0.hasPrefix(query) }) ? 1 : 2
+            return (prominence[coin.id] ?? Int.max, match)
         }
         return Array(coins.filter { coin in
             [coin.id, coin.symbol, coin.name].contains { $0.localizedCaseInsensitiveContains(query) }
