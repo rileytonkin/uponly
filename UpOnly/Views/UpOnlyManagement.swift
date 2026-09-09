@@ -460,7 +460,7 @@ private struct UpOnlyManagementContent: View {
                     Text(entry.label).font(.system(size: 13, weight: .medium))
                         .lineLimit(2).help(entry.label)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    UpOnlyPrivateText((entry.kind == .expense ? "−" : entry.kind == .income ? "+" : "") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency))
+                    UpOnlyPrivateText((entry.kind == .expense ? "−" : entry.kind == .transfer ? "" : "+") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency))
                         .font(.system(size: 13, weight: .medium).monospacedDigit())
                         .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : .primary)
                         .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
@@ -468,6 +468,7 @@ private struct UpOnlyManagementContent: View {
                 HStack(spacing: 4) {
                     Text(entry.currency)
                     if entry.kind == .transfer { Text("· Transfer") }
+                    if entry.kind == .refund { Text("· Refund") }
                     if importedEntryAccounts.count > 1, let account = session.document?.accounts.first(where: { $0.id == entry.accountID }) {
                         Text("·")
                         Text(account.name).lineLimit(1).help(account.name)
@@ -495,6 +496,7 @@ private struct UpOnlyManagementContent: View {
             Picker("Transaction type", selection: Binding(get: { entry.kind }, set: { reclassify(entry, as: $0) })) {
                 Text("Income").tag(EntryKind.income)
                 Text("Spending").tag(EntryKind.expense)
+                Text("Refund").tag(EntryKind.refund)
                 Text("Transfer").tag(EntryKind.transfer)
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transaction type")
             if entry.source != .manual, entry.bucket == .personal, let doc = session.document {
@@ -833,7 +835,7 @@ struct UpOnlyEditSheet: View {
                     amountField
                     HStack { Text("Rate date").foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: $date) }
                 case .entry:
-                    Picker("Type", selection: $kind) { Text("Spending").tag("expense"); Text("Income").tag("income"); Text("Transfer").tag("transfer") }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Entry type")
+                    Picker("Type", selection: $kind) { Text("Spending").tag("expense"); Text("Income").tag("income"); Text("Refund").tag("refund"); Text("Transfer").tag("transfer") }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Entry type")
                     HStack(alignment: .firstTextBaseline, spacing: 16) {
                         amountField
                         TextField("USD", text: $currency).textFieldStyle(.plain).font(.system(size: 14, weight: .medium)).frame(width: 50).accessibilityLabel("Currency")
