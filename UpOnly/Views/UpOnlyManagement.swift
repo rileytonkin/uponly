@@ -778,14 +778,15 @@ private struct UpOnlyDataAttention: View {
             if !evidence.largest.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Transactions, biggest first").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                    // The scroll extends to the panel edge so its bar sits outside the rows.
                     UpOnlyMenuScroll(maxHeight: 280) {
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(evidence.largest) { item in
                                 evidenceRow(item, document: document)
                                 if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
                             }
-                        }.padding(.trailing, 14) // keep the row's chevron clear of the scroll bar
-                    }
+                        }.padding(.trailing, UpOnlyLayout.inset)
+                    }.padding(.trailing, -UpOnlyLayout.inset)
                 }
             }
             ForEach(evidence.silent, id: \.self) { name in
