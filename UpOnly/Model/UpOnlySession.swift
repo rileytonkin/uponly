@@ -51,6 +51,8 @@ final class UpOnlySession {
     private(set) var backgroundCheckedAt: Date?
     private(set) var backgroundIssues: [String] = []
     private var priceRequest: Task<PriceUpdate, Error>?
+    /// True while `priceRequest` is a scheduled catch-up, which a manual refresh may pre-empt.
+    private var priceRequestIsAutomatic = false
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
     private var networkAvailable = true
     private var catalogRequest: Task<[CatalogCoin], Error>?
@@ -1041,6 +1043,8 @@ extension UpOnlySession {
         }
     }
     func refreshPrices(reconnected: Bool = false, automatic: Bool = false) async {
+        // A manual refresh takes over from a scheduled catch-up instead of silently doing nothing.
+        if !automatic, priceRequestIsAutomatic, let running = priceRequest { running.cancel(); priceRequest = nil; priceRequestIsAutomatic = false }
         guard state == .unlocked, !refreshing, priceRequest == nil, !isFixture, let doc = document else { return }
         let token = sessionToken, revision = sourceRevision
         if automatic {
@@ -1052,10 +1056,12 @@ extension UpOnlySession {
             sourceMessage = "Updating prices and checking for missed history…"
         }
         fxIssues = [:]
-        defer { if token == sessionToken, revision == sourceRevision { refreshing = false; priceRequest = nil } }
+        var mine: Task<PriceUpdate, Error>?
+        // Only the refresh that owns the current request clears it; a pre-empted catch-up must not clobber its replacement.
+        defer { if token == sessionToken, revision == sourceRevision, priceRequest == mine { refreshing = false; priceRequest = nil; priceRequestIsAutomatic = false } }
         do {
-            let request = Task.detached(priority: .utility) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
-            priceRequest = request
+            let request = Task.detached(priority: automatic ? .utility : .userInitiated) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
+            priceRequest = request; priceRequestIsAutomatic = automatic; mine = request
             let update = try await request.value
             guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
             if !update.quotes.isEmpty || !update.rates.isEmpty || !update.coverage.isEmpty {
@@ -1148,20 +1154,26 @@ extension UpOnlySession {
         try validateSourceKey(key, prices: prices)
         try validateSourceKey(metalKey ?? "", prices: false)
         resetSourceWork()
-        defer { if state == .unlocked { scheduleRefresh() } }
-        try await mutate { doc in
-            #if UPONLY_PERSONAL
-            if let wise { doc.settings.automaticWise = wise }
-            #endif
-            doc.settings.automaticPrices = prices
-            doc.settings.automaticFX = fx
-            doc.settings.coinGeckoKey = key
-            if let metals { doc.settings.automaticMetals = metals }
-            if let metalKey { doc.settings.metalHistoryKey = metalKey }
-            doc.priceHistoryCoverage?.removeAll { !$0.complete }
+        do {
+            try await mutate { doc in
+                #if UPONLY_PERSONAL
+                if let wise { doc.settings.automaticWise = wise }
+                #endif
+                doc.settings.automaticPrices = prices
+                doc.settings.automaticFX = fx
+                doc.settings.coinGeckoKey = key
+                if let metals { doc.settings.automaticMetals = metals }
+                if let metalKey { doc.settings.metalHistoryKey = metalKey }
+                doc.priceHistoryCoverage?.removeAll { !$0.complete }
+            }
+        } catch { if state == .unlocked { scheduleRefresh() }; throw error }
+        // Fetch current prices and rates first so the source shows data, then start the scheduled loop.
+        guard state == .unlocked else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if prices || fx || metals == true { await self.refreshPrices() }
+            if self.state == .unlocked { self.scheduleRefresh() }
         }
-        // Fetch current prices and rates right away so the source shows data, not "waiting".
-        if state == .unlocked, prices || fx || metals == true { Task { await refreshPrices() } }
     }
     func completeSetup(tracked: [TrackedKind], prices: Bool, fx: Bool, key: String, metals: Bool = false, metalKey: String = "") async throws {
         try await flushSetupProgress()
