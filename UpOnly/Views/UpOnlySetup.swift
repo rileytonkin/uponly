@@ -13,14 +13,20 @@ struct UpOnlyPageHeader: View {
     var backLabel = "Back"
     var profileImage: Data?
     let back: () -> Void
+    var subtitle: String?
+    var trailing: AnyView?
     var body: some View {
         HStack(spacing: 12) {
             Button(action: back) { Label("Back", systemImage: "chevron.left") }
                 .buttonStyle(.glass).accessibilityLabel(backLabel)
             if let profileImage { UpOnlyProfileImage(data: profileImage, name: title, size: 24) }
-            Text(title).font(.system(size: 14, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 14, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let subtitle { Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
             Spacer(minLength: 0)
+            if let trailing { trailing }
         }.controlSize(.regular).frame(minHeight: 32)
     }
 }
