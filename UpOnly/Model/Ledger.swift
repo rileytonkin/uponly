@@ -294,3 +294,70 @@ nonisolated enum MonthlyLedger {
         } catch { return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount) }
     }
 }
+
+/// What a month's personal totals were built from, so a review can be confirmed or rejected at a glance.
+nonisolated struct MonthEvidence: Sendable, Equatable {
+    struct Source: Identifiable, Sendable, Equatable {
+        var id: String
+        var name: String
+        var count: Int
+        var currency: String
+        var moneyIn: Decimal
+        var moneyOut: Decimal
+        /// When a statement was last imported for this bank account; nil for synced or manual sources.
+        var lastImport: Date?
+    }
+    var sources: [Source] = []
+    var largestIncome: [Entry] = []
+    var largestSpending: [Entry] = []
+    var transfers = 0
+    var refunds = 0
+    /// Accounts that had personal activity last month but none in this one.
+    var silent: [String] = []
+
+    static func sourceName(for entry: Entry, accounts: [Account]) -> (id: String, name: String) {
+        if let id = entry.accountID, let account = accounts.first(where: { $0.id == id }) { return (id.uuidString, account.name) }
+        if entry.source == .wise, let profile = entry.sourceRef?.split(separator: ":").dropFirst().first,
+           let account = accounts.first(where: { $0.externalProfileID == String(profile) }) {
+            return ("wise:" + profile, String(account.name.split(separator: "·").first ?? "Wise").trimmingCharacters(in: .whitespaces))
+        }
+        return ("manual", "Added by hand")
+    }
+    static func build(_ month: MonthKey, document: VaultDocument) -> MonthEvidence {
+        let monthID = month.description
+        let personal = document.entries.filter { $0.month == monthID && $0.bucket == .personal }
+        var result = MonthEvidence()
+        result.transfers = personal.filter { $0.kind == .transfer }.count
+        result.refunds = personal.filter { $0.kind == .refund }.count
+        let counted = personal.filter { $0.kind != .transfer }
+        var order: [String] = [], groups: [String: [Entry]] = [:]
+        for entry in counted {
+            let key = sourceName(for: entry, accounts: document.accounts).id
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(entry)
+        }
+        for key in order {
+            let rows = groups[key] ?? []
+            guard let first = rows.first else { continue }
+            let name = sourceName(for: first, accounts: document.accounts).name
+            for currency in Set(rows.map(\.currency)).sorted() {
+                let same = rows.filter { $0.currency == currency }
+                let moneyIn = same.filter { $0.kind == .income }.reduce(Decimal(0)) { $0 + $1.amount }
+                let spent = same.filter { $0.kind == .expense }.reduce(Decimal(0)) { $0 + $1.amount }
+                let refunded = same.filter { $0.kind == .refund }.reduce(Decimal(0)) { $0 + $1.amount }
+                let lastImport = first.accountID.flatMap { id in document.importedStatements.filter { $0.accountID == id }.map(\.importedAt).max() }
+                result.sources.append(Source(id: key + ":" + currency, name: name, count: same.count, currency: currency, moneyIn: moneyIn, moneyOut: spent - refunded, lastImport: lastImport))
+            }
+        }
+        result.largestIncome = Array(counted.filter { $0.kind == .income }.sorted { $0.amount > $1.amount }.prefix(3))
+        result.largestSpending = Array(counted.filter { $0.kind == .expense }.sorted { $0.amount > $1.amount }.prefix(5))
+        let previous = month.previous.description
+        let active = Set(counted.map { sourceName(for: $0, accounts: document.accounts).id })
+        var seen = Set<String>()
+        for entry in document.entries where entry.month == previous && entry.bucket == .personal && entry.kind != .transfer {
+            let source = sourceName(for: entry, accounts: document.accounts)
+            if source.id != "manual", !active.contains(source.id), seen.insert(source.id).inserted { result.silent.append(source.name) }
+        }
+        return result
+    }
+}
