@@ -1068,7 +1068,7 @@ extension UpOnlySession {
             }
         }
     }
-    func refreshPrices(reconnected: Bool = false, automatic: Bool = false) async {
+    func refreshPrices(reconnected: Bool = false, automatic: Bool = false, round: Int = 0) async {
         let log = Logger(subsystem: "org.uponly", category: "prices")
         // A manual refresh takes over from a scheduled catch-up instead of silently doing nothing.
         if !automatic, priceRequestIsAutomatic, let running = priceRequest { running.cancel(); priceRequest = nil; priceRequestIsAutomatic = false; log.notice("manual refresh pre-empted scheduled catch-up") }
@@ -1109,6 +1109,10 @@ extension UpOnlySession {
                 for (source, issue) in [("Crypto", "crypto"), ("Metals", "metals"), ("Exchange rates", "fx")] where update.sourceIssues[issue] == nil {
                     backgroundIssues.removeAll { $0 == source || $0.lowercased().hasPrefix(issue + " ") }
                 }
+                // Keep going while history is still queued, instead of leaving gaps until the next hourly slot.
+                if round < 6, update.messages.contains(where: { $0.hasPrefix("More price history is queued") }) {
+                    Task { [weak self] in await self?.refreshPrices(round: round + 1) }
+                } else { _ = writeDiagnostics() }
             }
         } catch {
             log.error("refresh failed: \(String(describing: error), privacy: .public)")

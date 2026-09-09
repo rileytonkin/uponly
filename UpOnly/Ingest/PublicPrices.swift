@@ -340,7 +340,7 @@ extension PublicPrices {
             // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
             // Prices stay at four calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
             if item.source == .fx {
-                guard fxCount < 24 else { continue }
+                guard fxCount < 80 else { continue }
                 fxCount += 1
             } else {
                 guard count < 4 else { continue }
