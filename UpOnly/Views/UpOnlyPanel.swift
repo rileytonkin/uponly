@@ -614,6 +614,7 @@ private struct UpOnlyUnlockedPanel: View {
                     personalSubtotal("Income", value: totals.personalIncome)
                     personalSubtotal("Spending", value: -totals.personalSpend)
                 }
+                if personalAccountGroups.count > 1 { personalAccountBreakdown }
             } else if entries.isEmpty {
                 Text("No personal entries for this period").font(.headline).fixedSize(horizontal: false, vertical: true)
             }
@@ -635,13 +636,28 @@ private struct UpOnlyUnlockedPanel: View {
                 UpOnlyMenuScroll(maxHeight: 150) {
                     VStack(alignment: .leading, spacing: 10) {
                         let groups = Dictionary(grouping: entries, by: \.month)
+                        let accountGroups = personalAccountGroups
                         ForEach(groups.keys.sorted(by: >), id: \.self) { month in
                             VStack(alignment: .leading, spacing: 10) {
                                 if model.period != .monthly {
                                     Text(MonthKey(month)?.title ?? month).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                                 }
-                                ForEach(groups[month] ?? []) { entry in
-                                    UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry))
+                                if accountGroups.count > 1 {
+                                    // Several bank accounts feed Personal, so each month is split by account.
+                                    ForEach(accountGroups) { group in
+                                        let rows = (groups[month] ?? []).filter { $0.accountID == group.id }
+                                        if !rows.isEmpty {
+                                            Text(group.name).font(.system(size: 11, weight: .medium)).foregroundStyle(.tertiary)
+                                                .padding(.top, 2).accessibilityLabel(group.name + " transactions")
+                                            ForEach(rows) { entry in
+                                                UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry))
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    ForEach(groups[month] ?? []) { entry in
+                                        UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry))
+                                    }
                                 }
                             }
                         }
@@ -650,15 +666,44 @@ private struct UpOnlyUnlockedPanel: View {
             }
         }.padding(.top, 8)
     }
+    /// Bank accounts represented in the visible personal entries, in the order they were added.
+    /// Manual entries share one "Added by hand" group; it is listed last.
+    private var personalAccountGroups: [PersonalAccountGroup] {
+        let entries = model.personalEntries
+        let accounts = session.document?.accounts ?? []
+        var groups = accounts.filter { account in entries.contains { $0.accountID == account.id } }
+            .map { PersonalAccountGroup(id: $0.id, name: $0.name) }
+        if entries.contains(where: { $0.accountID == nil }) { groups.append(PersonalAccountGroup(id: nil, name: "Added by hand")) }
+        return groups
+    }
+    private var personalAccountBreakdown: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("By account").font(.system(size: 11)).foregroundStyle(.secondary)
+            ForEach(personalAccountGroups) { group in
+                let rows = model.personalEntries.filter { $0.accountID == group.id }
+                let usd = rows.reduce(Decimal?.some(0)) { sum, entry in
+                    guard let sum, let value = personalEntryUSD(entry) else { return nil }
+                    return (try? MoneyInput.add(sum, value)) ?? nil
+                }
+                UpOnlyValueRow(label: group.name, value: usd.map { UpOnlyFormat.exactMoney($0) } ?? "Rate needed")
+                    .accessibilityLabel(group.name + " income minus spending")
+            }
+        }
+    }
     private func personalSubtotal(_ title: String, value: Decimal) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
             UpOnlyPrivateText(UpOnlyFormat.exactMoney(value)).font(.system(size: 14, weight: .medium)).monospacedDigit().fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func personalEntryAmount(_ entry: Entry) -> String {
+    private func personalEntryUSD(_ entry: Entry) -> Decimal? {
         let signed = entry.kind == .expense ? -entry.amount : entry.amount
-        guard let doc = session.document, let month = MonthKey(entry.month), let rate = MonthlyLedger.rate(currency: entry.currency, month: month, document: doc), let usd = try? MoneyInput.multiply(signed, rate) else {
+        guard let doc = session.document, let month = MonthKey(entry.month), let rate = MonthlyLedger.rate(currency: entry.currency, month: month, document: doc) else { return nil }
+        return try? MoneyInput.multiply(signed, rate)
+    }
+    private func personalEntryAmount(_ entry: Entry) -> String {
+        guard let usd = personalEntryUSD(entry) else {
+            let signed = entry.kind == .expense ? -entry.amount : entry.amount
             return UpOnlyFormat.currencyMoney(signed, currency: entry.currency) + " " + entry.currency
         }
         return UpOnlyFormat.exactMoney(usd)
@@ -1150,4 +1195,8 @@ struct UpOnlyPillMenu: ViewModifier {
             .padding(.horizontal, 10).frame(minHeight: 26)
             .glassEffect(.regular, in: .capsule)
     }
+}
+private struct PersonalAccountGroup: Identifiable, Hashable {
+    var id: UUID?
+    var name: String
 }

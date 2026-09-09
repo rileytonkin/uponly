@@ -572,7 +572,7 @@ final class UpOnlySession {
                 if next.mode == .statements, let importDocument {
                     for index in rows.indices where rows[index].statement.originalType.isEmpty {
                         let input = rows[index].statement
-                        if let date = try? source.dateFormat.date(input.date), OwnerPayments.isCompanyCounterparty(input.label, month: String(ImportDateFormat.today(date).prefix(7)), document: importDocument) { rows[index].statement.kind = .transfer }
+                        if let date = try? source.dateFormat.date(input.date), OwnerPayments.isTransferCounterparty(input.label, month: String(ImportDateFormat.today(date).prefix(7)), document: importDocument) { rows[index].statement.kind = .transfer }
                     }
                 }
                 next.rows += rows

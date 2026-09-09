@@ -35,6 +35,12 @@ nonisolated struct Entry: Codable, Identifiable, Sendable, Equatable {
         self.month = month.description; self.bucket = bucket; self.kind = kind
         self.amount = amount; self.currency = currency; self.label = label; self.source = source; self.sourceRef = sourceRef
     }
+    /// The bank account a CSV import was saved against (`<account UUID>:<transaction reference>`).
+    /// Manual entries and Wise activity have no bank account.
+    var accountID: UUID? {
+        guard source == .csv, let ref = sourceRef, let prefix = ref.split(separator: ":", maxSplits: 1).first else { return nil }
+        return UUID(uuidString: String(prefix))
+    }
 }
 nonisolated struct Account: Codable, Identifiable, Sendable, Hashable {
     var id = UUID()
