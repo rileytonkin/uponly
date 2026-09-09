@@ -309,6 +309,7 @@ struct UpOnlySources: View {
     @State private var metalKey = ""
     @State private var key = ""
     @State private var message: String?
+    @State private var loaded = false
     private var showsCrypto: Bool { session.document?.shows(.crypto) == true }
     private var showsFX: Bool { session.document?.shows(.banks) == true || session.document?.shows(.cashFlow) == true }
     private var hasChanges: Bool {
@@ -329,7 +330,7 @@ struct UpOnlySources: View {
                                controlDisabled: session.isBusy) {
                 UpOnlySourceStatus(kind: .wise, savedOn: session.document?.settings.automaticWise == true, interval: "Updates every 12 hours",
                                    refresh: { Task { await session.refreshWise() } },
-                                   refreshDisabled: hasChanges || session.isBusy || session.document?.settings.automaticWise != true)
+                                   refreshDisabled: session.isBusy || session.document?.settings.automaticWise != true)
                 HStack(alignment: .top, spacing: 16) {
                     ForEach(session.wiseProfiles) { profile in
                         VStack(spacing: 7) {
@@ -350,12 +351,18 @@ struct UpOnlySources: View {
                                    symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, isOn: $prices,
                                    controlDisabled: session.isBusy) {
                     UpOnlySourceStatus(kind: .crypto, savedOn: session.document?.settings.automaticPrices == true, interval: "Updates every hour",
-                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: hasChanges || session.isBusy)
+                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if prices {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("CoinGecko Demo API key").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder)
-                            Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { save() }
+                            UpOnlyFlow(spacing: 8) {
+                                if key != session.document?.settings.coinGeckoKey {
+                                    Button("Save key") { save() }.buttonStyle(.glassProminent).controlSize(.small)
+                                        .disabled(session.isBusy || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                                Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            }
                         }
                     }
                     DisclosureGroup("What CoinGecko receives") {
@@ -367,12 +374,17 @@ struct UpOnlySources: View {
             if session.document?.shows(.metals) == true {
                 UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals, controlDisabled: session.isBusy) {
                     UpOnlySourceStatus(kind: .metals, savedOn: session.document?.settings.automaticMetals == true, interval: "Updates every hour",
-                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: hasChanges || session.isBusy)
+                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if metals {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Gold API history key (optional)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder)
-                            Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder).onSubmit { save() }
+                            UpOnlyFlow(spacing: 8) {
+                                if metalKey != session.document?.settings.metalHistoryKey {
+                                    Button("Save key") { save() }.buttonStyle(.glassProminent).controlSize(.small).disabled(session.isBusy)
+                                }
+                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            }
                             Text("Live prices need no key and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
@@ -384,7 +396,7 @@ struct UpOnlySources: View {
                                    symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.cashFlow, isOn: $fx,
                                    controlDisabled: session.isBusy) {
                     UpOnlySourceStatus(kind: .fx, savedOn: session.document?.settings.automaticFX == true, interval: "Updates every 15 minutes",
-                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: hasChanges || session.isBusy)
+                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     DisclosureGroup("About exchange rates") {
                         Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Historical entries need a rate dated near the end of their month.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
@@ -402,12 +414,25 @@ struct UpOnlySources: View {
         }.task(id: message) {
             if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
         }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
+        // Switches save themselves. Keys save on Return or with Save key, since a half-typed key must not be stored.
+        .onChange(of: wise) { if loaded { save() } }
+        .onChange(of: fx) { if loaded { save() } }
+        .onChange(of: metals) { if loaded { save() } }
+        .onChange(of: prices) { _, on in if loaded, !on || !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { save() } }
         .onAppear {
             if let settings = session.document?.settings {
                 #if UPONLY_PERSONAL
                 wise = settings.automaticWise
                 #endif
                 prices = settings.automaticPrices; fx = settings.automaticFX; key = settings.coinGeckoKey; metals = settings.automaticMetals; metalKey = settings.metalHistoryKey }
+            Task { @MainActor in loaded = true }
+        }
+    }
+    private func save() {
+        guard hasChanges, !(prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) else { return }
+        Task {
+            do { try await session.saveSources(prices: prices, fx: fx, key: key, metals: metals, metalKey: metalKey, wise: wise); message = "Changes saved." }
+            catch { message = error.localizedDescription }
         }
     }
     @ViewBuilder private var sourceActions: some View {
