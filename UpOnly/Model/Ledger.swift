@@ -296,22 +296,23 @@ nonisolated enum MonthlyLedger {
 }
 
 /// What a month's personal totals were built from, so a review can be confirmed or rejected at a glance.
+/// Figures are USD at the month's rate; a source whose currency has no rate shows nil.
 nonisolated struct MonthEvidence: Sendable, Equatable {
     struct Source: Identifiable, Sendable, Equatable {
         var id: String
         var name: String
         var count: Int
-        var currency: String
-        var moneyIn: Decimal
-        var moneyOut: Decimal
-        /// When a statement was last imported for this bank account; nil for synced or manual sources.
-        var lastImport: Date?
+        var moneyIn: Decimal?
+        var moneyOut: Decimal?
+    }
+    struct Item: Identifiable, Sendable, Equatable {
+        var entry: Entry
+        var usd: Decimal?
+        var id: UUID { entry.id }
     }
     var sources: [Source] = []
-    var largestIncome: [Entry] = []
-    var largestSpending: [Entry] = []
-    var transfers = 0
-    var refunds = 0
+    /// The month's biggest movements of any kind, transfers included, so a misfiled one can be fixed here.
+    var largest: [Item] = []
     /// Accounts that had personal activity last month but none in this one.
     var silent: [String] = []
 
@@ -319,19 +320,22 @@ nonisolated struct MonthEvidence: Sendable, Equatable {
         if let id = entry.accountID, let account = accounts.first(where: { $0.id == id }) { return (id.uuidString, account.name) }
         if entry.source == .wise, let profile = entry.sourceRef?.split(separator: ":").dropFirst().first,
            let account = accounts.first(where: { $0.externalProfileID == String(profile) }) {
-            return ("wise:" + profile, String(account.name.split(separator: "·").first ?? "Wise").trimmingCharacters(in: .whitespaces))
+            return ("wise:" + profile, String(account.name.split(separator: "·").first ?? "Wise").trimmingCharacters(in: .whitespaces) + " (Wise)")
         }
         return ("manual", "Added by hand")
     }
-    static func build(_ month: MonthKey, document: VaultDocument) -> MonthEvidence {
+    static func build(_ month: MonthKey, document: VaultDocument, now: Date = Date()) -> MonthEvidence {
         let monthID = month.description
         let personal = document.entries.filter { $0.month == monthID && $0.bucket == .personal }
+        var rates: [String: Decimal?] = [:]
+        func usd(_ entry: Entry) -> Decimal? {
+            if rates[entry.currency] == nil { rates[entry.currency] = MonthlyLedger.rate(currency: entry.currency, month: month, document: document, now: now) }
+            guard let rate = rates[entry.currency] ?? nil else { return nil }
+            return try? MoneyInput.multiply(entry.amount, rate)
+        }
         var result = MonthEvidence()
-        result.transfers = personal.filter { $0.kind == .transfer }.count
-        result.refunds = personal.filter { $0.kind == .refund }.count
-        let counted = personal.filter { $0.kind != .transfer }
         var order: [String] = [], groups: [String: [Entry]] = [:]
-        for entry in counted {
+        for entry in personal where entry.kind != .transfer {
             let key = sourceName(for: entry, accounts: document.accounts).id
             if groups[key] == nil { order.append(key) }
             groups[key, default: []].append(entry)
@@ -339,20 +343,18 @@ nonisolated struct MonthEvidence: Sendable, Equatable {
         for key in order {
             let rows = groups[key] ?? []
             guard let first = rows.first else { continue }
-            let name = sourceName(for: first, accounts: document.accounts).name
-            for currency in Set(rows.map(\.currency)).sorted() {
-                let same = rows.filter { $0.currency == currency }
-                let moneyIn = same.filter { $0.kind == .income }.reduce(Decimal(0)) { $0 + $1.amount }
-                let spent = same.filter { $0.kind == .expense }.reduce(Decimal(0)) { $0 + $1.amount }
-                let refunded = same.filter { $0.kind == .refund }.reduce(Decimal(0)) { $0 + $1.amount }
-                let lastImport = first.accountID.flatMap { id in document.importedStatements.filter { $0.accountID == id }.map(\.importedAt).max() }
-                result.sources.append(Source(id: key + ":" + currency, name: name, count: same.count, currency: currency, moneyIn: moneyIn, moneyOut: spent - refunded, lastImport: lastImport))
+            var moneyIn: Decimal? = 0, moneyOut: Decimal? = 0
+            for entry in rows {
+                guard let value = usd(entry) else { if entry.kind == .income { moneyIn = nil } else { moneyOut = nil }; continue }
+                if entry.kind == .income { moneyIn = moneyIn.map { $0 + value } }
+                else { moneyOut = moneyOut.map { $0 + (entry.kind == .refund ? -value : value) } }
             }
+            result.sources.append(Source(id: key, name: sourceName(for: first, accounts: document.accounts).name, count: rows.count, moneyIn: moneyIn, moneyOut: moneyOut))
         }
-        result.largestIncome = Array(counted.filter { $0.kind == .income }.sorted { $0.amount > $1.amount }.prefix(3))
-        result.largestSpending = Array(counted.filter { $0.kind == .expense }.sorted { $0.amount > $1.amount }.prefix(5))
+        result.largest = Array(personal.map { Item(entry: $0, usd: usd($0)) }
+            .sorted { ($0.usd ?? $0.entry.amount) > ($1.usd ?? $1.entry.amount) }.prefix(8))
         let previous = month.previous.description
-        let active = Set(counted.map { sourceName(for: $0, accounts: document.accounts).id })
+        let active = Set(order)
         var seen = Set<String>()
         for entry in document.entries where entry.month == previous && entry.bucket == .personal && entry.kind != .transfer {
             let source = sourceName(for: entry, accounts: document.accounts)

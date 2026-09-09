@@ -399,29 +399,29 @@ struct BulkInputTests {
         let typed = try batch("Date,Description,Amount,Currency,Type\n2026-07-01,Shop,20,USD,refund", mode: .statements)
         #expect(try #require(ImportBatchProcessor.evaluate(typed, document: doc).document).entries.first?.kind == .refund)
     }
-    @Test("Month evidence names each source, the largest items, excluded kinds and accounts that went quiet")
+    @Test("Month evidence gives one USD line per source, the biggest movements of any kind, and accounts that went quiet")
     func monthEvidence() {
         var doc = empty()
         let monzo = Account(name: "Monzo", currency: "GBP"), kast = Account(name: "Kast", currency: "USD")
         var wise = Account(name: "Riley · GBP", currency: "GBP"); wise.externalProfileID = "7"
         doc.accounts = [monzo, kast, wise]
         let july = MonthKey("2026-07")!, august = MonthKey("2026-08")!
-        doc.importedStatements = [ImportedStatement(digest: Data([1]), originalBytes: Data(), importedAt: Date(timeIntervalSince1970: 100), accountID: monzo.id)]
+        doc.fx = [FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(2), providerTime: Date(timeIntervalSince1970: 1_787_000_000), fetchedAt: Date(timeIntervalSince1970: 1_787_000_000), provider: "test")]
         doc.entries = [
-            Entry(month: august, kind: .income, amount: 4371.14, currency: "GBP", label: "Equinox", source: .csv, sourceRef: monzo.id.uuidString + ":1"),
-            Entry(month: august, kind: .expense, amount: 1017.09, currency: "GBP", label: "Airbnb", source: .csv, sourceRef: monzo.id.uuidString + ":2"),
-            Entry(month: august, kind: .refund, amount: 17.09, currency: "GBP", label: "Airbnb refund", source: .csv, sourceRef: monzo.id.uuidString + ":3"),
+            Entry(month: august, kind: .income, amount: 4000, currency: "GBP", label: "Equinox", source: .csv, sourceRef: monzo.id.uuidString + ":1"),
+            Entry(month: august, kind: .expense, amount: 1000, currency: "GBP", label: "Airbnb", source: .csv, sourceRef: monzo.id.uuidString + ":2"),
+            Entry(month: august, kind: .refund, amount: 10, currency: "GBP", label: "Airbnb refund", source: .csv, sourceRef: monzo.id.uuidString + ":3"),
             Entry(month: august, kind: .transfer, amount: 2500, currency: "GBP", label: "Tonkin Apps", source: .csv, sourceRef: monzo.id.uuidString + ":4"),
             Entry(month: august, kind: .expense, amount: 40, currency: "GBP", label: "Cafe", source: .wise, sourceRef: "wise:7:a"),
             Entry(month: august, kind: .expense, amount: 5, currency: "USD", label: "Cash"),
             Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: kast.id.uuidString + ":9")
         ]
-        let evidence = MonthEvidence.build(august, document: doc)
-        #expect(evidence.sources.map(\.name) == ["Monzo", "Riley", "Added by hand"])
-        #expect(evidence.sources[0].count == 3 && evidence.sources[0].moneyIn == 4371.14 && evidence.sources[0].moneyOut == 1000 && evidence.sources[0].lastImport == Date(timeIntervalSince1970: 100))
-        #expect(evidence.sources[1].lastImport == nil && evidence.sources[2].currency == "USD")
-        #expect(evidence.transfers == 1 && evidence.refunds == 1)
-        #expect(evidence.largestIncome.map(\.label) == ["Equinox"] && evidence.largestSpending.map(\.label) == ["Airbnb", "Cafe", "Cash"])
+        let evidence = MonthEvidence.build(august, document: doc, now: Date(timeIntervalSince1970: 1_787_000_000))
+        #expect(evidence.sources.map(\.name) == ["Monzo", "Riley (Wise)", "Added by hand"])
+        #expect(evidence.sources[0].count == 3 && evidence.sources[0].moneyIn == 8000 && evidence.sources[0].moneyOut == 1980)
+        #expect(evidence.sources[2].moneyIn == 0 && evidence.sources[2].moneyOut == 5)
+        #expect(evidence.largest.map(\.entry.label) == ["Equinox", "Tonkin Apps", "Airbnb", "Cafe", "Airbnb refund", "Cash"])
+        #expect(evidence.largest[1].usd == 5000)
         #expect(evidence.silent == ["Kast"])
     }
     @Test("Imported entries expose their bank account; manual and Wise entries do not")

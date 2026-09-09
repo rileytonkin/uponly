@@ -707,53 +707,67 @@ private struct UpOnlyDataAttention: View {
             }
         }
     }
-    /// Shows what the totals were built from: each source's own figures, the biggest items, and anything that went quiet.
+    /// Shows what the totals were built from: one USD line per source and the biggest movements, each editable in place.
     private func reviewEvidence(_ evidence: MonthEvidence, document: VaultDocument) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if !evidence.sources.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Where it came from").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                     ForEach(evidence.sources) { source in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                Text("\(source.count) transaction\(source.count == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.secondary)
-                                Spacer(minLength: 4)
-                                UpOnlyPrivateText("+" + UpOnlyFormat.currencyMoney(source.moneyIn, currency: source.currency) + "  −" + UpOnlyFormat.currencyMoney(source.moneyOut, currency: source.currency) + " " + source.currency)
-                                    .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            if let date = source.lastImport {
-                                Text("Statement imported " + date.formatted(date: .abbreviated, time: .omitted)).font(.system(size: 10)).foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    if evidence.transfers > 0 || evidence.refunds > 0 {
-                        Text([evidence.transfers > 0 ? "\(evidence.transfers) transfer\(evidence.transfers == 1 ? "" : "s") not counted" : nil,
-                              evidence.refunds > 0 ? "\(evidence.refunds) refund\(evidence.refunds == 1 ? "" : "s") taken off spending" : nil].compactMap { $0 }.joined(separator: " · "))
-                            .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text("\(source.count)").font(.system(size: 11)).foregroundStyle(.tertiary)
+                            Spacer(minLength: 4)
+                            UpOnlyPrivateText("+" + (source.moneyIn.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed") + "  −" + (source.moneyOut.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                        }.accessibilityElement(children: .combine)
                     }
                 }
             }
-            if !evidence.largestIncome.isEmpty || !evidence.largestSpending.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Largest items").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                    ForEach(evidence.largestIncome) { entry in evidenceRow(entry, tint: UpOnlyTint.cashFlow) }
-                    ForEach(evidence.largestSpending) { entry in evidenceRow(entry, tint: .primary) }
+            if !evidence.largest.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Biggest this month").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(evidence.largest) { item in evidenceRow(item) }
                 }
             }
             ForEach(evidence.silent, id: \.self) { name in
-                Label(name + ": nothing recorded this month. Import its statement if you used it.", systemImage: "exclamationmark.circle")
+                Label(name + ": nothing this month. Import its statement if you used it.", systemImage: "exclamationmark.circle")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
-    private func evidenceRow(_ entry: Entry, tint: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+    /// Label, USD amount, and a type menu so a misfiled transaction is fixed without leaving the review.
+    private func evidenceRow(_ item: MonthEvidence.Item) -> some View {
+        let entry = item.entry
+        let sign = entry.kind == .expense ? "−" : entry.kind == .transfer ? "" : "+"
+        let amount = item.usd.map { UpOnlyFormat.exactMoney($0) } ?? UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency) + " " + entry.currency
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(entry.label).font(.system(size: 12)).lineLimit(1).help(entry.label)
+                .foregroundStyle(entry.kind == .transfer ? .secondary : .primary)
             Spacer(minLength: 4)
-            UpOnlyPrivateText((entry.kind == .income ? "+" : "−") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency) + " " + entry.currency)
-                .font(.system(size: 12).monospacedDigit()).foregroundStyle(tint).lineLimit(1)
+            UpOnlyPrivateText(sign + amount).font(.system(size: 12).monospacedDigit()).lineLimit(1)
+                .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : entry.kind == .transfer ? .secondary : .primary)
+            Menu(kindName(entry.kind)) {
+                ForEach([EntryKind.income, .expense, .refund, .transfer], id: \.self) { kind in
+                    Button(kindName(kind)) { reclassify(entry, as: kind) }.disabled(kind == entry.kind)
+                }
+                if entry.source != .manual, entry.bucket == .personal, let doc = session.document, !OwnerPayments.isPersonalTransferCounterparty(entry.label, document: doc) {
+                    Divider()
+                    Button("Always a transfer: " + entry.label) { setTransferCounterparty(entry.label, enabled: true) }
+                }
+            }.menuStyle(.borderedButton).controlSize(.mini).fixedSize()
+                .accessibilityLabel("Type of " + entry.label)
         }
+    }
+    private func kindName(_ kind: EntryKind) -> String {
+        switch kind { case .income: "Income"; case .expense: "Spending"; case .refund: "Refund"; case .transfer: "Transfer" }
+    }
+    private func setTransferCounterparty(_ label: String, enabled: Bool) {
+        Task { await session.perform { doc in OwnerPayments.setTransferCounterparty(label, enabled: enabled, in: &doc) } }
+    }
+    private func reclassify(_ entry: Entry, as kind: EntryKind) {
+        Task { await session.perform { doc in
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].kind = kind; doc.entries[index].kindIsUserEdited = true }
+        } }
     }
     private func reviewTotal(_ title: String, value: Decimal) -> some View {
         VStack(alignment: .leading, spacing: 4) {
