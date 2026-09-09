@@ -32,6 +32,8 @@ nonisolated struct Entry: Codable, Identifiable, Sendable, Equatable {
     var sourceRef: String?
     var importFingerprint: String?
     var kindIsUserEdited: Bool?
+    /// The connected company a business cost was paid for, when one has been chosen.
+    var businessID: String?
     init(month: MonthKey, bucket: Bucket = .personal, kind: EntryKind, amount: Decimal, currency: String, label: String, source: EntrySource = .manual, sourceRef: String? = nil) {
         self.month = month.description; self.bucket = bucket; self.kind = kind
         self.amount = amount; self.currency = currency; self.label = label; self.source = source; self.sourceRef = sourceRef

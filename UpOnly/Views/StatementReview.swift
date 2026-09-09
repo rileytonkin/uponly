@@ -609,7 +609,8 @@ struct UpOnlyImportView: View {
             if session.importDraft == nil { session.startImport(.statements) }
             prepareExternalInput(); Task { await session.readImportFiles(urls) }; return true
         } isTargeted: { dropTargeted = $0 }
-        .onAppear { session.dropZoneVisible = true }
+        .onAppear { session.dropZoneVisible = session.importDraft?.mode == .statements }
+        .onChange(of: session.importDraft?.mode) { _, mode in session.dropZoneVisible = mode == .statements }
         .onDisappear { session.dropZoneVisible = false }
         .onChange(of: session.importRevision) { _, _ in invalidateReview(); clampPage() }
         .onChange(of: session.importLoading) { _, loading in if !loading, let batch = session.importDraft, usesSummary(batch) { beginReview() } }

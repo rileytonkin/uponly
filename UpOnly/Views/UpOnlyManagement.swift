@@ -494,7 +494,7 @@ private struct UpOnlyManagementContent: View {
                     Text(entry.currency)
                     if entry.kind == .transfer { Text("· Transfer") }
                     if entry.kind == .refund { Text("· Refund") }
-                    if entry.bucket == .businessCost { Text("· Business cost") } else if entry.bucket == .otherBusiness { Text("· Business") }
+                    if entry.bucket == .businessCost { Text("· Paid for " + businessName(entry.businessID)) } else if entry.bucket == .otherBusiness { Text("· Business") }
                     if importedEntryAccounts.count > 1, let account = session.document?.accounts.first(where: { $0.id == entry.accountID }) {
                         Text("·")
                         Text(account.name).lineLimit(1).help(account.name)
@@ -526,9 +526,14 @@ private struct UpOnlyManagementContent: View {
                 Text("Transfer").tag(EntryKind.transfer)
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transaction type")
             if entry.kind == .expense, entry.bucket == .personal || entry.bucket == .businessCost {
-                Picker("Paid for", selection: Binding(get: { entry.bucket }, set: { reassign(entry, to: $0) })) {
-                    Text("Me").tag(Bucket.personal)
-                    Text("The business").tag(Bucket.businessCost)
+                Picker("Paid for", selection: Binding(get: { entry.bucket == .businessCost ? "business:" + (entry.businessID ?? "") : "me" }, set: { choice in
+                    if choice == "me" { reassign(entry, to: .personal, business: nil) }
+                    else { reassign(entry, to: .businessCost, business: String(choice.dropFirst("business:".count)).isEmpty ? nil : String(choice.dropFirst("business:".count))) }
+                })) {
+                    Text("Me").tag("me")
+                    let books = session.document?.businessAccounting ?? []
+                    if books.isEmpty { Text("The business").tag("business:") }
+                    ForEach(books) { Text($0.name).tag("business:" + $0.id) }
                 }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Paid for")
                 if entry.bucket == .businessCost {
                     Text("Left out of personal spending. The company's accounting is unchanged.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -559,10 +564,13 @@ private struct UpOnlyManagementContent: View {
     }
     /// Moves a transaction between your personal money and the business. A business cost paid from a personal
     /// account leaves personal spending; it does not change the company's accounting.
-    private func reassign(_ entry: Entry, to bucket: Bucket) {
+    private func reassign(_ entry: Entry, to bucket: Bucket, business: String?) {
         Task { await session.perform { doc in
-            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket }
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket; doc.entries[index].businessID = business }
         } }
+    }
+    private func businessName(_ id: String?) -> String {
+        session.document?.businessAccounting?.first { $0.id == id }?.name ?? "the business"
     }
     private var filteredEntries: [Entry] {
         (session.document?.entries ?? []).filter { entry in
@@ -805,7 +813,14 @@ private struct UpOnlyDataAttention: View {
             }
             if entry.kind == .expense {
                 Divider()
-                Button("Paid for the business, not me") { reassign(entry, to: .businessCost) }
+                let books = document.businessAccounting ?? []
+                if books.isEmpty { Button("Paid for the business, not me") { reassign(entry, to: .businessCost, business: nil) } }
+                else if books.count == 1, let book = books.first { Button("Paid for " + book.name + ", not me") { reassign(entry, to: .businessCost, business: book.id) } }
+                else {
+                    Menu("Paid for a business, not me") {
+                        ForEach(books) { book in Button(book.name) { reassign(entry, to: .businessCost, business: book.id) } }
+                    }
+                }
             }
         } label: {
             HStack(alignment: .center, spacing: 10) {
@@ -834,9 +849,9 @@ private struct UpOnlyDataAttention: View {
             if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].kind = kind; doc.entries[index].kindIsUserEdited = true }
         } }
     }
-    private func reassign(_ entry: Entry, to bucket: Bucket) {
+    private func reassign(_ entry: Entry, to bucket: Bucket, business: String?) {
         Task { await session.perform { doc in
-            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket }
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket; doc.entries[index].businessID = business }
         } }
     }
     private func reviewTotal(_ title: String, value: Decimal) -> some View {
