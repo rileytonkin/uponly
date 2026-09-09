@@ -217,6 +217,7 @@ private struct UpOnlyUnlockedPanel: View {
     @State private var companySelection: CompanySelection?
     @State private var worthRange: WorthRange = .year
     @State private var companyChart: CompanyChart = .balance
+    @State private var showEmptyBalances = false
     enum CompanyChart { case balance, profit }
     /// Net worth is always today's value; the range only sets how much history the chart shows.
     /// Cash flow keeps the month, year or all-time selector.
@@ -224,6 +225,12 @@ private struct UpOnlyUnlockedPanel: View {
     private var selectedInterval: DateInterval {
         guard isWorthPage else { return model.selectedInterval() }
         let now = Date()
+        if worthRange == .month {
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
+            let current = MonthKey.current()
+            let start = calendar.date(from: DateComponents(year: current.year, month: current.month, day: 1)) ?? now
+            return DateInterval(start: min(start, now), end: now)
+        }
         return DateInterval(start: now.addingTimeInterval(-worthRange.seconds), end: now)
     }
 
@@ -447,7 +454,7 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var periodPhrase: String {
-        if isWorthPage { return "over the " + worthRange.phrase }
+        if isWorthPage { return worthRange == .month ? "this month" : "over the " + worthRange.phrase }
         return switch model.period {
         case .monthly: model.month == .current() ? "this month" : "in " + String(model.month.shortName.prefix(3)) + " " + String(model.month.year)
         case .annual: model.month.year == MonthKey.current().year ? "this year" : "in " + String(model.month.year)
@@ -951,20 +958,39 @@ private struct UpOnlyUnlockedPanel: View {
                     UpOnlyChart(points: points, tint: UpOnlyTint.netWorth)
                 }
             }
-            VStack(alignment: .leading, spacing: 8) {
-                Text(bankValues.count > 1 ? "Balances" : "Balance").font(.system(size: 12, weight: .semibold))
-                ForEach(bankValues, id: \.id) { component in
-                    Divider().opacity(0.5)
+            // Largest balance first; empty currencies fold away so the list stays short.
+            let sorted = bankValues.sorted { ($0.usdValue?.value ?? -1) > ($1.usdValue?.value ?? -1) }
+            let empty = sorted.filter { $0.nativeAmount?.value == 0 && $0.missing == nil }
+            let emptyIDs = Set(empty.map(\.id))
+            let shown = showEmptyBalances ? sorted : sorted.filter { !emptyIDs.contains($0.id) }
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(bankValues.count > 1 ? "Balances" : "Balance").font(.system(size: 12, weight: .semibold))
+                    Spacer(minLength: 8)
+                    if !empty.isEmpty {
+                        Button(showEmptyBalances ? "Hide empty" : "\(empty.count) empty") { showEmptyBalances.toggle() }
+                            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }.padding(.bottom, 4)
+                ForEach(shown, id: \.id) { component in
+                    Divider().opacity(0.4)
                     Button {
                         if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true }
                     } label: {
-                        UpOnlyValueRow(label: bankValues.count > 1 ? component.currency : component.label,
-                                       value: component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "fx" ? "Rate needed" : "Add balance"),
-                                       chevron: true, primaryLabel: true)
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(bankValues.count > 1 ? component.currency : component.label).font(.system(size: 13, weight: .medium))
+                            if bankValues.count > 1, component.currency != "USD", let native = component.nativeAmount {
+                                UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            UpOnlyPrivateText(component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "fx" ? "Rate needed" : "Add balance"))
+                                .font(.system(size: 13, weight: .medium).monospacedDigit())
+                                .foregroundStyle(component.nativeAmount?.value == 0 ? .secondary : .primary)
+                        }.padding(.vertical, 8).contentShape(Rectangle())
                     }.buttonStyle(.plain).help("Update this balance")
                         .accessibilityLabel("Update " + component.label + " balance")
                 }
-            }.padding(12).modifier(UpOnlyContentSurface())
+            }.padding(.horizontal, 12).padding(.vertical, 10).modifier(UpOnlyContentSurface())
             ForEach(portfolios) { portfolio in
                 Button { companySelection = nil; model.selectScope(selection.previousScope); scope = .portfolio(portfolio.id) } label: {
                     worthRowLabel(portfolio)
@@ -1285,7 +1311,7 @@ private struct PersonalAccountGroup: Identifiable, Hashable {
 enum WorthRange: CaseIterable {
     case month, quarter, year, twoYears, fiveYears
     var title: String {
-        switch self { case .month: "Last 30 days"; case .quarter: "Last 3 months"; case .year: "Last 12 months"; case .twoYears: "Last 24 months"; case .fiveYears: "Last 5 years" }
+        switch self { case .month: "This month"; case .quarter: "Last 3 months"; case .year: "Last 12 months"; case .twoYears: "Last 24 months"; case .fiveYears: "Last 5 years" }
     }
     var phrase: String { title.lowercased() }
     /// Whole months shown on monthly charts, ending with the current month.
