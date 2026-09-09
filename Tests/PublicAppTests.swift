@@ -424,6 +424,18 @@ struct BulkInputTests {
         #expect(evidence.largest[1].usd == 5000)
         #expect(evidence.silent == ["Kast"])
     }
+    @Test("A business cost paid personally leaves personal spending and month evidence")
+    func businessCostPaidPersonally() {
+        var doc = empty()
+        let bank = Account(name: "Monzo", currency: "USD"); doc.accounts = [bank]
+        let month = MonthKey("2026-08")!
+        var cost = Entry(month: month, kind: .expense, amount: 300, currency: "USD", label: "Laptop", source: .csv, sourceRef: bank.id.uuidString + ":1")
+        doc.entries = [cost, Entry(month: month, kind: .expense, amount: 20, currency: "USD", label: "Lunch")]
+        #expect(MonthlyLedger.personal(month, document: doc).totals?.personalSpend == 320)
+        cost.bucket = .businessCost; doc.entries[0] = cost
+        #expect(MonthlyLedger.personal(month, document: doc).totals?.personalSpend == 20)
+        #expect(MonthEvidence.build(month, document: doc).largest.map(\.entry.label) == ["Lunch"])
+    }
     @Test("Imported entries expose their bank account; manual and Wise entries do not")
     func entryAccountID() {
         let bank = Account(name: "Monzo", currency: "GBP")
