@@ -542,9 +542,12 @@ nonisolated enum WiseAPI {
                     // Retain explicit user classification while refreshing provider amounts/status.
                     next.entries[index].amount = amount; next.entries[index].currency = recorded.currency
                     next.entries[index].month = month.description; next.entries[index].label = label
+                    next.entries[index].day = ImportDateFormat.today(date); next.entries[index].outflow = !income
                     if next.entries[index].kindIsUserEdited != true { next.entries[index].kind = kind }
                 } else {
-                    next.entries.append(Entry(month: month, bucket: item.profile.bucket, kind: kind, amount: amount, currency: recorded.currency, label: label.isEmpty ? "Wise transaction" : label, source: .wise, sourceRef: reference))
+                    var entry = Entry(month: month, bucket: item.profile.bucket, kind: kind, amount: amount, currency: recorded.currency, label: label.isEmpty ? "Wise transaction" : label, source: .wise, sourceRef: reference)
+                    entry.day = ImportDateFormat.today(date); entry.outflow = !income
+                    next.entries.append(entry)
                 }
             }
         }

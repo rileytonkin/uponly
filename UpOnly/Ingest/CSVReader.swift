@@ -574,6 +574,8 @@ nonisolated enum ImportRowState: Sendable, Equatable {
     var blocksSave: Bool { switch self { case .error, .needsReview: true; default: false } }
 }
 nonisolated struct ImportEvaluation: Sendable {
+    /// Earliest day whose derived balances changed, so saved history is rebuilt from there.
+    var historyStart: Date?
     var states: [UUID: ImportRowState] = [:]
     var sourceErrors: [UUID: String] = [:]
     var globalError: String?
@@ -596,6 +598,7 @@ nonisolated enum ImportBatchProcessor {
     }
     static func evaluate(_ batch: ImportBatchDraft, document: VaultDocument, now: Date = Date(), catalog: [CatalogCoin] = []) -> ImportEvaluation {
         var result = ImportEvaluation(), next = document
+        var touchedAccounts = Set<UUID>()
         do { try batch.checkLimits(); try Task.checkCancellation() }
         catch { result.globalError = error.localizedDescription; return result }
         guard !batch.rows.isEmpty else { result.globalError = "Add at least one row."; return result }
@@ -636,6 +639,7 @@ nonisolated enum ImportBatchProcessor {
             if !doc.bankTracking.contains(where: { $0.accountID == accountID }) && !doc.trackedBankAccountIDs.contains(accountID) { doc.setBankTracked(accountID, tracked: true, at: date) }
             doc.bankBalances.append(BankBalanceObservation(id: UUID(), accountID: accountID, amount: PreciseDecimal(amount), currency: account.currency, observedAt: date, source: "Import", sourceIdentity: accountID.uuidString))
             balanceKeys.insert(key); doc.track(.banks)
+            touchedAccounts.insert(accountID)
             return true
         }
         for row in batch.rows {
@@ -686,6 +690,11 @@ nonisolated enum ImportBatchProcessor {
                     if let existing = seenReferences[reference] {
                         let same = existing.importFingerprint.map { $0 == fingerprint } ?? (existing.month == month.description && existing.amount == abs(signed) && existing.currency == currency && existing.label == label)
                         guard same else { throw ImportFailure("This transaction ID has different saved details. Correct it or exclude the row.") }
+                        // Re-importing an older statement teaches existing rows their day and direction.
+                        if existing.day == nil || existing.outflow == nil, let index = next.entries.firstIndex(where: { $0.id == existing.id }) {
+                            next.entries[index].day = ImportDateFormat.today(date); next.entries[index].outflow = signed < 0
+                            touchedAccounts.insert(accountID)
+                        }
                         result.states[row.id] = .duplicate; continue
                     }
                     let fingerprintKey = accountID.uuidString + ":" + fingerprint
@@ -697,6 +706,8 @@ nonisolated enum ImportBatchProcessor {
                     if !input.kindIsUserEdited && input.originalType.isEmpty { entry.kind = OwnerPayments.classify(entry.kind, label: label, month: month.description, document: next) }
                     entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
                     entry.importFingerprint = fingerprint
+                    entry.day = ImportDateFormat.today(date); entry.outflow = signed < 0
+                    touchedAccounts.insert(accountID)
                     next.entries.append(entry); next.track(.cashFlow)
                     seenReferences[reference] = entry; fingerprints.insert(fingerprintKey)
                     importedSources.insert(source.id); result.states[row.id] = .ready("New transaction"); result.added += 1
@@ -783,7 +794,11 @@ nonisolated enum ImportBatchProcessor {
                 }
             }
         }
-        if !result.hasErrors { result.document = next }
+        if !result.hasErrors {
+            // Statements move the balance history of the accounts they touch.
+            if !touchedAccounts.isEmpty { result.historyStart = BalanceReconstruction.apply(accountIDs: touchedAccounts, to: &next, now: now) }
+            result.document = next
+        }
         return result
     }
 }

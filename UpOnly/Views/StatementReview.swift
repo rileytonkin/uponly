@@ -867,7 +867,14 @@ struct UpOnlyImportView: View {
             }
             if mode == .statements {
                 ImportAccountEditor(account: Binding(get: { source.account }, set: { setStatementAccount(source, $0) }), accounts: accounts)
-
+                // The balance anchors the history rebuilt from this statement's transactions.
+                ImportField(title: "Balance now · " + source.account.currency + " (optional)") {
+                    HStack(spacing: 8) {
+                        UpOnlyValueField("0.00", text: sourceBinding(source, \.balance)).textFieldStyle(.roundedBorder).frame(width: 140)
+                            .accessibilityLabel("Current balance for " + (source.account.name.isEmpty ? source.filename : source.account.name))
+                        Text("Lets Up Only work out the balance on every day these transactions cover.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             VStack(alignment: .leading, spacing: 8) {
                 if !mode.isHolding { Picker("Dates", selection: sourceBinding(source, \.dateFormat)) { ForEach(ImportDateFormat.allCases, id: \.self) { Text($0.rawValue).fixedSize(horizontal: false, vertical: true).tag($0) } } }
