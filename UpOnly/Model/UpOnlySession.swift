@@ -1043,6 +1043,10 @@ extension UpOnlySession {
                 guard let self, self.state == .unlocked else { return }
                 await self.configureBackground()
                 await self.applyBackgroundCache()
+                #if UPONLY_PERSONAL
+                // Wise rows saved before days were kept need one sync to rebuild their balance history.
+                if self.document?.entries.contains(where: { $0.source == .wise && $0.day == nil }) == true { await self.refreshWise() }
+                #endif
                 await self.refreshPrices(automatic: true)
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
