@@ -359,6 +359,8 @@ final class UpOnlySession {
         let changedBalanceDays = current.document.bankBalances.filter { !nextBalances.contains($0.id) }.map(\.observedAt)
             + next.bankBalances.filter { !previousBalances.contains($0.id) }.map(\.observedAt)
         if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
+        // Backdated tracking makes an account count on earlier days, so those days change too.
+        if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < UTCDay.start(of: now) { backdated = min(backdated ?? tracked, tracked) }
         var rebuilt = false
         if let backdated, backdated < UTCDay.start(of: now) {
             let proposed = next
@@ -377,7 +379,16 @@ final class UpOnlySession {
         guard token == sessionToken else { throw VaultError.locked }
         publish(next)
         // Rebuilt days need daily exchange rates to be valued; fetch them now rather than at the next scheduled slot.
-        if rebuilt { Task { [weak self] in await self?.refreshPrices() } }
+        if rebuilt { Task { [weak self] in await self?.refreshPrices(); _ = self?.writeDiagnostics() } }
+    }
+    /// Re-runs balance reconstruction for every account so tracking and derived series match the current rules.
+    func repairBalanceHistory() async {
+        guard state == .unlocked, !isBusy, let doc = document else { return }
+        let ids = Set(doc.accounts.filter { account in doc.bankBalances.contains { $0.accountID == account.id } }.map(\.id))
+        guard !ids.isEmpty else { return }
+        var changed = false
+        try? await mutate { document in changed = BalanceReconstruction.apply(accountIDs: ids, to: &document) != nil }
+        _ = changed
     }
 
     private func mutatePrepared(_ prepare: @escaping @Sendable (VaultDocument) throws -> VaultDocument) async throws {
@@ -1051,6 +1062,7 @@ extension UpOnlySession {
                 // Wise rows saved before days were kept need one sync to rebuild their balance history.
                 if self.document?.entries.contains(where: { $0.source == .wise && $0.day == nil }) == true { await self.refreshWise() }
                 #endif
+                await self.repairBalanceHistory()
                 await self.refreshPrices(automatic: true)
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
@@ -1108,6 +1120,38 @@ extension UpOnlySession {
                 }
             }
         }
+    }
+    /// A structural summary of the vault for debugging chart gaps. Names and dates only; no amounts.
+    func writeDiagnostics() -> String {
+        guard let doc = document else { return "Unlock first." }
+        let day = BalanceReconstruction.dayFormatter()
+        var lines: [String] = ["generated \(Date())"]
+        lines.append("accounts:")
+        for account in doc.accounts {
+            let balances = doc.bankBalances.filter { $0.accountID == account.id }
+            let derived = balances.filter { $0.source == BalanceReconstruction.source }
+            let entries = doc.entries.filter { $0.accountID == account.id || (account.externalProfileID != nil && $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix("wise:" + account.externalProfileID! + ":") == true) }
+            let tracking = doc.bankTracking.filter { $0.accountID == account.id }.sorted { $0.ordinal < $1.ordinal }.map { ($0.tracked ? "on " : "off ") + day.string(from: $0.effectiveAt) }
+            lines.append("  \(account.name) [\(account.currency)] profile=\(account.externalProfileID ?? "-") balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
+        }
+        lines.append("fx:")
+        for currency in Set(doc.fx.map(\.sourceCurrency)).sorted() {
+            let days = Set(doc.fx.filter { $0.sourceCurrency == currency }.map { day.string(from: UTCDay.start(of: $0.providerTime)) })
+            lines.append("  \(currency) days=\(days.count) first=\(days.min() ?? "-") last=\(days.max() ?? "-")")
+        }
+        lines.append("coverage: " + (doc.priceHistoryCoverage ?? []).map { $0.key + " " + day.string(from: $0.start) + ".." + day.string(from: $0.end) + ($0.complete ? " ok" : " partial") }.joined(separator: " | "))
+        lines.append("daily valuations (allTracked, last 300 days):")
+        let samples = doc.dailyValuations.filter { $0.scope == .allTracked && $0.utcDay > Date().addingTimeInterval(-300 * 86400) }.sorted { $0.utcDay < $1.utcDay }
+        var previous = ""
+        for sample in samples {
+            let missing = sample.components.filter { $0.missing != nil }.map { $0.label + ":" + ($0.missing ?? "") }.sorted().joined(separator: ",")
+            let line = "complete=\(sample.isComplete) components=\(sample.components.count) missing=[\(missing)]"
+            if line != previous { lines.append("  \(day.string(from: sample.utcDay)) " + line); previous = line }
+        }
+        lines.append("  … \(samples.count) samples total; a line is printed only when the state changes")
+        let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
+        do { try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8); return "Written to " + url.path }
+        catch { return "Could not write: " + error.localizedDescription }
     }
     func commitPriceUpdate(_ update: PriceUpdate) async throws {
         try await mutatePrepared { current in try PriceHistory.applying(update, to: current, now: Date()) }
