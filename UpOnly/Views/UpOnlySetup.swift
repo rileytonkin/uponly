@@ -259,9 +259,9 @@ struct UpOnlySourceStatus: View {
             if let error = session.wiseError { return error }
             #endif
             return session.backgroundIssues.contains("Bank balances") ? "The last background sync failed." : nil
-        case .crypto: return session.backgroundIssues.contains(where: { $0.hasPrefix("Crypto") }) ? "The last price update failed." : nil
-        case .metals: return session.backgroundIssues.contains(where: { $0.hasPrefix("Metals") }) ? "The last price update failed." : nil
-        case .fx: return session.backgroundIssues.contains(where: { $0.hasPrefix("Exchange rates") }) ? "The last rate update failed." : nil
+        case .crypto: return session.sourceIssues["crypto"] ?? (session.backgroundIssues.contains(where: { $0.hasPrefix("Crypto") }) ? "The last price update failed." : nil)
+        case .metals: return session.sourceIssues["metals"] ?? (session.backgroundIssues.contains(where: { $0.hasPrefix("Metals") }) ? "The last price update failed." : nil)
+        case .fx: return session.sourceIssues["fx"] ?? (session.backgroundIssues.contains(where: { $0.hasPrefix("Exchange rates") }) ? "The last rate update failed." : nil)
         }
     }
     private var busy: Bool {
