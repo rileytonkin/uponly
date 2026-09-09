@@ -47,6 +47,7 @@ import Observation
             #endif
             button.setAccessibilityIdentifier("UpOnlyStatusItem")
             button.target = self; button.action = #selector(toggle)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         popover.delegate = self; popover.animates = false
         // Extend the same background through the native arrow; keep controls
@@ -79,6 +80,16 @@ import Observation
         }
     }
     @objc private func toggle() {
+        // Right-click offers Quit, the one thing the panel itself never shows.
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            if popover.isShown { close() }
+            let menu = NSMenu()
+            menu.addItem(withTitle: "Quit Up Only", action: #selector(quit), keyEquivalent: "q").target = self
+            item.menu = menu
+            item.button?.performClick(nil)
+            item.menu = nil
+            return
+        }
         if session.filePickerIsOpen { session.focusFilePicker(); return }
         if popover.isShown { close(); return }
         guard let button = item.button else { return }
@@ -91,6 +102,7 @@ import Observation
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         host.view.window?.makeKey()
     }
+    @objc private func quit() { NSApp.terminate(nil) }
     private func close() {
         guard !session.filePickerIsOpen else { session.focusFilePicker(); return }
         popover.performClose(nil)
