@@ -974,33 +974,40 @@ private struct UpOnlyUnlockedPanel: View {
                 }.padding(.bottom, 4)
                 let banks = document.map { BankBalanceGroup.banks(shown, document: $0) } ?? []
                 ForEach(banks) { bank in
-                    if banks.count > 1 {
-                        Divider().opacity(0.4)
-                        HStack(spacing: 8) {
-                            if let image = bank.image { UpOnlyProfileImage(data: image, name: bank.name, size: 18) }
-                            else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 18) }
-                            Text(bank.name).font(.system(size: 13, weight: .semibold))
-                            Spacer(minLength: 8)
-                            if bank.components.count > 1 { UpOnlyPrivateText(bank.total.map(UpOnlyFormat.exactMoney) ?? "—").font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(.secondary) }
-                        }.padding(.top, 10).padding(.bottom, bank.components.count > 1 ? 2 : 0)
-                    }
-                    ForEach(bank.components, id: \.id) { component in
-                        if banks.count == 1 || bank.components.count > 1 { Divider().opacity(0.25).padding(.leading, banks.count > 1 ? 26 : 0) }
-                        Button {
-                            if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true }
-                        } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                if bank.components.count > 1 || banks.count == 1 { Text(component.currency).font(.system(size: 12, weight: .medium)) }
-                                if component.currency != "USD", let native = component.nativeAmount {
-                                    UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 8)
-                                UpOnlyPrivateText(component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "fx" ? "Rate needed" : "Add balance"))
-                                    .font(.system(size: 13, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(component.nativeAmount?.value == 0 ? .secondary : .primary)
-                            }.padding(.vertical, 7).padding(.leading, banks.count > 1 && bank.components.count > 1 ? 26 : 0).contentShape(Rectangle())
-                        }.buttonStyle(.plain).help("Update this balance")
-                            .accessibilityLabel("Update " + component.label + " balance")
+                    let single = bank.components.count == 1
+                    Divider().opacity(0.4)
+                    // One line per bank. A multi-currency bank lists its currencies beneath, indented.
+                    HStack(alignment: .center, spacing: 10) {
+                        if let image = bank.image { UpOnlyProfileImage(data: image, name: bank.name, size: 22) }
+                        else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 22) }
+                        Text(bank.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        if single, let component = bank.components.first, component.currency != "USD", let native = component.nativeAmount {
+                            UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        UpOnlyPrivateText(bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"))
+                            .font(.system(size: 13, weight: single ? .medium : .regular).monospacedDigit()).foregroundStyle(single ? .primary : .secondary).lineLimit(1)
+                    }.padding(.vertical, 9).contentShape(Rectangle())
+                        .onTapGesture { if single, let component = bank.components.first, session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true } }
+                        .help(single ? "Update this balance" : "")
+                    if !single {
+                        ForEach(bank.components, id: \.id) { component in
+                            Button {
+                                if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true }
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(component.currency).font(.system(size: 12, weight: .medium)).frame(width: 34, alignment: .leading)
+                                    if component.currency != "USD", let native = component.nativeAmount {
+                                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    Spacer(minLength: 8)
+                                    UpOnlyPrivateText(component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "fx" ? "Rate needed" : "Add balance"))
+                                        .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+                                        .foregroundStyle(component.nativeAmount?.value == 0 ? .secondary : .primary)
+                                }.padding(.vertical, 5).padding(.leading, 32).contentShape(Rectangle())
+                            }.buttonStyle(.plain).help("Update this balance")
+                                .accessibilityLabel("Update " + component.label + " balance")
+                        }
                     }
                 }
             }.padding(.horizontal, 12).padding(.vertical, 10).modifier(UpOnlyContentSurface())
