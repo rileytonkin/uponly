@@ -251,8 +251,9 @@ struct DataAttention {
         }
         let valuation = NetWorthCalculator.value(at: assetDate, scope: .allTracked, document: document, now: now)
         result.pricesNeeded = valuation.missing.contains { ["quote", "fx"].contains($0.reason) }
+        // The current month's accounting is naturally unfinished; only closed months count as incomplete.
         result.accountingNames = books.filter { book in
-            selected.contains { month in
+            selected.filter { $0 < .current() }.contains { month in
                 month.description >= book.firstMonth &&
                 (!book.months.contains { $0.month == month.description } || book.ownership(at: month.description) == nil)
             }
