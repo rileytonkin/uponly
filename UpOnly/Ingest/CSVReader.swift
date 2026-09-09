@@ -689,7 +689,7 @@ nonisolated enum ImportBatchProcessor {
                     }
                     var entry = Entry(month: month, kind: input.kind, amount: abs(signed), currency: currency, label: label, source: .csv, sourceRef: reference)
                     if next.accounts.first(where: { $0.id == accountID })?.ownerBusinessID != nil { entry.bucket = .otherBusiness }
-                    if !input.kindIsUserEdited && input.originalType.isEmpty && entry.kind != .transfer && OwnerPayments.isCompanyCounterparty(label, month: month.description, document: next) { entry.kind = .transfer }
+                    if !input.kindIsUserEdited && input.originalType.isEmpty && entry.kind != .transfer && OwnerPayments.isTransferCounterparty(label, month: month.description, document: next) { entry.kind = .transfer }
                     entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
                     entry.importFingerprint = fingerprint
                     next.entries.append(entry); next.track(.cashFlow)

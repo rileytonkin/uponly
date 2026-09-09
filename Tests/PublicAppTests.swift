@@ -357,6 +357,35 @@ struct BulkInputTests {
         saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
         #expect(saved.entries.allSatisfy { $0.bucket == .otherBusiness })
     }
+    @Test("A payee marked as always a transfer reclassifies imports, syncs and future statements")
+    func personalTransferCounterparties() throws {
+        var doc = empty()
+        let bank = Account(name: "Monzo", currency: "GBP"); doc.accounts = [bank]
+        let paid = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 2500, currency: "GBP", label: "Amora Ltd", source: .csv, sourceRef: bank.id.uuidString + ":a")
+        var edited = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 10, currency: "GBP", label: "amora ltd", source: .csv, sourceRef: bank.id.uuidString + ":b"); edited.kindIsUserEdited = true
+        let manual = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 5, currency: "GBP", label: "Amora Ltd")
+        doc.entries = [paid, edited, manual]
+        OwnerPayments.setTransferCounterparty(" Amora Ltd ", enabled: true, in: &doc)
+        #expect(doc.transferCounterparties == ["Amora Ltd"])
+        #expect(doc.entries.map(\.kind) == [.transfer, .expense, .expense])
+        #expect(OwnerPayments.isPersonalTransferCounterparty("AMORA LTD", document: doc))
+        #expect(try MonthlyLedger.nativeTotals(MonthKey("2026-05")!, document: doc).first?.totals.moneyOut == 15)
+        let draft = try batch("Date,Description,Amount,Currency\n2026-06-01,Amora Ltd,-300,GBP\n2026-06-02,Amora Cafe,-3,GBP", mode: .statements)
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries.suffix(2).map(\.kind) == [.transfer, .expense])
+        doc.entries[0].kind = .expense
+        OwnerPayments.reconcile(in: &doc)
+        #expect(doc.entries[0].kind == .transfer)
+        OwnerPayments.setTransferCounterparty("Amora Ltd", enabled: false, in: &doc)
+        #expect(doc.transferCounterparties == nil && doc.entries[0].kind == .transfer)
+    }
+    @Test("Imported entries expose their bank account; manual and Wise entries do not")
+    func entryAccountID() {
+        let bank = Account(name: "Monzo", currency: "GBP")
+        #expect(Entry(month: .current(), kind: .expense, amount: 1, currency: "GBP", label: "a", source: .csv, sourceRef: bank.id.uuidString + ":tx:1").accountID == bank.id)
+        #expect(Entry(month: .current(), kind: .expense, amount: 1, currency: "GBP", label: "a").accountID == nil)
+        #expect(Entry(month: .current(), kind: .expense, amount: 1, currency: "GBP", label: "a", source: .wise, sourceRef: "wise:1:x").accountID == nil)
+    }
     @Test("Legacy settings and empty settings preserve defaults")
     func legacySettings() throws {
         for json in ["{}", "{\"setupComplete\":true,\"automaticFX\":true}"] {
