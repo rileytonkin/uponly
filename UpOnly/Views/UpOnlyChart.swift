@@ -267,6 +267,25 @@ enum UpOnlyFormat {
         return formatter.string(from: NSDecimalNumber(decimal: value)) ?? "—"
     }
     static func quantity(_ value: Decimal) -> String { NSDecimalNumber(decimal: value).stringValue }
+    /// "Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", or nil when nothing is known.
+    static func performance(_ summary: HoldingPerformance) -> String? {
+        var parts: [String] = []
+        if let since = summary.since {
+            let month = AssetOwnership.month(at: since)
+            parts.append("Since " + String(month.shortName.prefix(3)) + " " + String(month.year))
+        }
+        if let cost = summary.costUSD { parts.append("Paid " + money(cost)) }
+        else if let native = summary.costNative, let currency = summary.costCurrency { parts.append("Paid " + currencyMoney(native, currency: currency) + " " + currency) }
+        if let gain = summary.gainUSD {
+            var text = (gain >= 0 ? "+" : "−") + money(abs(gain))
+            if let fraction = summary.returnFraction {
+                let percent = NSDecimalNumber(decimal: fraction * 100).doubleValue
+                text += String(format: " (%@%.0f%%)", percent >= 0 ? "+" : "−", abs(percent))
+            }
+            parts.append(text)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }
 
 enum UpOnlyTint {

@@ -86,6 +86,16 @@ nonisolated struct QuantityObservation: Codable, Sendable, Equatable {
     }
 }
 
+/// What was paid for an increase in a holding. Optional; quantities stay the source of truth.
+nonisolated struct PurchaseLot: Codable, Identifiable, Sendable, Equatable {
+    var id = UUID()
+    var holdingID: UUID
+    var quantity: PreciseDecimal
+    var paid: PreciseDecimal
+    var currency: String
+    var at: Date
+}
+
 nonisolated struct BankTrackingObservation: Codable, Sendable, Equatable {
     var accountID: UUID
     var tracked: Bool

@@ -207,6 +207,9 @@ nonisolated struct HoldingInput: Sendable, Equatable {
     var assetName = ""
     var quantity = ""
     var unit = "g"
+    var date = ImportDateFormat.today()
+    var paid = ""
+    var paidCurrency = "USD"
 }
 nonisolated enum ImportRowContent: Sendable, Equatable {
     case statement(StatementInput), bankBalance(BankBalanceInput), holding(HoldingInput)
@@ -360,11 +363,156 @@ nonisolated enum ImportParser {
     }
 }
 nonisolated enum ImportCoins {
+    // Well-known coins with their exact CoinGecko IDs, so search works offline and
+    // before any price source is configured. The live catalog adds the rest.
     static let common: [CatalogCoin] = [
-        CatalogCoin(id: "bitcoin", symbol: "btc", name: "Bitcoin"), CatalogCoin(id: "ethereum", symbol: "eth", name: "Ethereum"),
-        CatalogCoin(id: "solana", symbol: "sol", name: "Solana"), CatalogCoin(id: "usd-coin", symbol: "usdc", name: "USDC"),
-        CatalogCoin(id: "tether", symbol: "usdt", name: "Tether"), CatalogCoin(id: "ripple", symbol: "xrp", name: "XRP"),
-        CatalogCoin(id: "dogecoin", symbol: "doge", name: "Dogecoin"), CatalogCoin(id: "cardano", symbol: "ada", name: "Cardano")
+        CatalogCoin(id: "bitcoin", symbol: "btc", name: "Bitcoin"),
+        CatalogCoin(id: "ethereum", symbol: "eth", name: "Ethereum"),
+        CatalogCoin(id: "tether", symbol: "usdt", name: "Tether"),
+        CatalogCoin(id: "ripple", symbol: "xrp", name: "XRP"),
+        CatalogCoin(id: "binancecoin", symbol: "bnb", name: "BNB"),
+        CatalogCoin(id: "solana", symbol: "sol", name: "Solana"),
+        CatalogCoin(id: "usd-coin", symbol: "usdc", name: "USDC"),
+        CatalogCoin(id: "tron", symbol: "trx", name: "TRON"),
+        CatalogCoin(id: "dogecoin", symbol: "doge", name: "Dogecoin"),
+        CatalogCoin(id: "cardano", symbol: "ada", name: "Cardano"),
+        CatalogCoin(id: "staked-ether", symbol: "steth", name: "Lido Staked Ether"),
+        CatalogCoin(id: "hyperliquid", symbol: "hype", name: "Hyperliquid"),
+        CatalogCoin(id: "chainlink", symbol: "link", name: "Chainlink"),
+        CatalogCoin(id: "avalanche-2", symbol: "avax", name: "Avalanche"),
+        CatalogCoin(id: "stellar", symbol: "xlm", name: "Stellar"),
+        CatalogCoin(id: "sui", symbol: "sui", name: "Sui"),
+        CatalogCoin(id: "bitcoin-cash", symbol: "bch", name: "Bitcoin Cash"),
+        CatalogCoin(id: "hedera-hashgraph", symbol: "hbar", name: "Hedera"),
+        CatalogCoin(id: "leo-token", symbol: "leo", name: "LEO Token"),
+        CatalogCoin(id: "litecoin", symbol: "ltc", name: "Litecoin"),
+        CatalogCoin(id: "the-open-network", symbol: "ton", name: "Toncoin"),
+        CatalogCoin(id: "shiba-inu", symbol: "shib", name: "Shiba Inu"),
+        CatalogCoin(id: "polkadot", symbol: "dot", name: "Polkadot"),
+        CatalogCoin(id: "uniswap", symbol: "uni", name: "Uniswap"),
+        CatalogCoin(id: "monero", symbol: "xmr", name: "Monero"),
+        CatalogCoin(id: "dai", symbol: "dai", name: "Dai"),
+        CatalogCoin(id: "pepe", symbol: "pepe", name: "Pepe"),
+        CatalogCoin(id: "aave", symbol: "aave", name: "Aave"),
+        CatalogCoin(id: "bittensor", symbol: "tao", name: "Bittensor"),
+        CatalogCoin(id: "ethena-usde", symbol: "usde", name: "Ethena USDe"),
+        CatalogCoin(id: "near", symbol: "near", name: "NEAR Protocol"),
+        CatalogCoin(id: "internet-computer", symbol: "icp", name: "Internet Computer"),
+        CatalogCoin(id: "aptos", symbol: "apt", name: "Aptos"),
+        CatalogCoin(id: "ethereum-classic", symbol: "etc", name: "Ethereum Classic"),
+        CatalogCoin(id: "ondo-finance", symbol: "ondo", name: "Ondo"),
+        CatalogCoin(id: "pi-network", symbol: "pi", name: "Pi Network"),
+        CatalogCoin(id: "okb", symbol: "okb", name: "OKB"),
+        CatalogCoin(id: "mantle", symbol: "mnt", name: "Mantle"),
+        CatalogCoin(id: "crypto-com-chain", symbol: "cro", name: "Cronos"),
+        CatalogCoin(id: "algorand", symbol: "algo", name: "Algorand"),
+        CatalogCoin(id: "cosmos", symbol: "atom", name: "Cosmos Hub"),
+        CatalogCoin(id: "kaspa", symbol: "kas", name: "Kaspa"),
+        CatalogCoin(id: "vechain", symbol: "vet", name: "VeChain"),
+        CatalogCoin(id: "render-token", symbol: "render", name: "Render"),
+        CatalogCoin(id: "polygon-ecosystem-token", symbol: "pol", name: "Polygon"),
+        CatalogCoin(id: "matic-network", symbol: "matic", name: "Polygon (MATIC)"),
+        CatalogCoin(id: "filecoin", symbol: "fil", name: "Filecoin"),
+        CatalogCoin(id: "arbitrum", symbol: "arb", name: "Arbitrum"),
+        CatalogCoin(id: "fetch-ai", symbol: "fet", name: "Artificial Superintelligence Alliance"),
+        CatalogCoin(id: "optimism", symbol: "op", name: "Optimism"),
+        CatalogCoin(id: "worldcoin-wld", symbol: "wld", name: "Worldcoin"),
+        CatalogCoin(id: "bonk", symbol: "bonk", name: "Bonk"),
+        CatalogCoin(id: "sei-network", symbol: "sei", name: "Sei"),
+        CatalogCoin(id: "injective-protocol", symbol: "inj", name: "Injective"),
+        CatalogCoin(id: "celestia", symbol: "tia", name: "Celestia"),
+        CatalogCoin(id: "blockstack", symbol: "stx", name: "Stacks"),
+        CatalogCoin(id: "immutable-x", symbol: "imx", name: "Immutable"),
+        CatalogCoin(id: "maker", symbol: "mkr", name: "Maker"),
+        CatalogCoin(id: "the-graph", symbol: "grt", name: "The Graph"),
+        CatalogCoin(id: "theta-token", symbol: "theta", name: "Theta Network"),
+        CatalogCoin(id: "jupiter-exchange-solana", symbol: "jup", name: "Jupiter"),
+        CatalogCoin(id: "bitcoin-cash-sv", symbol: "bsv", name: "Bitcoin SV"),
+        CatalogCoin(id: "quant-network", symbol: "qnt", name: "Quant"),
+        CatalogCoin(id: "flow", symbol: "flow", name: "Flow"),
+        CatalogCoin(id: "tezos", symbol: "xtz", name: "Tezos"),
+        CatalogCoin(id: "eos", symbol: "eos", name: "EOS"),
+        CatalogCoin(id: "neo", symbol: "neo", name: "NEO"),
+        CatalogCoin(id: "iota", symbol: "iota", name: "IOTA"),
+        CatalogCoin(id: "the-sandbox", symbol: "sand", name: "The Sandbox"),
+        CatalogCoin(id: "decentraland", symbol: "mana", name: "Decentraland"),
+        CatalogCoin(id: "axie-infinity", symbol: "axs", name: "Axie Infinity"),
+        CatalogCoin(id: "gala", symbol: "gala", name: "Gala"),
+        CatalogCoin(id: "apecoin", symbol: "ape", name: "ApeCoin"),
+        CatalogCoin(id: "chiliz", symbol: "chz", name: "Chiliz"),
+        CatalogCoin(id: "curve-dao-token", symbol: "crv", name: "Curve DAO"),
+        CatalogCoin(id: "lido-dao", symbol: "ldo", name: "Lido DAO"),
+        CatalogCoin(id: "rocket-pool", symbol: "rpl", name: "Rocket Pool"),
+        CatalogCoin(id: "frax-share", symbol: "fxs", name: "Frax Share"),
+        CatalogCoin(id: "compound-governance-token", symbol: "comp", name: "Compound"),
+        CatalogCoin(id: "havven", symbol: "snx", name: "Synthetix"),
+        CatalogCoin(id: "1inch", symbol: "1inch", name: "1inch"),
+        CatalogCoin(id: "pancakeswap-token", symbol: "cake", name: "PancakeSwap"),
+        CatalogCoin(id: "thorchain", symbol: "rune", name: "THORChain"),
+        CatalogCoin(id: "zcash", symbol: "zec", name: "Zcash"),
+        CatalogCoin(id: "dash", symbol: "dash", name: "Dash"),
+        CatalogCoin(id: "ravencoin", symbol: "rvn", name: "Ravencoin"),
+        CatalogCoin(id: "helium", symbol: "hnt", name: "Helium"),
+        CatalogCoin(id: "arweave", symbol: "ar", name: "Arweave"),
+        CatalogCoin(id: "mina-protocol", symbol: "mina", name: "Mina"),
+        CatalogCoin(id: "conflux-token", symbol: "cfx", name: "Conflux"),
+        CatalogCoin(id: "kava", symbol: "kava", name: "Kava"),
+        CatalogCoin(id: "oasis-network", symbol: "rose", name: "Oasis"),
+        CatalogCoin(id: "elrond-erd-2", symbol: "egld", name: "MultiversX"),
+        CatalogCoin(id: "ethereum-name-service", symbol: "ens", name: "Ethereum Name Service"),
+        CatalogCoin(id: "first-digital-usd", symbol: "fdusd", name: "First Digital USD"),
+        CatalogCoin(id: "paypal-usd", symbol: "pyusd", name: "PayPal USD"),
+        CatalogCoin(id: "true-usd", symbol: "tusd", name: "TrueUSD"),
+        CatalogCoin(id: "frax", symbol: "frax", name: "Frax"),
+        CatalogCoin(id: "wrapped-steth", symbol: "wsteth", name: "Wrapped stETH"),
+        CatalogCoin(id: "rocket-pool-eth", symbol: "reth", name: "Rocket Pool ETH"),
+        CatalogCoin(id: "coinbase-wrapped-staked-eth", symbol: "cbeth", name: "Coinbase Wrapped Staked ETH"),
+        CatalogCoin(id: "dogwifcoin", symbol: "wif", name: "dogwifhat"),
+        CatalogCoin(id: "floki", symbol: "floki", name: "FLOKI"),
+        CatalogCoin(id: "brett", symbol: "brett", name: "Brett"),
+        CatalogCoin(id: "popcat", symbol: "popcat", name: "Popcat"),
+        CatalogCoin(id: "pudgy-penguins", symbol: "pengu", name: "Pudgy Penguins"),
+        CatalogCoin(id: "official-trump", symbol: "trump", name: "Official Trump"),
+        CatalogCoin(id: "fartcoin", symbol: "fartcoin", name: "Fartcoin"),
+        CatalogCoin(id: "virtual-protocol", symbol: "virtual", name: "Virtuals Protocol"),
+        CatalogCoin(id: "ethena", symbol: "ena", name: "Ethena"),
+        CatalogCoin(id: "pendle", symbol: "pendle", name: "Pendle"),
+        CatalogCoin(id: "eigenlayer", symbol: "eigen", name: "EigenLayer"),
+        CatalogCoin(id: "starknet", symbol: "strk", name: "Starknet"),
+        CatalogCoin(id: "zksync", symbol: "zk", name: "ZKsync"),
+        CatalogCoin(id: "mantra-dao", symbol: "om", name: "MANTRA"),
+        CatalogCoin(id: "jasmycoin", symbol: "jasmy", name: "JasmyCoin"),
+        CatalogCoin(id: "flare-networks", symbol: "flr", name: "Flare"),
+        CatalogCoin(id: "ronin", symbol: "ron", name: "Ronin"),
+        CatalogCoin(id: "gnosis", symbol: "gno", name: "Gnosis"),
+        CatalogCoin(id: "wormhole", symbol: "w", name: "Wormhole"),
+        CatalogCoin(id: "jito-governance-token", symbol: "jto", name: "Jito"),
+        CatalogCoin(id: "pyth-network", symbol: "pyth", name: "Pyth Network"),
+        CatalogCoin(id: "raydium", symbol: "ray", name: "Raydium"),
+        CatalogCoin(id: "bittorrent", symbol: "btt", name: "BitTorrent"),
+        CatalogCoin(id: "nexo", symbol: "nexo", name: "Nexo"),
+        CatalogCoin(id: "kucoin-shares", symbol: "kcs", name: "KuCoin"),
+        CatalogCoin(id: "bitget-token", symbol: "bgb", name: "Bitget Token"),
+        CatalogCoin(id: "zilliqa", symbol: "zil", name: "Zilliqa"),
+        CatalogCoin(id: "harmony", symbol: "one", name: "Harmony"),
+        CatalogCoin(id: "ankr", symbol: "ankr", name: "Ankr"),
+        CatalogCoin(id: "audius", symbol: "audio", name: "Audius"),
+        CatalogCoin(id: "loopring", symbol: "lrc", name: "Loopring"),
+        CatalogCoin(id: "basic-attention-token", symbol: "bat", name: "Basic Attention Token"),
+        CatalogCoin(id: "enjincoin", symbol: "enj", name: "Enjin Coin"),
+        CatalogCoin(id: "0x", symbol: "zrx", name: "0x Protocol"),
+        CatalogCoin(id: "yearn-finance", symbol: "yfi", name: "yearn.finance"),
+        CatalogCoin(id: "sushi", symbol: "sushi", name: "Sushi"),
+        CatalogCoin(id: "balancer", symbol: "bal", name: "Balancer"),
+        CatalogCoin(id: "sonic-3", symbol: "s", name: "Sonic"),
+        CatalogCoin(id: "berachain-bera", symbol: "bera", name: "Berachain"),
+        CatalogCoin(id: "aerodrome-finance", symbol: "aero", name: "Aerodrome Finance"),
+        CatalogCoin(id: "morpho", symbol: "morpho", name: "Morpho"),
+        CatalogCoin(id: "ether-fi", symbol: "ethfi", name: "ether.fi"),
+        CatalogCoin(id: "hashflow", symbol: "hft", name: "Hashflow"),
+        CatalogCoin(id: "akash-network", symbol: "akt", name: "Akash Network"),
+        CatalogCoin(id: "astar", symbol: "astr", name: "Astar"),
+        CatalogCoin(id: "celo", symbol: "celo", name: "Celo")
     ]
     static func available(document: VaultDocument, catalog: [CatalogCoin]) -> [CatalogCoin] {
         var coins = Dictionary(uniqueKeysWithValues: common.map { ($0.id, $0) })
@@ -568,6 +716,9 @@ nonisolated enum ImportBatchProcessor {
                         quantity = try source.numberFormat.decimal(input.quantity)
                     }
                     guard MoneyInput.isFinite(quantity), quantity >= 0 else { throw ImportFailure("Enter zero or a positive quantity.") }
+                    // The app writes this date itself, so it is always ISO regardless of the file's format.
+                    let date = try ImportDateFormat.iso.date(input.date)
+                    guard date <= now else { throw ImportFailure("Choose today or an earlier date.") }
                     let portfolioID: UUID
                     if let id = input.portfolioID {
                         guard let portfolio = next.portfolio(id: id), portfolio.isActive(at: now), portfolio.kind == batch.mode.kind else { throw ImportFailure("Choose an active portfolio for this asset type.") }
@@ -589,11 +740,23 @@ nonisolated enum ImportBatchProcessor {
                     }
                     let key = portfolioID.uuidString + ":" + coin.id
                     guard holdingKeys.insert(key).inserted else { throw ImportFailure("This coin appears twice in the same portfolio. Keep one total quantity.") }
-                    let previous = next.holdings.first { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id && $0.isActive(at: now) }
-                        .flatMap { next.effectiveQuantity(holdingID: $0.id, at: now) }
-                    if previous == quantity { result.states[row.id] = .duplicate; continue }
-                    next = try HoldingMutations.addHolding(portfolioID: portfolioID, assetID: CanonicalAssetID(coin.id), assetName: coin.name, quantity: quantity, at: now, document: next)
+                    let existing = next.holdings.first { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id && $0.archivedAt == nil }
+                    let previous = existing.flatMap { next.effectiveQuantity(holdingID: $0.id, at: now) }
+                    // The same total on the chosen date is nothing new, unless a cost is being recorded.
+                    let onDate = existing.flatMap { next.effectiveQuantity(holdingID: $0.id, at: date) }
+                    let paidText = input.paid.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if onDate == quantity, paidText.isEmpty { result.states[row.id] = .duplicate; continue }
+                    next = try HoldingMutations.addHolding(portfolioID: portfolioID, assetID: CanonicalAssetID(coin.id), assetName: coin.name, quantity: quantity, at: date, document: next)
                     next.track(batch.mode.kind)
+                    if !paidText.isEmpty, let holdingID = (existing ?? next.holdings.last { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id })?.id {
+                        let paid = try source.numberFormat.decimal(paidText)
+                        guard MoneyInput.isFinite(paid), paid >= 0 else { throw ImportFailure("Enter zero or a positive amount paid.") }
+                        let currency = try MoneyInput.normalizeCurrency(input.paidCurrency)
+                        // The lot covers the increase on that date; restating a total without an increase records the cost of the whole position.
+                        let before = onDate ?? 0
+                        let bought = quantity > before ? quantity - before : quantity
+                        next.purchases = (next.purchases ?? []) + [PurchaseLot(holdingID: holdingID, quantity: PreciseDecimal(bought), paid: PreciseDecimal(paid), currency: currency, at: date)]
+                    }
                     result.states[row.id] = .ready("\(previous.map { NSDecimalNumber(decimal: $0).stringValue } ?? "New") → \(NSDecimalNumber(decimal: quantity).stringValue) \(coin.name)\(batch.mode == .metals ? " · fine grams" : "")")
                     result.added += 1
                 }
