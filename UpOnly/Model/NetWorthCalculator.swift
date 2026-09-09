@@ -458,7 +458,62 @@ nonisolated enum NetWorthCalculator {
     }
 }
 
+/// Gain against what was paid, from recorded purchase lots. Nothing is inferred
+/// when no lot exists; the first dated quantity still marks when the holding began.
+nonisolated struct HoldingPerformance: Equatable {
+    var since: Date?
+    var costUSD: Decimal?
+    var costNative: Decimal?
+    var costCurrency: String?
+    var gainUSD: Decimal?
+    var returnFraction: Decimal?
+    static func summary(holdingID: UUID, valueUSD: Decimal?, document: VaultDocument, at date: Date = Date()) -> HoldingPerformance {
+        var result = HoldingPerformance()
+        result.since = document.quantities.filter { $0.holdingID == holdingID }.map(\.effectiveAt).min()
+        let lots = (document.purchases ?? []).filter { $0.holdingID == holdingID && $0.at <= date }
+        guard !lots.isEmpty else { return result }
+        var total: Decimal = 0
+        var convertible = true
+        for lot in lots {
+            guard let rate = MonthlyLedger.rate(currency: lot.currency, month: AssetOwnership.month(at: lot.at), document: document, now: date),
+                  let usd = try? MoneyInput.multiply(lot.paid.value, rate), let sum = try? MoneyInput.add(total, usd) else { convertible = false; break }
+            total = sum
+        }
+        if convertible {
+            result.costUSD = total
+            if let valueUSD, let gain = try? MoneyInput.add(valueUSD, -total) {
+                result.gainUSD = gain
+                if total > 0 { result.returnFraction = gain / total }
+            }
+        } else if Set(lots.map(\.currency)).count == 1 {
+            var native: Decimal = 0
+            for lot in lots { guard let sum = try? MoneyInput.add(native, lot.paid.value) else { return result }; native = sum }
+            result.costNative = native; result.costCurrency = lots[0].currency
+        }
+        return result
+    }
+}
+
 nonisolated enum HoldingMutations {
+    /// Recompute stored daily values from a day in the past, after a backdated quantity.
+    static func rebuildHistory(from start: Date, document: VaultDocument, now: Date) -> VaultDocument {
+        var next = document
+        let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
+        let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-1100 * 86400))
+        var day = first
+        while day < UTCDay.start(of: now) {
+            // Old samples for the day no longer describe the holdings held then; drop them
+            // so a day without saved prices shows as a gap rather than a wrong value.
+            next.dailyValuations.removeAll { UTCDay.start(of: $0.utcDay) == day }
+            let evaluation = next
+            let at = day.addingTimeInterval(86400 - 1)
+            for scope in scopes {
+                next = NetWorthCalculator.recordingSample(NetWorthCalculator.value(at: at, scope: scope, document: evaluation, now: now), in: next)
+            }
+            day = day.addingTimeInterval(86400)
+        }
+        return next
+    }
     static func setQuantity(
         holdingID: UUID,
         quantity: Decimal,
@@ -467,12 +522,13 @@ nonisolated enum HoldingMutations {
         recordedAt: Date = Date()
     ) throws -> VaultDocument {
         try MoneyInput.requireNonNegativeFinite(quantity)
-        guard document.holding(id: holdingID) != nil else { throw VaultError.unknownHolding }
-        if let last = document.quantities.filter({ $0.holdingID == holdingID }).map(\.effectiveAt).max(),
-           date < last {
-            throw VaultError.invalidAmount
-        }
+        guard let index = document.holdings.firstIndex(where: { $0.id == holdingID }) else { throw VaultError.unknownHolding }
+        // A dated total may be inserted before later observations: it states what was held on that day.
         var next = document
+        if next.holdings[index].createdAt > date { next.holdings[index].createdAt = date }
+        if let portfolioIndex = next.portfolios.firstIndex(where: { $0.id == next.holdings[index].portfolioID }), next.portfolios[portfolioIndex].createdAt > date {
+            next.portfolios[portfolioIndex].createdAt = date
+        }
         let ordinal = next.nextOrdinal
         next.nextOrdinal += 1
         next.quantities.append(
@@ -582,15 +638,19 @@ nonisolated enum HoldingMutations {
         document: VaultDocument
     ) throws -> VaultDocument {
         try MoneyInput.requireNonNegativeFinite(quantity)
-        guard let portfolio = document.portfolio(id: portfolioID), portfolio.isActive(at: date) else {
+        guard let portfolio = document.portfolio(id: portfolioID), portfolio.archivedAt.map({ date < $0 }) ?? true else {
             throw VaultError.unknownPortfolio
         }
         guard (PreciousMetal.asset(assetID) != nil) == (portfolio.kind == .metals) else { throw VaultError.invalidAssetID }
         var next = document
         if let existing = next.holdings.first(where: {
-            $0.portfolioID == portfolioID && $0.assetID == assetID && $0.isActive(at: date)
+            $0.portfolioID == portfolioID && $0.assetID == assetID && $0.archivedAt.map { date < $0 } ?? true
         }) {
             return try setQuantity(holdingID: existing.id, quantity: quantity, at: date, document: next)
+        }
+        // A purchase dated before the portfolio existed moves its start back to that day.
+        if let portfolioIndex = next.portfolios.firstIndex(where: { $0.id == portfolioID }), next.portfolios[portfolioIndex].createdAt > date {
+            next.portfolios[portfolioIndex].createdAt = date
         }
         let holding = Holding(portfolioID: portfolioID, assetID: assetID, assetName: assetName, createdAt: date)
         next.holdings.append(holding)

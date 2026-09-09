@@ -34,6 +34,10 @@ final class UpOnlySession {
     var importMode: ImportMode = .statements
     var importTableMode = false
     private(set) var importReturnSection = "Add your info"
+    // An import started from the home + button returns to the overview when it ends.
+    var importReturnsHome = false
+    // The single-entry form shows its own Back; the Manage header steps aside.
+    var entryEditorInMenu = false
     var importMessage: String?
     private(set) var importLoading = false
     private(set) var importRevision = UUID()
@@ -294,6 +298,8 @@ final class UpOnlySession {
         cancelImport(); importDraft = nil; importMessage = nil; catalog = []; sourceMessage = nil; refreshing = false
         addingInMenu = false
         managementInMenu = false
+        importReturnsHome = false
+        entryEditorInMenu = false
         entryMonthForManagement = ""
         requestedRateCurrency = nil
         fxIssues = [:]
@@ -342,6 +348,13 @@ final class UpOnlySession {
             addedAccount || current.document.entries.filter { $0.month == month } != next.entries.filter { $0.month == month }
         }
         let now = Date()
+        // A backdated quantity changes past days; recompute them away from the main actor.
+        let backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
+        if let backdated, backdated < UTCDay.start(of: now) {
+            let proposed = next
+            next = await Task.detached(priority: .userInitiated) { HoldingMutations.rebuildHistory(from: backdated, document: proposed, now: now) }.value
+            guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+        }
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
         for scope in scopes {
             next = NetWorthCalculator.recordingSample(
@@ -504,6 +517,12 @@ final class UpOnlySession {
     }
     func discardImport() {
         cancelImport(); importDraft = nil; importMessage = nil; managementSection = importReturnSection
+        finishHomeImport(saved: false)
+    }
+    private func finishHomeImport(saved: Bool) {
+        guard importReturnsHome else { return }
+        importReturnsHome = false; managementInMenu = false; addingInMenu = false
+        if saved { message = "Statement imported." }
     }
     func cancelImport() {
         importTask?.cancel(); importTask = nil; importLoading = false; importRevision = UUID()
@@ -609,6 +628,7 @@ final class UpOnlySession {
             return next
         }
         importDraft = nil; importMessage = "Your information has been saved."; managementSection = importReturnSection
+        finishHomeImport(saved: true)
         Task { await refreshPrices() }
     }
 
@@ -857,7 +877,7 @@ final class UpOnlySession {
                 authenticator.shouldCancel = true
             }
             let isManagement = ["accounts", "portfolios", "entries", "import", "tracking", "preferences", "security", "metals", "add-info", "manual-bank", "manual-crypto", "manual-metals", "statements"].contains(preview)
-            if preview == "tracking" { managementSection = "Tracking" }
+            if preview == "tracking" { managementSection = "Manage" }
             if preview == "preferences" { managementSection = "Sources" }
             if preview == "security" { managementSection = "Security" }
             if ["accounts", "portfolios", "entries"].contains(preview) { managementSection = preview == "accounts" ? "Accounts" : preview == "portfolios" ? "Portfolios" : "Entries" }
@@ -1100,11 +1120,12 @@ extension UpOnlySession {
         } catch { message = "Exchange rates could not be enabled. Please try again." }
     }
     func loadCatalog() async {
-        guard state == .unlocked, !isFixture, let settings = document?.settings, settings.automaticPrices else { return }
+        // The public coin list needs no key; a Demo key is used when present.
+        guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
         let token = sessionToken, revision = sourceRevision
         do {
             catalogRequest?.cancel()
-            let request = Task { try await PublicPrices.catalog(key: settings.coinGeckoKey) }
+            let request = Task { try await PublicPrices.catalog(key: settings.automaticPrices ? settings.coinGeckoKey : "") }
             catalogRequest = request
             let coins = try await request.value
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled { catalog = coins }

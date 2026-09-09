@@ -118,8 +118,9 @@ extension VaultDocument {
     var showsHoldings: Bool { shows(.crypto) || shows(.metals) }
     var showsNetWorth: Bool { shows(.banks) || showsHoldings }
     func showsDestination(_ value: Int) -> Bool { value == 0 ? shows(.cashFlow) : value == 1 && showsNetWorth }
-    var defaultDestination: Int { shows(.cashFlow) ? 0 : 1 }
-    var defaultManagementSection: String { shownKinds.first?.managementSection ?? "Tracking" }
+    // Net worth is the headline whenever any asset is shown; cash flow otherwise.
+    var defaultDestination: Int { showsNetWorth ? 1 : 0 }
+    var defaultManagementSection: String { shownKinds.first?.managementSection ?? "Manage" }
     func showsSection(_ name: String) -> Bool { TrackedKind.kind(forSection: name).map { shows($0) } ?? true }
     func managementSection(forDestination value: Int) -> String {
         if value == 0 {

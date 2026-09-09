@@ -77,7 +77,7 @@ struct UpOnlyFlow: Layout {
 }
 
 extension TrackedKind {
-    var title: String { switch self { case .banks: "Bank accounts"; case .crypto: "Crypto"; case .metals: "Precious metals"; case .cashFlow: "Income & spending" } }
+    var title: String { switch self { case .banks: "Bank accounts"; case .crypto: "Crypto"; case .metals: "Gold & silver"; case .cashFlow: "Income & spending" } }
     var summary: String { switch self { case .banks: "Your dated balances, in one place."; case .crypto: "Coins and quantities across portfolios."; case .metals: "Gold and silver."; case .cashFlow: "What comes in and what goes out." } }
     var symbol: String { switch self { case .banks: "building.columns.fill"; case .crypto: "bitcoinsign.circle.fill"; case .metals: "square.stack.3d.up.fill"; case .cashFlow: "arrow.up.arrow.down.circle.fill" } }
     var tint: Color { switch self { case .banks: UpOnlyTint.netWorth; case .crypto: UpOnlyTint.crypto; case .metals: UpOnlyTint.metals; case .cashFlow: UpOnlyTint.cashFlow } }
@@ -95,6 +95,7 @@ struct UpOnlySymbolBadge: View {
 }
 struct UpOnlySetupHeader: View {
     var step: Int
+    var total = 2
     var symbol: String
     var tint: Color = UpOnlyTint.netWorth
     var title: String
@@ -103,11 +104,11 @@ struct UpOnlySetupHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 UpOnlyBrandMark(width: 20).foregroundStyle(.primary)
-                Label("Step \(step) of 3", systemImage: symbol)
+                Label("Step \(step) of \(total)", systemImage: symbol)
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(tint)
                 Spacer()
                 HStack(spacing: 5) {
-                    ForEach(1...3, id: \.self) { value in
+                    ForEach(1...total, id: \.self) { value in
                         Capsule().fill(value == step ? tint : Color.secondary.opacity(0.2)).frame(width: value == step ? 18 : 6, height: 6)
                     }
                 }.accessibilityHidden(true)
@@ -115,58 +116,6 @@ struct UpOnlySetupHeader: View {
             Text(title).fixedSize(horizontal: false, vertical: true).font(.system(size: 22, weight: .semibold)).tracking(-0.4).fixedSize(horizontal: false, vertical: true)
             if !subtitle.isEmpty { Text(subtitle).fixedSize(horizontal: false, vertical: true).font(.system(size: 12)).foregroundStyle(.secondary) }
         }
-    }
-}
-struct UpOnlyKindCard: View {
-    var kind: TrackedKind
-    var selected: Bool
-    var action: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: kind.symbol, tint: kind.tint, size: 32)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(kind.title).fixedSize(horizontal: false, vertical: true).font(.system(size: 13, weight: .semibold))
-                    Text(kind.summary).fixedSize(horizontal: false, vertical: true).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle").foregroundStyle(selected ? kind.tint : Color.secondary.opacity(0.4))
-            }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(selected ? kind.tint.opacity(0.07) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? kind.tint.opacity(0.5) : Color.secondary.opacity(0.13)))
-                .contentShape(RoundedRectangle(cornerRadius: 12))
-        }.buttonStyle(UpOnlyCardButtonStyle(radius: 12)).accessibilityLabel(kind.title).accessibilityHint(kind.summary)
-            .accessibilityIdentifier("Track-" + kind.rawValue).accessibilityAddTraits(selected ? .isSelected : [])
-            .animation(reduceMotion ? nil : .snappy, value: selected)
-    }
-}
-struct UpOnlySourceRow: View {
-    var symbol: String
-    var tint: Color
-    var title: String
-    @Binding var isOn: Bool
-    var key: Binding<String>?
-    var keyPrompt = ""
-    var keyLinkTitle = ""
-    var keyLink: URL?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 26)
-                Text(title).font(.system(size: 13, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true).accessibilityHidden(true)
-                Spacer(minLength: 8)
-                Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
-            }
-            if isOn, let key {
-                SecureField(keyPrompt, text: key).textFieldStyle(.roundedBorder)
-                if let keyLink {
-                    Link(keyLinkTitle, destination: keyLink).font(.system(size: 11)).buttonStyle(.bordered).controlSize(.small)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }.padding(12)
     }
 }
 struct UpOnlyRecoveryCodeCard: View {
@@ -193,80 +142,39 @@ struct UpOnlyRecoveryCodeCard: View {
 }
 struct UpOnlySetup: View {
     @Environment(UpOnlySession.self) private var session
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var step = 0
-    @State private var tracked: Set<TrackedKind> = []
-    @State private var prices = false
-    @State private var fx = false
-    @State private var metals = false
-    @State private var metalKey = ""
-    @State private var key = ""
+    @State private var automatic = true
     @State private var error: String?
     @State private var saving = false
     @State private var showSourceDetails = false
-    private var wantsCrypto: Bool { tracked.contains(.crypto) }
-    private var wantsFX: Bool { tracked.contains(.banks) || tracked.contains(.cashFlow) }
-    private var progress: SetupProgress { SetupProgress(step: step, tracked: TrackedKind.normalized(tracked), prices: prices, fx: fx, metals: metals, coinGeckoKey: key, metalHistoryKey: metalKey) }
-    private var cannotFinish: Bool { saving || session.isBusy || (wantsCrypto && prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+    private var progress: SetupProgress { SetupProgress(step: 1, tracked: TrackedKind.allCases, prices: false, fx: automatic, metals: automatic) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if step == 0 {
-                UpOnlySetupHeader(step: 2, symbol: "square.grid.2x2.fill", title: "What do you want to track?", subtitle: "")
-                VStack(spacing: 8) {
-                    ForEach(TrackedKind.allCases, id: \.self) { kind in
-                        UpOnlyKindCard(kind: kind, selected: tracked.contains(kind)) {
-                            if tracked.contains(kind) { tracked.remove(kind) } else { tracked.insert(kind) }
-                        }
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            UpOnlySetupHeader(step: 2, symbol: "arrow.triangle.2.circlepath", title: "Keep values current",
+                              subtitle: "Up Only can fetch reference exchange rates and gold and silver prices while it runs. Your balances never leave this Mac.")
+            HStack(spacing: 10) {
+                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.cashFlow, size: 30)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Automatic prices and exchange rates").font(.system(size: 13, weight: .medium))
+                    Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
-                if tracked.isEmpty { Text("Choose at least one.").font(.system(size: 11)).foregroundStyle(.secondary) }
-                Button { Task { await continueSetup() } } label: {
-                    Text("Continue").frame(maxWidth: .infinity)
-                }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction).disabled(tracked.isEmpty || session.isBusy)
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        UpOnlyBrandMark(width: 22)
-                        Spacer()
-                        Text("Step 3 of 3").font(.system(size: 11)).foregroundStyle(.secondary)
-                    }.padding(.bottom, 2)
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("Keep it current").font(.system(size: 22, weight: .semibold)).tracking(-0.4)
-                        Text("Automatic updates, if you want them.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }.padding(.bottom, 4)
-                VStack(spacing: 0) {
-                    if wantsCrypto {
-                        UpOnlySourceRow(symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, title: "Crypto prices", isOn: $prices,
-                                        key: $key, keyPrompt: "CoinGecko Demo API key", keyLinkTitle: "Get a free key",
-                                        keyLink: URL(string: "https://www.coingecko.com/en/api/pricing")!)
-                    }
-                    if tracked.contains(.metals) {
-                        if wantsCrypto { Divider().padding(.horizontal, 12) }
-                        UpOnlySourceRow(symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, title: "Metal prices", isOn: $metals,
-                                        key: $metalKey, keyPrompt: "Gold API history key (optional)", keyLinkTitle: "Add a free key for price history",
-                                        keyLink: URL(string: "https://gold-api.com/pricing")!)
-                    }
-                    if wantsFX {
-                        if wantsCrypto || tracked.contains(.metals) { Divider().padding(.horizontal, 12) }
-                        UpOnlySourceRow(symbol: "dollarsign.arrow.trianglehead.counterclockwise.rotate.90", tint: UpOnlyTint.cashFlow, title: "Exchange rates", isOn: $fx)
-                    }
-                }.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.06)))
-                if wantsCrypto && prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Add a CoinGecko key, or turn Crypto prices off to continue.").font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                DisclosureGroup("Providers & privacy", isExpanded: $showSourceDetails) {
-                    sourceDetails.padding(.top, 8)
-                }.font(.system(size: 12)).foregroundStyle(.secondary).padding(.bottom, 4)
-                VStack(spacing: 9) {
-                    Button { Task { await finish(addData: true) } } label: {
-                        Text("Add your info").frame(maxWidth: .infinity)
-                    }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction).disabled(cannotFinish)
-                    HStack { Button("Back") { step = 0; error = nil }; Spacer(); Button("Do this later") { Task { await finish(addData: false) } }.disabled(cannotFinish) }.buttonStyle(.bordered).font(.system(size: 12))
-                }.disabled(saving || session.isBusy)
-            }
+                Spacer(minLength: 8)
+                Toggle("Automatic prices and exchange rates", isOn: $automatic).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                    .accessibilityIdentifier("AutomaticSources")
+            }.padding(12).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
+            DisclosureGroup("What providers receive", isExpanded: $showSourceDetails) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Frankfurter receives currency codes. Gold API receives metal symbols. Both see your IP address; neither receives balances, quantities or names.")
+                    Text("Crypto prices need a free CoinGecko key. Up Only asks for it when you add your first coin, or in Manage → Prices & rates.")
+                }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+            }.font(.system(size: 12)).foregroundStyle(.secondary)
+            VStack(spacing: 9) {
+                Button { Task { await finish(addData: true) } } label: {
+                    Text("Add your first balance").frame(maxWidth: .infinity)
+                }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+                Button { Task { await finish(addData: false) } } label: {
+                    Text("Do this later").frame(maxWidth: .infinity)
+                }.buttonStyle(.bordered).controlSize(.large)
+            }.disabled(saving || session.isBusy)
             if let error { Text(error).fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.red) }
             if let message = session.setupProgressMessage {
                 Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -274,58 +182,18 @@ struct UpOnlySetup: View {
             }
             if saving { ProgressView().controlSize(.small) }
         }.padding(UpOnlyLayout.inset).frame(maxWidth: 380).fixedSize(horizontal: false, vertical: true)
-            .animation(reduceMotion ? nil : .snappy, value: step)
-            .onChange(of: progress) { _, value in session.checkpointSetup(value) }
+            .onChange(of: automatic) { _, _ in session.checkpointSetup(progress) }
             .onAppear {
-                if let saved = session.document?.settings.setupProgress {
-                    step = saved.step; tracked = Set(saved.tracked); prices = saved.prices; fx = saved.fx; metals = saved.metals
-                    key = saved.coinGeckoKey; metalKey = saved.metalHistoryKey
-                }
-                #if UPONLY_FIXTURE
-                if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_DESTINATION"] == "sources" {
-                    tracked = Set(ProcessInfo.processInfo.environment["UPONLY_PREVIEW_TRACKED"].map { $0.split(separator: ",").compactMap { TrackedKind(rawValue: String($0)) } } ?? TrackedKind.allCases)
-                    step = 1
-                    if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_SOURCES_ENABLED"] == "1" {
-                        prices = wantsCrypto; metals = tracked.contains(.metals); fx = wantsFX
-                    }
-                }
-                #endif
+                if let saved = session.document?.settings.setupProgress, saved.step > 0 { automatic = saved.fx || saved.metals }
             }
-    }
-    private func continueSetup() async {
-        guard !tracked.isEmpty, !saving else { return }
-        saving = true; error = nil
-        defer { saving = false }
-        let token = session.sessionToken
-        var next = progress; next.step = 1
-        session.checkpointSetup(next)
-        do {
-            try await session.flushSetupProgress()
-            if token == session.sessionToken { step = 1 }
-        } catch { if token == session.sessionToken { self.error = "Setup progress could not be saved. Please try again." } }
-    }
-    private var sourceDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if wantsCrypto {
-                Text("CoinGecko receives coin IDs, your API key and IP address. A free Demo key is required.")
-            }
-            if tracked.contains(.metals) {
-                Text("Gold API receives metal symbols and your IP address. A history key is optional for current prices and required for past prices.")
-            }
-            if wantsFX {
-                Text("Frankfurter receives currency codes and your IP address. Values are converted to USD.")
-            }
-            Text("These price providers never receive your balances or quantities.")
-        }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
     }
     private func finish(addData: Bool) async {
-        guard !cannotFinish else { return }
+        guard !saving, !session.isBusy else { return }
         saving = true; error = nil
         defer { saving = false }
         let token = session.sessionToken
         do {
-            try await session.completeSetup(tracked: TrackedKind.normalized(tracked), prices: wantsCrypto && prices, fx: wantsFX && fx, key: wantsCrypto && prices ? key : "", metals: tracked.contains(.metals) && metals, metalKey: metalKey)
-            key = ""
+            try await session.completeSetup(tracked: TrackedKind.allCases, prices: false, fx: automatic, key: "", metals: automatic)
             guard token == session.sessionToken else { return }
             if addData { session.addingInMenu = true }
         } catch { if token == session.sessionToken { self.error = "Setup could not be saved. Please try again." } }
@@ -428,7 +296,7 @@ struct UpOnlySources: View {
                 }
             }
             if session.document?.shows(.metals) == true {
-                UpOnlySettingsCard(title: "Precious metal prices", subtitle: "Estimated market value of your gold and silver.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals, controlDisabled: session.isBusy) {
+                UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals, controlDisabled: session.isBusy) {
                     Text("Current prices need no API key.")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                     if metals {
@@ -487,7 +355,7 @@ struct UpOnlySources: View {
                     }
                 }.padding(.top, 4)
             } else {
-                Text("Choose what to track in Tracking to see relevant price sources.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Add an account or holding to see price options.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
     }

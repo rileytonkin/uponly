@@ -27,8 +27,12 @@ struct UpOnlyMenuScroll<Content: View>: View {
 
 enum UpOnlyEditor: Identifiable {
     case portfolio, account, balance(Account), holding(UUID), quantity(Holding), move(Holding), entry, exchangeRate
+    case renameAccount(Account), renamePortfolio(Portfolio), purchases(Holding)
     var id: String {
         switch self {
+        case .purchases(let h): "purchases-" + h.id.uuidString
+        case .renameAccount(let a): "rename-account-" + a.id.uuidString
+        case .renamePortfolio(let p): "rename-portfolio-" + p.id.uuidString
         case .portfolio: "portfolio"
         case .account: "account"
         case .balance(let a): "balance-" + a.id.uuidString
@@ -47,8 +51,10 @@ enum UpOnlyEditor: Identifiable {
         case .holding: "Add coin"
         case .quantity: "Update quantity"
         case .move: "Move coins"
-        case .entry: "Add entry"
+        case .entry: "Income or expense"
         case .exchangeRate: "Add exchange rate"
+        case .renameAccount, .renamePortfolio: "Rename"
+        case .purchases(let h): h.assetName + " purchases"
         }
     }
 }
@@ -67,19 +73,22 @@ private struct UpOnlyManagementContent: View {
     @State private var entryProfile = ""
     @State private var entryLimit = 100
     private var hasGuidedHeader: Bool {
-        guard editor == nil, session.managementSection == "Add your info", let draft = session.importDraft else { return false }
+        guard editor == nil, session.managementSection == "Add your info" else { return false }
+        if session.entryEditorInMenu { return true }
+        guard let draft = session.importDraft else { return false }
         return draft.mode != .statements && draft.rows.count <= 1 && draft.sources.allSatisfy { $0.grid.isEmpty } && !session.importTableMode
     }
     var body: some View {
         VStack(spacing: 0) {
             if !hasGuidedHeader {
             UpOnlyPageHeader(title: editor?.title ?? pageTitle,
-                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage") {
+                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) || session.importReturnsHome ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage") {
                 if discardSources { discardSources = false }
                 else if archive != nil { archive = nil }
                 else if entryToRemove != nil { entryToRemove = nil }
                 else if session.managementSection == "Sources", sourceEditsPending { discardSources = true }
                 else if editor != nil { finishEditing() }
+                else if session.managementSection == "Add your info", session.importReturnsHome { session.discardImport() }
                 else if ["Manage", "Needs attention"].contains(session.managementSection) { session.managementInMenu = false }
                 else if returnToReview { session.managementSection = "Needs attention" }
                 else { session.managementSection = "Manage" }
@@ -132,10 +141,9 @@ private struct UpOnlyManagementContent: View {
                             }
                             accounts
                         case "Portfolios":
-                            Button { session.startImport(.holdings) } label: { Label("Add holding", systemImage: "plus") }.buttonStyle(.glassProminent)
+                            Button { session.startImport(.holdings) } label: { Label("Add a coin", systemImage: "plus") }.buttonStyle(.glassProminent)
                             portfolios
                         case "Precious metals": metals
-                        case "Tracking": tracking
                         case "Entries":
                             entries
                         default: security
@@ -158,30 +166,34 @@ private struct UpOnlyManagementContent: View {
     private var pageTitle: String {
         switch session.managementSection {
         case "Entries": "Transactions"
-        case "Needs attention": "Review data"
+        case "Needs attention": "Needs attention"
         case "Portfolios": "Crypto"
-        case "Add your info": session.importDraft?.mode.title ?? "Add your info"
+        case "Precious metals": "Gold & silver"
+        case "Sources": "Prices & rates"
+        case "Security": "Backup & security"
+        case "Add your info": session.importDraft?.mode.title ?? "Add"
         default: session.managementSection
         }
     }
     private func finishEditing() { editor = nil; session.requestedRateCurrency = nil }
     private var navigation: some View {
         VStack(spacing: 8) {
-            navigationButton("Add your info", symbol: "plus", section: "Add your info")
-            if shows(.banks) { navigationButton("Accounts", symbol: "building.columns", section: "Accounts") }
-            if shows(.crypto) { navigationButton("Crypto", symbol: "bitcoinsign.circle", section: "Portfolios") }
-            if shows(.metals) { navigationButton("Precious metals", symbol: "square.stack.3d.up", section: "Precious metals") }
-            if shows(.cashFlow) { navigationButton("Transactions", symbol: "list.bullet.rectangle", section: "Entries") }
-            Divider().padding(.vertical, 4)
-            navigationButton("Tracking", symbol: "checklist", section: "Tracking")
-            navigationButton("Sources", symbol: "arrow.triangle.2.circlepath", section: "Sources")
-            navigationButton("Security", symbol: "lock.shield", section: "Security")
-
+            if hasData(.banks) { navigationButton("Accounts", symbol: "building.columns", section: "Accounts") }
+            if hasData(.crypto) { navigationButton("Crypto", symbol: "bitcoinsign.circle", section: "Portfolios") }
+            if hasData(.metals) { navigationButton("Gold & silver", symbol: "square.stack.3d.up", section: "Precious metals") }
+            if hasData(.cashFlow) { navigationButton("Transactions", symbol: "list.bullet.rectangle", section: "Entries") }
+            if TrackedKind.allCases.contains(where: hasData) { Divider().padding(.vertical, 4) }
+            else {
+                Text("Accounts, crypto, metals and transactions appear here once you add them with the plus button.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.bottom, 4)
+            }
+            navigationButton("Prices & rates", symbol: "arrow.triangle.2.circlepath", section: "Sources")
+            navigationButton("Backup & security", symbol: "lock.shield", section: "Security")
         }
     }
+    private func hasData(_ kind: TrackedKind) -> Bool { session.document?.hasData(kind) == true }
     private func navigationButton(_ title: String, symbol: String, section: String) -> some View {
         Button {
-            if section == "Add your info", session.importDraft == nil { session.importTableMode = false }
             session.managementSection = section
         } label: {
             HStack(spacing: 10) {
@@ -191,24 +203,6 @@ private struct UpOnlyManagementContent: View {
                 Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             }.font(.system(size: 13)).padding(10).contentShape(Rectangle())
         }.buttonStyle(UpOnlyCardButtonStyle(radius: 10)).accessibilityLabel(title)
-    }
-    private var tracking: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(spacing: 0) {
-                ForEach(TrackedKind.allCases, id: \.self) { kind in
-                    HStack(spacing: 10) {
-                        UpOnlySymbolBadge(symbol: kind.symbol, tint: kind.tint, size: 30)
-                        Text(kind.title).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 8)
-                        Toggle(kind.title, isOn: Binding(get: { shows(kind) }, set: { on in Task { await session.perform { $0.setTracked(kind, on) } } }))
-                            .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                            .disabled(session.isBusy || session.document?.hasData(kind) == true)
-                            .help(session.document?.hasData(kind) == true ? "Types with saved data stay visible." : kind.title)
-                    }.padding(.vertical, 10)
-                    if kind != TrackedKind.allCases.last { Divider().opacity(0.5) }
-                }
-            }.padding(.horizontal, UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
-        }
     }
     private func setAccountOwner(_ account: Account, owner: String) {
         Task { await session.perform { doc in
@@ -220,7 +214,7 @@ private struct UpOnlyManagementContent: View {
     private var accounts: some View {
         VStack(alignment: .leading, spacing: 16) {
             if session.document?.accounts.isEmpty == true {
-                managementEmpty("Your accounts, together", detail: "Add a balance or import a statement to begin.", symbol: "building.columns")
+                managementEmpty("No accounts yet", detail: "Add a balance or import a statement to begin.", symbol: "building.columns")
             }
             ForEach(session.document?.accounts ?? []) { account in
                 HStack(alignment: .top, spacing: 14) {
@@ -242,9 +236,11 @@ private struct UpOnlyManagementContent: View {
                             Text("Outside net worth").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
-                    VStack(alignment: .trailing, spacing: 12) {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        Button("Update") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
+                            .controlSize(.small).accessibilityLabel("Update balance for " + account.name)
                         Menu {
-                            Button("Update balance") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
+                            Button("Rename…") { editor = .renameAccount(account) }
                             Button("Import statement…") { session.startImport(.statements, accountID: account.id) }
                             Menu("Owner") {
                                 Button("Personal") { setAccountOwner(account, owner: "") }
@@ -255,7 +251,7 @@ private struct UpOnlyManagementContent: View {
                             Toggle("Include in net worth", isOn: Binding(get: { session.document?.isBankTracked(account.id, at: Date()) ?? false }, set: { tracked in
                                 Task { await session.perform { $0.setBankTracked(account.id, tracked: tracked, at: Date()) } }
                             }))
-                        } label: { Text("Edit") }.menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Options for " + account.name)
+                        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("More options for " + account.name)
                     }
                 }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
             }
@@ -271,7 +267,7 @@ private struct UpOnlyManagementContent: View {
     private var metals: some View {
         VStack(alignment: .leading, spacing: 16) {
             UpOnlyFlow {
-                Button("Add metal") { session.startImport(.metals) }.buttonStyle(.glassProminent)
+                Button { session.startImport(.metals) } label: { Label("Add gold or silver", systemImage: "plus") }.buttonStyle(.glassProminent)
             }
             if let doc = session.document {
                 ForEach(doc.portfolios.filter { !$0.isArchived && $0.kind == .metals }) { portfolio in
@@ -279,8 +275,10 @@ private struct UpOnlyManagementContent: View {
                         HStack {
                             Text(portfolio.name).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 12)
+                            Button("Update") { session.startImport(.metals, prefill: true, portfolioID: portfolio.id) }.controlSize(.small)
+                                .accessibilityLabel("Update weights in " + portfolio.name)
                             Menu {
-                                Button("Update weights") { session.startImport(.metals, prefill: true, portfolioID: portfolio.id) }
+                                Button("Rename…") { editor = .renamePortfolio(portfolio) }
                                 Menu("Owner") {
                                     Button("Personal") { setPortfolioOwner(portfolio, owner: nil) }
                                     ForEach(doc.businessAccounting ?? []) { book in
@@ -288,18 +286,27 @@ private struct UpOnlyManagementContent: View {
                                     }
                                 }
                                 Divider()
-                                Button("Archive collection…", role: .destructive) { archive = portfolio }
-                            } label: { Text("Edit") }
-                                .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize()
-                                .accessibilityLabel("Edit " + portfolio.name)
+                                Button("Archive…", role: .destructive) { archive = portfolio }
+                            } label: { Image(systemName: "ellipsis") }
+                                .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small)
+                                .accessibilityLabel("More options for " + portfolio.name)
                         }
                         ForEach(doc.activeHoldings(in: portfolio.id, at: Date())) { holding in
                             Divider().opacity(0.5)
-                            HStack {
-                                Text(holding.assetName).fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(holding.assetName).fixedSize(horizontal: false, vertical: true)
+                                    if let caption = UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: holding.id, valueUSD: NetWorthCalculator.value(at: Date(), scope: .portfolio(portfolio.id), document: doc).components.first { $0.id == holding.id }?.usdValue?.value, document: doc)) {
+                                        UpOnlyPrivateText(caption).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
                                 Spacer()
                                 UpOnlyPrivateText(UpOnlyFormat.quantity(doc.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0) + " g pure")
                                     .monospacedDigit().fixedSize(horizontal: false, vertical: true)
+                                Menu {
+                                    Button("Purchases…") { editor = .purchases(holding) }
+                                } label: { Image(systemName: "ellipsis") }
+                                    .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("Options for " + holding.assetName)
                             }.font(.system(size: 13))
                         }
                     }.padding(12).modifier(UpOnlyContentSurface())
@@ -320,16 +327,20 @@ private struct UpOnlyManagementContent: View {
     private var portfolios: some View {
         VStack(alignment: .leading, spacing: 16) {
             if session.document?.portfolios.contains(where: { !$0.isArchived && $0.kind == .crypto }) == false {
-                managementEmpty("Your coins, wherever you keep them", detail: "Add a holding to start your portfolio.", symbol: "bitcoinsign.circle")
+                managementEmpty("No crypto yet", detail: "Add a coin to start your portfolio.", symbol: "bitcoinsign.circle")
             }
             ForEach(session.document?.portfolios.filter { !$0.isArchived && $0.kind == .crypto } ?? []) { portfolio in
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         Text(portfolio.name).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 12)
+                        if (session.document?.activeHoldings(in: portfolio.id, at: Date()).count ?? 0) > 1 {
+                            Button("Update all") { session.startImport(.holdings, prefill: true, portfolioID: portfolio.id) }.controlSize(.small)
+                                .accessibilityLabel("Update all quantities in " + portfolio.name)
+                        }
                         Menu {
-                            Button("Add holding") { session.startImport(.holdings, portfolioID: portfolio.id) }
-                            Button("Update quantities") { session.startImport(.holdings, prefill: true, portfolioID: portfolio.id) }
+                            Button("Add a coin") { session.startImport(.holdings, portfolioID: portfolio.id) }
+                            Button("Rename…") { editor = .renamePortfolio(portfolio) }
                             Menu("Owner") {
                                 Button("Personal") { setPortfolioOwner(portfolio, owner: nil) }
                                 ForEach(session.document?.businessAccounting ?? []) { book in
@@ -338,11 +349,12 @@ private struct UpOnlyManagementContent: View {
                             }
                             Divider()
                             Button("Archive portfolio…", role: .destructive) { archive = portfolio }
-                        } label: { Text("Edit") }
-                            .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Edit " + portfolio.name)
+                        } label: { Image(systemName: "ellipsis") }
+                            .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("More options for " + portfolio.name)
                     }
                     if let doc = session.document {
                         let holdings = doc.activeHoldings(in: portfolio.id, at: Date())
+                        let values = NetWorthCalculator.value(at: Date(), scope: .portfolio(portfolio.id), document: doc).components
                         if holdings.isEmpty {
                             Button("Add a holding") { session.startImport(.holdings, portfolioID: portfolio.id) }.buttonStyle(.bordered)
                         }
@@ -352,16 +364,24 @@ private struct UpOnlyManagementContent: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(holding.assetName).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                                     UpOnlyPrivateText(UpOnlyFormat.quantity(doc.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0)).font(.system(size: 16).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
+                                    if let caption = UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: holding.id, valueUSD: values.first { $0.id == holding.id }?.usdValue?.value, document: doc)) {
+                                        UpOnlyPrivateText(caption).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                 if (session.document?.portfolios.filter { !$0.isArchived && $0.kind == .crypto }.count ?? 0) > 1 {
                                     Menu {
                                         Button("Update quantity") { session.startImport(.holdings, prefill: true, holdingID: holding.id) }
-                                        Button("Move") { editor = .move(holding) }
-                                    } label: { Text("Edit") }
-                                        .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Edit " + holding.assetName)
+                                        Button("Purchases…") { editor = .purchases(holding) }
+                                        Button("Move to another portfolio…") { editor = .move(holding) }
+                                    } label: { Image(systemName: "ellipsis") }
+                                        .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("Options for " + holding.assetName)
                                 } else {
                                     Button("Update") { session.startImport(.holdings, prefill: true, holdingID: holding.id) }
-                                        .accessibilityLabel("Update " + holding.assetName)
+                                        .controlSize(.small).accessibilityLabel("Update " + holding.assetName)
+                                    Menu {
+                                        Button("Purchases…") { editor = .purchases(holding) }
+                                    } label: { Image(systemName: "ellipsis") }
+                                        .menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("Options for " + holding.assetName)
                                 }
 
                             }
@@ -551,10 +571,10 @@ private struct UpOnlyDataAttention: View {
                 }
                 #endif
                 if attention.count == 0 && !hasBankStatus && !hasAccountingStatus && !hasPriceStatus {
-                    Label("Nothing to review", systemImage: "checkmark.circle").font(.headline)
+                    Label("You’re all caught up", systemImage: "checkmark.circle").font(.headline)
                 }
                 if !attention.spendingMonths.isEmpty {
-                    attentionCard("Income & spending", symbol: "checklist") {
+                    attentionCard("Is each month complete?", symbol: "checklist") {
                         spendingReview
                     }
                 }
@@ -578,11 +598,11 @@ private struct UpOnlyDataAttention: View {
                     }
                 }
                 if attention.pricesNeeded || !attention.accountingNames.isEmpty || hasPriceStatus {
-                    attentionCard("Sources need attention", symbol: "arrow.triangle.2.circlepath") {
+                    attentionCard("Prices & rates", symbol: "arrow.triangle.2.circlepath") {
                         if hasPriceStatus { note("A background source could not refresh. Your saved values are still available.") }
                         if attention.pricesNeeded { note("Some prices or exchange rates are missing.") }
                         if !attention.accountingNames.isEmpty { note(attention.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
-                        Button("Review sources") { session.managementSection = "Sources" }
+                        Button("Open Prices & rates") { session.managementSection = "Sources" }
                     }
                 }
             }
@@ -633,13 +653,13 @@ private struct UpOnlyDataAttention: View {
                     }.menuStyle(.borderedButton).fixedSize()
 
                 }
-                if month == .current() { note("Review this month after it ends.") }
-                else if state.totals == nil { note("Add the missing entries or rates before marking this month complete.") }
+                if month == .current() { note("This month is still open. Check it once it ends.") }
+                else if state.totals == nil { note("Add the missing transactions or rates first.") }
                 else if doc.reviewedMonths.contains(month.description) {
-                    Label("Month reviewed", systemImage: "checkmark.circle").font(.headline)
+                    Label("Complete", systemImage: "checkmark.circle").font(.headline)
                 } else {
-                    note("All personal accounts included?")
-                    Button("Mark month complete") {
+                    note("Is all of your income and spending for " + month.title + " recorded?")
+                    Button("Yes, it’s complete") {
                         let selected = month.description
                         Task {
                             await session.perform { doc in
@@ -690,16 +710,21 @@ struct UpOnlyEditSheet: View {
     @State private var bucket = "personal"
     @State private var error: String?
     @State private var saving = false
+    @State private var lotQuantity = ""
     private var actionTitle: String {
         switch editor {
-        case .entry: "Save entry"
+        case .entry: "Save"
         case .exchangeRate: "Save rate"
         case .move: "Move holding"
         case .portfolio: "Create portfolio"
         case .account, .balance: "Save balance"
         case .holding, .quantity: "Save holding"
+        case .renameAccount, .renamePortfolio: "Save"
+        case .purchases: "Add purchase"
         }
     }
+    // In the menu, Back lives top-left like every other page; only the window form keeps a Cancel button.
+    private var showsOwnHeader: Bool { compact && (!session.managementInMenu || session.entryEditorInMenu) }
     private var editingMonth: Binding<MonthKey> { Binding(get: { MonthKey(entryMonth) ?? .current() }, set: { entryMonth = $0.description }) }
     private func field(_ title: String, text: Binding<String>, placeholder: String = "") -> some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -716,7 +741,10 @@ struct UpOnlyEditSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            if !session.managementInMenu { HStack { Text(editor.title).font(.system(size: 20, weight: .semibold)).fixedSize(horizontal: false, vertical: true); Spacer() } }
+            if showsOwnHeader {
+                UpOnlyPageHeader(title: editor.title, backLabel: "Cancel") { if let onCancel { onCancel() } else { dismiss() } }
+                    .disabled(saving || session.isBusy)
+            }
             VStack(alignment: .leading, spacing: 16) {
                 switch editor {
                 case .portfolio:
@@ -753,6 +781,22 @@ struct UpOnlyEditSheet: View {
                             ForEach(choices) { Text($0.name).tag(Optional($0.id)) }
                         }.accessibilityLabel("Destination portfolio")
                     }
+                case .purchases(let holding):
+                    purchasesList(holding)
+                    Text("Add a purchase").font(.system(size: 12, weight: .semibold))
+                    field(PreciousMetal.asset(holding.assetID) != nil ? "Fine grams bought" : "Quantity bought", text: $lotQuantity, placeholder: "0")
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Total paid").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                            amountField
+                        }
+                        TextField("USD", text: $currency).textFieldStyle(.plain).font(.system(size: 14, weight: .medium)).frame(width: 50).accessibilityLabel("Currency paid")
+                    }
+                    HStack { Text("Bought on").foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: $date) }
+                case .renameAccount:
+                    field("Account name", text: $name)
+                case .renamePortfolio:
+                    field("Portfolio name", text: $name)
                 case .exchangeRate:
                     field("From currency", text: $currency, placeholder: "GBP")
                     Text("USD for 1 " + currency.uppercased()).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -771,7 +815,7 @@ struct UpOnlyEditSheet: View {
             }.disabled(saving || session.isBusy)
             if let error { Label(error, systemImage: "exclamationmark.circle").font(.system(size: 12)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             HStack(spacing: 12) {
-                if !session.managementInMenu || !compact || session.managementSection == "Add your info" {
+                if !compact {
                     Button("Cancel") { if let onCancel { onCancel() } else { dismiss() } }.keyboardShortcut(.cancelAction).disabled(saving || session.isBusy)
                 }
                 Spacer()
@@ -784,6 +828,8 @@ struct UpOnlyEditSheet: View {
             .interactiveDismissDisabled(saving || session.isBusy)
         .onAppear {
             if case .quantity(let h) = editor { amount = session.document?.effectiveQuantity(holdingID: h.id, at: Date()).map(UpOnlyFormat.quantity) ?? "" }
+            if case .renameAccount(let account) = editor { name = account.name }
+            if case .renamePortfolio(let portfolio) = editor { name = portfolio.name }
             if case .entry = editor, session.managementInMenu, !session.entryMonthForManagement.isEmpty { entryMonth = session.entryMonthForManagement }
             if case .exchangeRate = editor {
                 currency = session.requestedRateCurrency ?? "GBP"
@@ -791,6 +837,29 @@ struct UpOnlyEditSheet: View {
                     var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
                     if let end = calendar.date(byAdding: .month, value: 1, to: start) { date = min(Date(), end.addingTimeInterval(-1)) }
                 }
+            }
+        }
+    }
+    // Recorded lots for one holding, each removable. Removing a lot never changes quantities.
+    private func purchasesList(_ holding: Holding) -> some View {
+        let lots = (session.document?.purchases ?? []).filter { $0.holdingID == holding.id }.sorted { $0.at < $1.at }
+        return VStack(alignment: .leading, spacing: 8) {
+            if lots.isEmpty {
+                Text("No purchases recorded. Add one to see gain against what you paid.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(lots) { lot in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))).font(.system(size: 12, weight: .medium))
+                        UpOnlyPrivateText(UpOnlyFormat.quantity(lot.quantity.value) + " for " + UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency) + " " + lot.currency)
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        Task { await session.perform { $0.purchases?.removeAll { $0.id == lot.id } } }
+                    } label: { Image(systemName: "trash") }.controlSize(.small).accessibilityLabel("Remove purchase")
+                }
+                Divider().opacity(0.5)
             }
         }
     }
@@ -835,6 +904,26 @@ struct UpOnlyEditSheet: View {
                 let quantity = try validAmount()
                 guard quantity > 0, quantity <= (session.document?.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0) else { throw ImportFailure("Enter an amount greater than zero and no more than your available quantity.") }
                 try await session.mutate { doc in doc = try HoldingMutations.moveHolding(assetID: holding.assetID, quantity: quantity, from: holding.portfolioID, to: destination, at: Date(), document: doc) }
+            case .purchases(let holding):
+                guard let bought = try? MoneyInput.parseExact(lotQuantity), MoneyInput.isFinite(bought), bought > 0 else { throw ImportFailure("Enter the quantity bought, greater than zero.") }
+                let paid = try validAmount()
+                let code = try validCurrency()
+                guard date <= Date() else { throw ImportFailure("Choose today or an earlier date.") }
+                try await session.mutate { doc in
+                    doc.purchases = (doc.purchases ?? []) + [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(bought), paid: PreciseDecimal(paid), currency: code, at: date)]
+                }
+                lotQuantity = ""; amount = ""; return
+            case .renameAccount(let account):
+                let clean = try validName(name, title: "account name")
+                try await session.mutate { doc in
+                    for index in doc.accounts.indices where doc.accounts[index].id == account.id { doc.accounts[index].name = clean }
+                }
+            case .renamePortfolio(let portfolio):
+                let clean = try validName(name, title: "portfolio name")
+                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.id != portfolio.id && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists. Choose another name.") }
+                try await session.mutate { doc in
+                    if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].name = clean }
+                }
             case .exchangeRate:
                 let code = try validCurrency()
                 guard code != "USD" else { throw ImportFailure("Choose the currency you’re converting to USD, such as GBP.") }
