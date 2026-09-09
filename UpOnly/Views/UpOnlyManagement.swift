@@ -174,7 +174,10 @@ private struct UpOnlyManagementContent: View {
         guard !months.isEmpty else { return nil }
         return months.first { $0.description == session.entryMonthForManagement } ?? months.last
     }
-    private var pageSubtitle: String? { reviewMonth == nil ? nil : "Is this month complete?" }
+    private var pageSubtitle: String? {
+        guard let month = reviewMonth else { return nil }
+        return month == .current() ? "Still in progress" : "Is this month complete?"
+    }
     private var headerTrailing: AnyView? {
         let months = reviewMonths
         guard months.count > 1, let current = reviewMonth else { return nil }
@@ -680,7 +683,10 @@ private struct UpOnlyDataAttention: View {
                 }
                 if attention.pricesNeeded || !attention.accountingNames.isEmpty || hasPriceStatus {
                     attentionCard("Prices & rates", symbol: "arrow.triangle.2.circlepath") {
-                        if hasPriceStatus { note("A background source could not refresh. Your saved values are still available.") }
+                        if hasPriceStatus {
+                            let names = session.backgroundIssues.filter { $0 != "Bank balances" && $0 != "Accounting" && !$0.hasSuffix(" accounting") }
+                            note(names.joined(separator: ", ") + (names.count == 1 ? " could not refresh in the background." : " could not refresh in the background.") + " Saved values are still shown.")
+                        }
                         if attention.pricesNeeded { note("Some prices or exchange rates are missing.") }
                         if !attention.accountingNames.isEmpty { note(attention.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                         Button("Open Prices & rates") { session.managementSection = "Sources" }
@@ -789,7 +795,7 @@ private struct UpOnlyDataAttention: View {
                     }.padding(.trailing, -UpOnlyLayout.inset)
                 }
             }
-            ForEach(evidence.silent, id: \.self) { name in
+            ForEach(month == .current() ? [] : evidence.silent, id: \.self) { name in
                 Label(name + ": nothing this month. Import its statement if you used it.", systemImage: "exclamationmark.circle")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }

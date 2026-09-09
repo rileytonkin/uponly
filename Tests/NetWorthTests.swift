@@ -548,11 +548,15 @@ struct OwnedAssetTests {
         doc.businessAccounting = [try book()]
         let values = [component(doc.accounts[0].id, usd: 120, currency: "EUR"), component(doc.accounts[1].id, usd: -20, currency: "GBP"), component(doc.accounts[2].id, usd: 0)]
         let groups = BankBalanceGroup.groups(values, document: doc)
-        #expect(groups.count == 2 && groups[0].name == "Agency")
-        #expect(groups[0].total == 100 && groups[1].total == 0)
-        #expect(groups[0].businessID == "agency")
+        #expect(groups.map(\.name) == ["Bank balances", "Agency"])
+        #expect(groups[1].total == 100 && groups[0].total == 0)
+        #expect(groups[1].businessID == "agency" && groups[0].businessID == nil)
         var missing = values; missing[0].usdValue = nil
-        #expect(BankBalanceGroup.groups(missing, document: doc)[0].total == nil)
+        #expect(BankBalanceGroup.groups(missing, document: doc)[1].total == nil)
+        doc.accounts.append(Account(name: "Monzo", currency: "GBP"))
+        let personal = values + [component(doc.accounts[3].id, usd: 300, currency: "GBP")]
+        let banks = BankBalanceGroup.banks(BankBalanceGroup.groups(personal, document: doc)[0].components, document: doc)
+        #expect(banks.map(\.name) == ["Monzo", "Wise"] && banks[1].components.count == 1)
     }
     @Test("Company cash and crypto use historical ownership; full balances stay unchanged")
     func historicalOwnership() throws {

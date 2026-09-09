@@ -1078,7 +1078,13 @@ extension UpOnlySession {
             guard token == sessionToken, revision == sourceRevision else { return }
             if !automatic { sourceMessage = update.messages.isEmpty ? "Updated " + Date().formatted(date: .omitted, time: .shortened) : update.messages.joined(separator: "\n") }
             fxIssues = update.fxIssues
-            if !automatic { sourceIssues = update.sourceIssues }
+            if !automatic {
+                sourceIssues = update.sourceIssues
+                // A successful manual update supersedes an earlier background failure for that source.
+                for (source, issue) in [("Crypto", "crypto"), ("Metals", "metals"), ("Exchange rates", "fx")] where update.sourceIssues[issue] == nil {
+                    backgroundIssues.removeAll { $0 == source || $0.lowercased().hasPrefix(issue + " ") }
+                }
+            }
         } catch {
             log.error("refresh failed: \(String(describing: error), privacy: .public)")
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled {

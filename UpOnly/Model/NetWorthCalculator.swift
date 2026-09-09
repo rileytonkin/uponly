@@ -747,16 +747,31 @@ nonisolated struct BankBalanceGroup: Identifiable {
     var businessID: String?
     var components: [ValuationComponent]
     var total: Decimal? { AssetOwnership.sum(components) }
+    /// One row per company, plus a single "Bank balances" row holding every personal account.
     static func groups(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
         let accounts = Dictionary(uniqueKeysWithValues: document.accounts.map { ($0.id, $0) })
         return Dictionary(grouping: components.filter { $0.kind == .bank }) { component in
-            let account = accounts[component.id]
-            return (account?.externalProfileID ?? component.id.uuidString) + ":" + (account.flatMap { AssetOwnership.businessID(for: $0, in: document) } ?? "personal")
+            accounts[component.id].flatMap { AssetOwnership.businessID(for: $0, in: document) } ?? "personal"
         }.map { id, values in
             let sorted = values.sorted { $0.id.uuidString < $1.id.uuidString }
             let account = sorted.first.flatMap { accounts[$0.id] }
+            if id == "personal" { return BankBalanceGroup(id: id, name: "Bank balances", image: nil, businessID: nil, components: sorted) }
             return BankBalanceGroup(id: id, name: account.map(AssetOwnership.profileName) ?? "Bank account",
-                                    image: account?.profileImage, businessID: account.flatMap { AssetOwnership.businessID(for: $0, in: document) }, components: sorted)
-        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                                    image: account?.profileImage, businessID: id, components: sorted)
+        }.sorted {
+            if ($0.businessID == nil) != ($1.businessID == nil) { return $0.businessID == nil }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+    /// Bank-by-bank breakdown of a group: the Wise profile, Monzo, Kast, each with its currency balances.
+    static func banks(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
+        let accounts = Dictionary(uniqueKeysWithValues: document.accounts.map { ($0.id, $0) })
+        return Dictionary(grouping: components) { component in accounts[component.id]?.externalProfileID.map { "wise:" + $0 } ?? component.id.uuidString }
+            .map { id, values in
+                let sorted = values.sorted { ($0.usdValue?.value ?? -1) > ($1.usdValue?.value ?? -1) }
+                let account = sorted.first.flatMap { accounts[$0.id] }
+                let name = account.map { $0.externalProfileID == nil ? $0.name : AssetOwnership.profileName($0).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName($0) } ?? "Bank account"
+                return BankBalanceGroup(id: id, name: name, image: account?.profileImage, businessID: nil, components: sorted)
+            }.sorted { ($0.total ?? -1) > ($1.total ?? -1) }
     }
 }
