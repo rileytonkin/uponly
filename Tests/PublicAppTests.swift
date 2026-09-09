@@ -417,7 +417,8 @@ struct BulkInputTests {
             Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: cardCo.id.uuidString + ":9")
         ]
         let evidence = MonthEvidence.build(august, document: doc, now: Date(timeIntervalSince1970: 1_787_000_000))
-        #expect(evidence.sources.map(\.name) == ["Monzo", "Alex (Wise)", "Added by hand"])
+        #expect(evidence.sources.map(\.name) == ["Monzo", "Wise · Alex", "Added by hand"])
+        #expect(MonthEvidence.sourceName(for: doc.entries[4], accounts: [Account(name: "Personal · GBP", currency: "GBP", externalProfileID: "7")]).name == "Wise")
         #expect(evidence.sources[0].count == 3 && evidence.sources[0].moneyIn == 8000 && evidence.sources[0].moneyOut == 1980)
         #expect(evidence.sources[2].moneyIn == 0 && evidence.sources[2].moneyOut == 5)
         #expect(evidence.largest.map(\.entry.label) == ["Northwind", "Example Studio", "Airbnb", "Cafe", "Airbnb refund", "Cash"])

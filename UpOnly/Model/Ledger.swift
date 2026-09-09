@@ -322,7 +322,9 @@ nonisolated struct MonthEvidence: Sendable, Equatable {
         if let id = entry.accountID, let account = accounts.first(where: { $0.id == id }) { return (id.uuidString, account.name) }
         if entry.source == .wise, let profile = entry.sourceRef?.split(separator: ":").dropFirst().first,
            let account = accounts.first(where: { $0.externalProfileID == String(profile) }) {
-            return ("wise:" + profile, String(account.name.split(separator: "·").first ?? "Wise").trimmingCharacters(in: .whitespaces) + " (Wise)")
+            // Wise calls its individual profile "Personal"; that is just Wise here. Named profiles keep their name.
+            let profileName = String(account.name.split(separator: "·").first ?? "").trimmingCharacters(in: .whitespaces)
+            return ("wise:" + profile, profileName.isEmpty || profileName.caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : "Wise · " + profileName)
         }
         return ("manual", "Added by hand")
     }
