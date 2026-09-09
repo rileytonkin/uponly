@@ -373,7 +373,7 @@ struct UpOnlySources: View {
                             Text("Gold API history key (optional)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder)
                             Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
-                            Text("Current prices need no key. A key fills gaps after time offline. Your weights and storage locations stay private.")
+                            Text("Live prices need no key and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
