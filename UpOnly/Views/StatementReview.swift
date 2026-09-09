@@ -381,25 +381,45 @@ private struct UpOnlyGuidedEntry: View {
         }.task { amountFocused = true }
     }
     private var reviewAmount: some View {
-        VStack(spacing: 16) {
-            VStack(spacing: 5) {
-                UpOnlyPrivateText(quantity.wrappedValue).font(.system(size: 34, weight: .semibold).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
-                Text(mode == .bankBalances ? row.bank.account.currency : mode == .metals ? row.holding.unit + " pure metal weight" : coin?.symbol.uppercased() ?? "total quantity").font(.system(size: 12)).foregroundStyle(.secondary)
-            }.frame(maxWidth: .infinity).padding(.vertical, 6)
-            VStack(spacing: 12) {
-                if mode == .bankBalances { reviewLine("Account", row.bank.account.name + (row.bank.account.existingID == nil ? " (new)" : "")); reviewLine("As of", date.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))) }
-                else {
-                    reviewLine("Portfolio", row.holding.portfolioName)
-                    reviewLine("As of", holdingDate.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
-                    if !row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reviewLine("Paid", row.holding.paid + " " + row.holding.paidCurrency.uppercased()) }
+        let asOf = (mode == .bankBalances ? date.wrappedValue : holdingDate.wrappedValue).formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
+        let paid = row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(spacing: 16) {
+            Text("Does this look right?").font(.system(size: 22, weight: .semibold)).tracking(-0.4).frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 6) {
+                UpOnlyPrivateText(quantity.wrappedValue).font(.system(size: 40, weight: .semibold).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
+                Text(mode == .bankBalances ? row.bank.account.currency : mode == .metals ? row.holding.unit + " of " + row.holding.coin.lowercased() : coin?.symbol.uppercased() ?? "total quantity").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity).padding(.vertical, 10)
+            VStack(spacing: 0) {
+                if mode == .bankBalances {
+                    reviewLine("Account", row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil)
+                    Divider().opacity(0.4)
+                    reviewLine("As of", asOf)
+                } else {
+                    reviewLine("Portfolio", row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil)
+                    Divider().opacity(0.4)
+                    reviewLine("As of", asOf)
+                    Divider().opacity(0.4)
+                    reviewLine("Paid", paid.isEmpty ? "Not recorded" : paid + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty)
+                }
+            }.padding(.horizontal, 14).padding(.vertical, 4).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+            if mode != .bankBalances, !holdingNotes.isEmpty || review?.states[row.id] != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let state = review?.states[row.id] { Label(reviewSummary(state), systemImage: "checkmark.circle").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     ForEach(holdingNotes, id: \.self) { note in
                         Label(note, systemImage: "info.circle").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    if let state = review?.states[row.id] { Text(state.displayText(privacy: session.privacyMode)).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                }
-            }.padding(14).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
             primary("Save") { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
         }
+    }
+    /// Turns the import engine's "previous → new Coin" state into a sentence.
+    private func reviewSummary(_ state: ImportRowState) -> String {
+        guard case .ready(let text) = state, let arrow = text.range(of: " → ") else { return state.displayText(privacy: session.privacyMode) }
+        let previous = String(text[..<arrow.lowerBound])
+        let name = coin?.name ?? (mode == .metals ? row.holding.coin : "holding")
+        if session.privacyMode { return previous == "New" ? "Adds a new " + name + " holding to " + row.holding.portfolioName + "." : "Replaces the current " + name + " total in " + row.holding.portfolioName + "." }
+        return previous == "New" ? "Adds a new " + name + " holding to " + row.holding.portfolioName + "." : "Replaces the current " + name + " total of " + previous + " in " + row.holding.portfolioName + "."
     }
     // Say out loud what a past date or a cost without an increase will do before it is saved.
     private var holdingNotes: [String] {
@@ -418,8 +438,13 @@ private struct UpOnlyGuidedEntry: View {
         }
         return notes
     }
-    private func reviewLine(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top) { Text(label).foregroundStyle(.secondary); Spacer(minLength: 8); Text(value).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true) }.font(.system(size: 12))
+    private func reviewLine(_ label: String, _ value: String, badge: String? = nil, muted: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            if let badge { Text(badge).font(.system(size: 10, weight: .semibold)).padding(.horizontal, 6).padding(.vertical, 2).background(UpOnlyTint.cashFlow.opacity(0.18), in: Capsule()).foregroundStyle(UpOnlyTint.cashFlow) }
+            Text(value).font(.system(size: 13, weight: .medium)).foregroundStyle(muted ? .tertiary : .primary).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+        }.font(.system(size: 12)).padding(.vertical, 10)
     }
     private func entryField(_ placeholder: String, text: Binding<String>, size: CGFloat = 14, symbol: String? = nil) -> some View {
         HStack(spacing: 8) {
@@ -471,7 +496,12 @@ private struct UpOnlyGuidedEntry: View {
         let token = session.sessionToken
         do {
             try await session.commitImportBatch(batch)
-            if token == session.sessionToken { saved() }
+            if token == session.sessionToken {
+                // A record dated after the month on screen would otherwise look like it vanished.
+                let recorded = mode == .bankBalances ? date.wrappedValue : holdingDate.wrappedValue
+                if let model = session.monthModel, model.period == .monthly, recorded > model.selectedInterval().end { model.select(.current()) }
+                saved()
+            }
         } catch { if token == session.sessionToken { self.error = error.localizedDescription; working = false } }
     }
 }

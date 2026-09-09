@@ -800,23 +800,23 @@ private struct UpOnlyUnlockedPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 UpOnlySymbolBadge(symbol: selectedPortfolio?.kind == .metals ? TrackedKind.metals.symbol : "chart.line.uptrend.xyaxis", tint: UpOnlyTint.netWorth, size: 30)
+                let hasLater = selectedInterval.end < Date() && session.document.map { AssetOwnership.personalValue(at: Date(), scope: scope, document: $0).total != nil } == true
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Nothing here yet").font(.system(size: 15, weight: .semibold))
-                    Text("No balances or holdings recorded for this period.")
+                    Text(hasLater ? "Nothing recorded yet for " + (model.period == .monthly ? model.month.title : "this period") : "Nothing here yet").font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    Text(hasLater ? "Your records start later. Jump to the latest to see them." : "No balances or holdings recorded for this period.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            let hasLater = selectedInterval.end < Date() && session.document.map { AssetOwnership.personalValue(at: Date(), scope: scope, document: $0).total != nil } == true
             HStack(spacing: 8) {
-                Button(selectedPortfolio?.kind == .metals ? "Add gold or silver" : selectedPortfolio != nil ? "Add a coin" : "Add") {
+                if hasLater { Button("Show latest") { model.selectPeriod(.monthly); model.select(.current()) }.buttonStyle(.glassProminent) }
+                let add = Button(selectedPortfolio?.kind == .metals ? "Add gold or silver" : selectedPortfolio != nil ? "Add a coin" : "Add") {
                     if let portfolio = selectedPortfolio {
                         guard session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id) else { return }
                     }
                     session.addingInMenu = true
-                }.buttonStyle(.glassProminent)
-                if selectedInterval.end < Date(), let document = session.document,
-                   AssetOwnership.personalValue(at: Date(), scope: scope, document: document).total != nil {
-                    Button("Latest") { model.selectPeriod(.monthly); model.select(.current()) }.buttonStyle(.bordered)
                 }
+                if hasLater { add.buttonStyle(.bordered) } else { add.buttonStyle(.glassProminent) }
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(14).modifier(UpOnlyContentSurface())
     }
