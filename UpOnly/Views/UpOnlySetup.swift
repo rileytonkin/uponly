@@ -397,6 +397,15 @@ struct UpOnlySources: View {
                                    controlDisabled: session.isBusy) {
                     UpOnlySourceStatus(kind: .fx, savedOn: session.document?.settings.automaticFX == true, interval: "Updates every 15 minutes",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
+                    if let doc = session.document, doc.settings.automaticFX {
+                        // Daily history is what lets past days be valued; show how much of it is here.
+                        let currencies = Set(doc.accounts.map(\.currency) + doc.entries.map(\.currency)).subtracting(["USD"]).sorted()
+                        ForEach(currencies, id: \.self) { currency in
+                            let days = Set(doc.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.map { UTCDay.start(of: $0.providerTime) })
+                            Text(currency + ": " + (days.isEmpty ? "no daily rates yet" : "\(days.count) daily rates since " + UpOnlyFormat.utcDay(days.min()!)))
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
                     DisclosureGroup("About exchange rates") {
                         Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Historical entries need a rate dated near the end of their month.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)

@@ -359,10 +359,12 @@ final class UpOnlySession {
         let changedBalanceDays = current.document.bankBalances.filter { !nextBalances.contains($0.id) }.map(\.observedAt)
             + next.bankBalances.filter { !previousBalances.contains($0.id) }.map(\.observedAt)
         if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
+        var rebuilt = false
         if let backdated, backdated < UTCDay.start(of: now) {
             let proposed = next
             next = await Task.detached(priority: .userInitiated) { HoldingMutations.rebuildHistory(from: backdated, document: proposed, now: now) }.value
             guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+            rebuilt = true
         }
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
         for scope in scopes {
@@ -374,6 +376,8 @@ final class UpOnlySession {
         try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
         guard token == sessionToken else { throw VaultError.locked }
         publish(next)
+        // Rebuilt days need daily exchange rates to be valued; fetch them now rather than at the next scheduled slot.
+        if rebuilt { Task { [weak self] in await self?.refreshPrices() } }
     }
 
     private func mutatePrepared(_ prepare: @escaping @Sendable (VaultDocument) throws -> VaultDocument) async throws {
