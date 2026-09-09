@@ -34,6 +34,10 @@ nonisolated struct Entry: Codable, Identifiable, Sendable, Equatable {
     var kindIsUserEdited: Bool?
     /// The connected company a business cost was paid for, when one has been chosen.
     var businessID: String?
+    /// UTC day of the transaction (yyyy-MM-dd) when the source provides one; manual entries only know their month.
+    var day: String?
+    /// True when the statement showed money leaving the account. Kept separately from `kind`, which the user may change.
+    var outflow: Bool?
     init(month: MonthKey, bucket: Bucket = .personal, kind: EntryKind, amount: Decimal, currency: String, label: String, source: EntrySource = .manual, sourceRef: String? = nil) {
         self.month = month.description; self.bucket = bucket; self.kind = kind
         self.amount = amount; self.currency = currency; self.label = label; self.source = source; self.sourceRef = sourceRef

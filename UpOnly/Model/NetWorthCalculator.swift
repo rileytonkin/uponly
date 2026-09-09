@@ -495,11 +495,11 @@ nonisolated struct HoldingPerformance: Equatable {
 }
 
 nonisolated enum HoldingMutations {
-    /// Recompute stored daily values from a day in the past, after a backdated quantity.
+    /// Recompute stored daily values from a day in the past, after a backdated quantity or balance.
     static func rebuildHistory(from start: Date, document: VaultDocument, now: Date) -> VaultDocument {
         var next = document
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
-        let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-1100 * 86400))
+        let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-2200 * 86400))
         var day = first
         while day < UTCDay.start(of: now) {
             // Old samples for the day no longer describe the holdings held then; drop them
@@ -773,5 +773,66 @@ nonisolated struct BankBalanceGroup: Identifiable {
                 let name = account.map { $0.externalProfileID == nil ? $0.name : AssetOwnership.profileName($0).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName($0) } ?? "Bank account"
                 return BankBalanceGroup(id: id, name: name, image: account?.profileImage, businessID: nil, components: sorted)
             }.sorted { ($0.total ?? -1) > ($1.total ?? -1) }
+    }
+}
+
+/// Rebuilds an account's balance history from its statements. One real balance (typed in or synced) anchors the
+/// series; every transaction with a known day moves it. Days before the earliest statement stay unknown.
+nonisolated enum BalanceReconstruction {
+    static let source = "Statements"
+    static func signed(_ entry: Entry) -> Decimal? {
+        if let outflow = entry.outflow { return outflow ? -entry.amount : entry.amount }
+        switch entry.kind { case .expense: return -entry.amount; case .income, .refund: return entry.amount; case .transfer: return nil }
+    }
+    static func dayFormatter() -> DateFormatter {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = UTCDay.timeZone; formatter.dateFormat = "yyyy-MM-dd"; return formatter
+    }
+    /// Derived end-of-day balances for one account, or nil when there is no anchor or no dated statements.
+    static func derive(accountID: UUID, document: VaultDocument, now: Date = Date()) -> [BankBalanceObservation]? {
+        guard let account = document.accounts.first(where: { $0.id == accountID }),
+              let anchor = document.bankBalances.filter({ $0.accountID == accountID && $0.source != source }).max(by: { $0.observedAt < $1.observedAt }) else { return nil }
+        let formatter = dayFormatter()
+        var byDay: [Date: Decimal] = [:]
+        for entry in document.entries where entry.accountID == accountID {
+            guard let text = entry.day, let day = formatter.date(from: text), let amount = signed(entry) else { continue }
+            byDay[day, default: 0] += amount
+        }
+        guard !byDay.isEmpty else { return nil }
+        let anchorDay = UTCDay.start(of: anchor.observedAt)
+        var result: [BankBalanceObservation] = []
+        // Backwards: the balance at the end of day D is the anchor less everything that happened after D.
+        var running = anchor.amount.value, previousDay = anchorDay
+        for day in byDay.keys.filter({ $0 < anchorDay }).sorted(by: >) {
+            // Everything after `day` up to and including the anchor's own day has already happened by the anchor.
+            running -= byDay.filter { $0.key > day && $0.key <= previousDay }.values.reduce(Decimal(0), +)
+            previousDay = day
+            result.append(observation(account, amount: running, day: day, now: now))
+        }
+        // Forwards: statements newer than the anchor extend it.
+        var forward = anchor.amount.value
+        for day in byDay.keys.filter({ $0 > anchorDay }).sorted() {
+            forward += byDay[day] ?? 0
+            result.append(observation(account, amount: forward, day: day, now: now))
+        }
+        return result.sorted { $0.observedAt < $1.observedAt }
+    }
+    private static func observation(_ account: Account, amount: Decimal, day: Date, now: Date) -> BankBalanceObservation {
+        BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: account.currency,
+                               observedAt: min(day.addingTimeInterval(86400 - 1), now), source: source, sourceIdentity: account.id.uuidString + ":derived")
+    }
+    /// Replaces derived balances for the given accounts and returns the earliest day whose history changed.
+    static func apply(accountIDs: Set<UUID>, to document: inout VaultDocument, now: Date = Date()) -> Date? {
+        var earliest: Date?
+        for accountID in accountIDs {
+            let previous = document.bankBalances.filter { $0.accountID == accountID && $0.source == source }
+            let derived = derive(accountID: accountID, document: document, now: now) ?? []
+            let unchanged = previous.count == derived.count && zip(previous.sorted { $0.observedAt < $1.observedAt }, derived).allSatisfy { $0.observedAt == $1.observedAt && $0.amount.value == $1.amount.value }
+            if unchanged { continue }
+            document.bankBalances.removeAll { $0.accountID == accountID && $0.source == source }
+            document.bankBalances.append(contentsOf: derived)
+            if let first = (previous.map(\.observedAt) + derived.map(\.observedAt)).min() { earliest = min(earliest ?? first, first) }
+        }
+        return earliest
     }
 }

@@ -353,7 +353,12 @@ final class UpOnlySession {
         }
         let now = Date()
         // A backdated quantity changes past days; recompute them away from the main actor.
-        let backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
+        var backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
+        // New or removed balance observations dated before today also change past days.
+        let previousBalances = Set(current.document.bankBalances.map(\.id)), nextBalances = Set(next.bankBalances.map(\.id))
+        let changedBalanceDays = current.document.bankBalances.filter { !nextBalances.contains($0.id) }.map(\.observedAt)
+            + next.bankBalances.filter { !previousBalances.contains($0.id) }.map(\.observedAt)
+        if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
         if let backdated, backdated < UTCDay.start(of: now) {
             let proposed = next
             next = await Task.detached(priority: .userInitiated) { HoldingMutations.rebuildHistory(from: backdated, document: proposed, now: now) }.value
