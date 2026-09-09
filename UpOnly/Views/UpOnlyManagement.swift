@@ -711,22 +711,26 @@ private struct UpOnlyDataAttention: View {
     private func reviewEvidence(_ evidence: MonthEvidence, document: VaultDocument) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if !evidence.sources.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
                     ForEach(evidence.sources) { source in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        GridRow {
                             Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                            Text("\(source.count)").font(.system(size: 11)).foregroundStyle(.tertiary)
-                            Spacer(minLength: 4)
-                            UpOnlyPrivateText("+" + (source.moneyIn.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed") + "  −" + (source.moneyOut.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
-                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                            Text("\(source.count)").font(.system(size: 11)).foregroundStyle(.tertiary).gridColumnAlignment(.trailing)
+                            UpOnlyPrivateText("+" + (source.moneyIn.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                            UpOnlyPrivateText("−" + (source.moneyOut.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
                         }.accessibilityElement(children: .combine)
                     }
-                }
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
             if !evidence.largest.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Biggest this month").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                    ForEach(evidence.largest) { item in evidenceRow(item) }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Biggest this month").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                    ForEach(evidence.largest) { item in
+                        evidenceRow(item, document: document)
+                        if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
+                    }
                 }
             }
             ForEach(evidence.silent, id: \.self) { name in
@@ -735,28 +739,38 @@ private struct UpOnlyDataAttention: View {
             }
         }
     }
-    /// Label, USD amount, and a type menu so a misfiled transaction is fixed without leaving the review.
-    private func evidenceRow(_ item: MonthEvidence.Item) -> some View {
+    /// Full label with the type and source beneath, amount on the right. Clicking anywhere opens the type menu.
+    private func evidenceRow(_ item: MonthEvidence.Item, document: VaultDocument) -> some View {
         let entry = item.entry
         let sign = entry.kind == .expense ? "−" : entry.kind == .transfer ? "" : "+"
         let amount = item.usd.map { UpOnlyFormat.exactMoney($0) } ?? UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency) + " " + entry.currency
-        return HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(entry.label).font(.system(size: 12)).lineLimit(1).help(entry.label)
-                .foregroundStyle(entry.kind == .transfer ? .secondary : .primary)
-            Spacer(minLength: 4)
-            UpOnlyPrivateText(sign + amount).font(.system(size: 12).monospacedDigit()).lineLimit(1)
-                .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : entry.kind == .transfer ? .secondary : .primary)
-            Menu(kindName(entry.kind)) {
-                ForEach([EntryKind.income, .expense, .refund, .transfer], id: \.self) { kind in
-                    Button(kindName(kind)) { reclassify(entry, as: kind) }.disabled(kind == entry.kind)
+        let source = MonthEvidence.sourceName(for: entry, accounts: document.accounts).name
+        let alwaysTransfer = OwnerPayments.isPersonalTransferCounterparty(entry.label, document: document)
+        return Menu {
+            ForEach([EntryKind.income, .expense, .refund, .transfer], id: \.self) { kind in
+                Button { reclassify(entry, as: kind) } label: {
+                    if kind == entry.kind { Label(kindName(kind), systemImage: "checkmark") } else { Text(kindName(kind)) }
                 }
-                if entry.source != .manual, entry.bucket == .personal, let doc = session.document, !OwnerPayments.isPersonalTransferCounterparty(entry.label, document: doc) {
-                    Divider()
-                    Button("Always a transfer: " + entry.label) { setTransferCounterparty(entry.label, enabled: true) }
+            }
+            if entry.source != .manual, entry.bucket == .personal, !alwaysTransfer {
+                Divider()
+                Button("Always a transfer: " + entry.label) { setTransferCounterparty(entry.label, enabled: true) }
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.label).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(entry.kind == .transfer ? .secondary : .primary)
+                    Text(kindName(entry.kind) + (alwaysTransfer ? " (always)" : "") + " · " + source).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 }
-            }.menuStyle(.borderedButton).controlSize(.mini).fixedSize()
-                .accessibilityLabel("Type of " + entry.label)
-        }
+                Spacer(minLength: 8)
+                UpOnlyPrivateText(sign + amount).font(.system(size: 12, weight: .medium).monospacedDigit()).lineLimit(1)
+                    .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : entry.kind == .transfer ? .secondary : .primary)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }.padding(.vertical, 6).contentShape(Rectangle())
+        }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+            .help("Change the type of " + entry.label)
+            .accessibilityLabel(entry.label + ", " + kindName(entry.kind) + ", " + sign + amount)
     }
     private func kindName(_ kind: EntryKind) -> String {
         switch kind { case .income: "Income"; case .expense: "Spending"; case .refund: "Refund"; case .transfer: "Transfer" }
