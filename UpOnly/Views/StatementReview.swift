@@ -709,6 +709,9 @@ struct UpOnlyImportView: View {
                         Button("Fix rows") {
                             problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
                         }.buttonStyle(.glassProminent)
+                    } else if review.learnedDays > 0 && review.readyRows == 0 {
+                        Text("Dates added for \(review.learnedDays) saved transactions").font(.system(size: 14, weight: .medium))
+                        Text("Balance history will be rebuilt when you save.").font(.system(size: 12)).foregroundStyle(.secondary)
                     } else if review.added == 0 {
                         Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(.system(size: 14, weight: .medium))
                         Button("Done") { session.discardImport() }.buttonStyle(.glassProminent)

@@ -576,6 +576,8 @@ nonisolated enum ImportRowState: Sendable, Equatable {
 nonisolated struct ImportEvaluation: Sendable {
     /// Earliest day whose derived balances changed, so saved history is rebuilt from there.
     var historyStart: Date?
+    /// Already-saved rows that learned their transaction day from this import.
+    var learnedDays = 0
     var states: [UUID: ImportRowState] = [:]
     var sourceErrors: [UUID: String] = [:]
     var globalError: String?
@@ -660,8 +662,18 @@ nonisolated enum ImportBatchProcessor {
                             || batch.sources.contains { other in importedSources.contains(other.id) && other.digest == source.digest && sourceAccounts[other.id] == accountID }
                         if duplicate { duplicateSources.insert(source.id) }
                     }
-                    if duplicateSources.contains(source.id) { result.states[row.id] = .duplicate; continue }
                     let date = try source.dateFormat.date(input.date)
+                    if duplicateSources.contains(source.id) {
+                        // The file was imported before its rows kept a day. Teach the saved rows now and move on.
+                        let external = input.transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !external.isEmpty, let index = next.entries.firstIndex(where: { $0.sourceRef == accountID.uuidString + ":" + external }), next.entries[index].day == nil || next.entries[index].outflow == nil {
+                            let signed = (try? source.numberFormat.decimal(input.amount)) ?? ((try? source.numberFormat.decimal(input.credit)) ?? 0) - ((try? source.numberFormat.decimal(input.debit)) ?? 0)
+                            next.entries[index].day = ImportDateFormat.today(date)
+                            if next.entries[index].outflow == nil { next.entries[index].outflow = input.originalType.isEmpty ? signed < 0 : input.kind == .expense }
+                            touchedAccounts.insert(accountID); result.learnedDays += 1
+                        }
+                        result.states[row.id] = .duplicate; continue
+                    }
                     guard date <= now else { throw ImportFailure("The transaction date cannot be in the future.") }
                     let currency = try MoneyInput.normalizeCurrency(input.currency)
                     let label = input.label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -797,6 +809,8 @@ nonisolated enum ImportBatchProcessor {
         if !result.hasErrors {
             // Statements move the balance history of the accounts they touch.
             if !touchedAccounts.isEmpty { result.historyStart = BalanceReconstruction.apply(accountIDs: touchedAccounts, to: &next, now: now) }
+            // Learned dates and a rebuilt history are worth saving even when no row is new.
+            if result.learnedDays > 0 || result.historyStart != nil { result.added += max(result.learnedDays, 1) }
             result.document = next
         }
         return result
