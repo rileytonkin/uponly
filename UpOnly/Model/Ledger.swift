@@ -311,7 +311,7 @@ nonisolated struct MonthEvidence: Sendable, Equatable {
         var id: UUID { entry.id }
     }
     var sources: [Source] = []
-    /// The month's biggest movements of any kind, transfers included, so a misfiled one can be fixed here.
+    /// Every personal movement this month, biggest first, transfers included so a misfiled one can be fixed here.
     var largest: [Item] = []
     /// Accounts that had personal activity last month but none in this one.
     var silent: [String] = []
@@ -352,7 +352,7 @@ nonisolated struct MonthEvidence: Sendable, Equatable {
             result.sources.append(Source(id: key, name: sourceName(for: first, accounts: document.accounts).name, count: rows.count, moneyIn: moneyIn, moneyOut: moneyOut))
         }
         result.largest = Array(personal.map { Item(entry: $0, usd: usd($0)) }
-            .sorted { ($0.usd ?? $0.entry.amount) > ($1.usd ?? $1.entry.amount) }.prefix(8))
+            .sorted { ($0.usd ?? $0.entry.amount) > ($1.usd ?? $1.entry.amount) })
         let previous = month.previous.description
         let active = Set(order)
         var seen = Set<String>()

@@ -606,7 +606,17 @@ private struct UpOnlyDataAttention: View {
                     Label("You’re all caught up", systemImage: "checkmark.circle").font(.headline)
                 }
                 if !attention.spendingMonths.isEmpty {
-                    attentionCard("Is each month complete?", symbol: "checklist") {
+                    attentionCard(month.title, symbol: "checklist", subtitle: "Is this month complete?") {
+                        if report.spendingMonths.count > 1 {
+                            Menu {
+                                ForEach(report.spendingMonths.reversed(), id: \.self) { item in
+                                    Button(item.title) { reviewMonth = item.description }
+                                }
+                            } label: {
+                                Label("Month", systemImage: "chevron.up.chevron.down").labelStyle(.iconOnly).font(.system(size: 10, weight: .semibold))
+                            }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review")
+                        }
+                    } content: {
                         spendingReview
                     }
                 }
@@ -649,13 +659,6 @@ private struct UpOnlyDataAttention: View {
     }
     private var spendingReview: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if report.spendingMonths.count > 1 {
-                Menu(month.title) {
-                    ForEach(report.spendingMonths.reversed(), id: \.self) { item in
-                        Button(item.title) { reviewMonth = item.description }
-                    }
-                }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review")
-            } else { Text(month.title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
             if let doc = session.document, let totals = MonthlyLedger.personal(month, document: doc).totals {
                 HStack(spacing: 16) {
                     reviewTotal("Income", value: totals.moneyIn)
@@ -664,7 +667,7 @@ private struct UpOnlyDataAttention: View {
             }
             if let doc = session.document { reviewEvidence(MonthEvidence.build(month, document: doc), document: doc) }
             HStack(spacing: 8) {
-                Button("Transactions") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
+                Button("Edit all") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
                 Menu("Add missing") {
                     Button("Import statements…") { session.startImport(.statements) }
                     Button("Add entry") { session.entryMonthForManagement = month.description; addEntry() }
@@ -711,25 +714,35 @@ private struct UpOnlyDataAttention: View {
     private func reviewEvidence(_ evidence: MonthEvidence, document: VaultDocument) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if !evidence.sources.isEmpty {
-                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(evidence.sources) { source in
-                        GridRow {
-                            Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                            Text("\(source.count)").font(.system(size: 11)).foregroundStyle(.tertiary).gridColumnAlignment(.trailing)
-                            UpOnlyPrivateText("+" + (source.moneyIn.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
-                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                            UpOnlyPrivateText("−" + (source.moneyOut.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
-                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        }.accessibilityElement(children: .combine)
+                        HStack(alignment: .center, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Text("\(source.count) transaction\(source.count == 1 ? "" : "s")").font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                UpOnlyPrivateText("+" + (source.moneyIn.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                    .font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(UpOnlyTint.cashFlow)
+                                UpOnlyPrivateText("−" + (source.moneyOut.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                            }
+                        }.padding(.vertical, 6).accessibilityElement(children: .combine)
+                        if source.id != evidence.sources.last?.id { Divider().opacity(0.4) }
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             if !evidence.largest.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Biggest this month").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
-                    ForEach(evidence.largest) { item in
-                        evidenceRow(item, document: document)
-                        if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
+                    Text("Transactions, biggest first").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                    UpOnlyMenuScroll(maxHeight: 280) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(evidence.largest) { item in
+                                evidenceRow(item, document: document)
+                                if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
+                            }
+                        }
                     }
                 }
             }
@@ -793,8 +806,19 @@ private struct UpOnlyDataAttention: View {
         Text(text).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
     private func attentionCard<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
+        attentionCard(title, symbol: symbol, subtitle: nil, trailing: { EmptyView() }, content: content)
+    }
+    /// Header with an optional subtitle and a trailing control, such as the month picker.
+    private func attentionCard<Trailing: View, Content: View>(_ title: String, symbol: String, subtitle: String?, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: symbol).font(.headline)
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(title, systemImage: symbol).font(.headline)
+                    if let subtitle { Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary) }
+                }
+                Spacer(minLength: 8)
+                trailing()
+            }
             content()
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
