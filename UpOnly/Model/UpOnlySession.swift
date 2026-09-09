@@ -1157,6 +1157,8 @@ extension UpOnlySession {
             if let metalKey { doc.settings.metalHistoryKey = metalKey }
             doc.priceHistoryCoverage?.removeAll { !$0.complete }
         }
+        // Fetch current prices and rates right away so the source shows data, not "waiting".
+        if state == .unlocked, prices || fx || metals == true { Task { await refreshPrices() } }
     }
     func completeSetup(tracked: [TrackedKind], prices: Bool, fx: Bool, key: String, metals: Bool = false, metalKey: String = "") async throws {
         try await flushSetupProgress()
@@ -1316,6 +1318,13 @@ extension UpOnlySession {
             guard token == sessionToken, state == .unlocked else { return }
             if config != saved {
                 let next = config
+                // Sources whose settings changed are fetched again now rather than after their usual interval.
+                var changed: [String] = []
+                if saved?.pricesEnabled != next.pricesEnabled || saved?.coinGeckoKey != next.coinGeckoKey || saved?.crypto != next.crypto { changed.append("crypto") }
+                if saved?.fxEnabled != next.fxEnabled || saved?.currencies != next.currencies { changed.append("fx") }
+                if saved?.metalsEnabled != next.metalsEnabled || saved?.metals != next.metals { changed.append("metals") }
+                let root = Config.supportDirectory, vaultID = doc.vaultID
+                await BackgroundRefreshSchedule.shared.reset(vaultID: vaultID, root: root, sources: changed)
                 try await Task.detached(priority: .utility) { try next.save() }.value
                 if token == sessionToken, state == .unlocked { startBackgroundRefresh() }
             }
