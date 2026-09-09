@@ -62,6 +62,8 @@
 		EB6F657D1DB867F45E7E55FA /* UpOnlyWordmarkLight.pdf in Resources */ = {isa = PBXBuildFile; fileRef = A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */; };
 		200A64E089B9FF1C247B187B /* UpOnlyWordmarkLight.pdf in Resources */ = {isa = PBXBuildFile; fileRef = A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */; };
 		19FCCCF32A0CADDF1BA5CA9A /* UpOnlyStatus.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */; };
+		A55E7C0000000000000A55E8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A55E7C0000000000000A55E7 /* Assets.xcassets */; };
+		A55E7C0000000000000A55E9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A55E7C0000000000000A55E7 /* Assets.xcassets */; };
 		8531F2D29BDD34E4C9056800 /* UpOnlyStatus.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */; };
 		ACCF10000000000000000002 /* BusinessAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF10000000000000000001 /* BusinessAccounting.swift */; };
 		ACCF10000000000000000003 /* BusinessAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF10000000000000000001 /* BusinessAccounting.swift */; };
@@ -113,6 +115,7 @@
 		4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; name = UpOnlyWordmark.pdf; path = Resources/UpOnlyWordmark.pdf; sourceTree = "<group>"; };
 		A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; name = UpOnlyWordmarkLight.pdf; path = Resources/UpOnlyWordmarkLight.pdf; sourceTree = "<group>"; };
 		6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; name = UpOnlyStatus.pdf; path = Resources/UpOnlyStatus.pdf; sourceTree = "<group>"; };
+		A55E7C0000000000000A55E7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ACCF10000000000000000001 /* BusinessAccounting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BusinessAccounting.swift; path = Model/BusinessAccounting.swift; sourceTree = "<group>"; };
 		ACCF20000000000000000001 /* BackgroundRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BackgroundRefresh.swift; path = Ingest/BackgroundRefresh.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -169,6 +172,7 @@
 				4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */,
 				A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */,
 				6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */,
+				A55E7C0000000000000A55E7 /* Assets.xcassets */,
 				4300C3E4D76D618517D899CD /* Config.swift */,
 				D180EDF0610BC67774AB7415 /* CSVReader.swift */,
 				1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */,
@@ -326,6 +330,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8531F2D29BDD34E4C9056800 /* UpOnlyStatus.pdf in Resources */,
+				A55E7C0000000000000A55E8 /* Assets.xcassets in Resources */,
 				200A64E089B9FF1C247B187B /* UpOnlyWordmarkLight.pdf in Resources */,
 				21CB9CEDED02E71D94DF7CFE /* UpOnlyWordmark.pdf in Resources */,
 			);
@@ -336,6 +341,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				19FCCCF32A0CADDF1BA5CA9A /* UpOnlyStatus.pdf in Resources */,
+				A55E7C0000000000000A55E9 /* Assets.xcassets in Resources */,
 				EB6F657D1DB867F45E7E55FA /* UpOnlyWordmarkLight.pdf in Resources */,
 				CDA41EC98958A816FF718697 /* UpOnlyWordmark.pdf in Resources */,
 			);
