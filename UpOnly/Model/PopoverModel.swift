@@ -180,6 +180,7 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
                     totals.moneyIn = try MoneyInput.add(totals.moneyIn, value.moneyIn)
                     totals.moneyOut = try MoneyInput.add(totals.moneyOut, value.moneyOut)
                     totals.otherBusiness = try MoneyInput.add(totals.otherBusiness, value.otherBusiness)
+                    totals.ownerPayments = try MoneyInput.add(totals.ownerPayments, value.ownerPayments)
                     known += 1
                 }
                 estimated = estimated || result.isEstimated

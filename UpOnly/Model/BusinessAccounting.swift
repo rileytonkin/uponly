@@ -369,12 +369,19 @@ nonisolated enum OwnerPayments {
         for index in document.entries.indices {
             let entry = document.entries[index]
             guard entry.source != .manual, entry.bucket == .personal, entry.kindIsUserEdited != true else { continue }
-            if isTransferCounterparty(entry.label, month: entry.month, document: document) { document.entries[index].kind = .transfer }
+            if isPersonalTransferCounterparty(entry.label, document: document) { document.entries[index].kind = .transfer }
+            else if entry.kind == .transfer, isCompanyCounterparty(entry.label, month: entry.month, document: document) {
+                // Money a connected company paid you is income in Personal. Earlier versions saved it as a transfer.
+                document.entries[index].kind = .income
+            }
         }
     }
-    /// A payee the user has marked as always a transfer, or a connected company's owner-payment counterparty.
-    static func isTransferCounterparty(_ label: String, month: String, document: VaultDocument) -> Bool {
-        isPersonalTransferCounterparty(label, document: document) || isCompanyCounterparty(label, month: month, document: document)
+    /// Classifies an imported personal transaction. Payees marked as always transfers, and money you send to a
+    /// connected company, are transfers. Money a connected company pays you stays income; "All" nets it against profit.
+    static func classify(_ kind: EntryKind, label: String, month: String, document: VaultDocument) -> EntryKind {
+        if isPersonalTransferCounterparty(label, document: document) { return .transfer }
+        if kind == .expense, isCompanyCounterparty(label, month: month, document: document) { return .transfer }
+        return kind
     }
     static func isPersonalTransferCounterparty(_ label: String, document: VaultDocument) -> Bool {
         let name = label.trimmingCharacters(in: .whitespacesAndNewlines)

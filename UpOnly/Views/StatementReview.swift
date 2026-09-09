@@ -1106,7 +1106,7 @@ private struct ImportRowEditor: View {
                     UpOnlyValueField("Money in", text: $row.statement.credit)
                 } else { UpOnlyValueField("Amount", text: $row.statement.amount) }
                 Picker("Type", selection: Binding(get: { row.statement.kind }, set: { row.statement.kind = $0; row.statement.kindIsUserEdited = true })) {
-                    Text("Income").fixedSize(horizontal: false, vertical: true).tag(EntryKind.income); Text("Expense").fixedSize(horizontal: false, vertical: true).tag(EntryKind.expense); Text("Transfer").fixedSize(horizontal: false, vertical: true).tag(EntryKind.transfer)
+                    Text("Income").fixedSize(horizontal: false, vertical: true).tag(EntryKind.income); Text("Expense").fixedSize(horizontal: false, vertical: true).tag(EntryKind.expense); Text("Refund").fixedSize(horizontal: false, vertical: true).tag(EntryKind.refund); Text("Transfer").fixedSize(horizontal: false, vertical: true).tag(EntryKind.transfer)
                 }.frame(width: 155)
                 TextField("Transaction ID (optional)", text: $row.statement.transactionID, axis: .vertical)
             }

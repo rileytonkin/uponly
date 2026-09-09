@@ -1,7 +1,8 @@
 import Foundation
 
 nonisolated enum Bucket: String, Codable, CaseIterable, Sendable { case personal, otherBusiness, reserve, businessCost }
-nonisolated enum EntryKind: String, Codable, Sendable { case income, expense, transfer }
+/// A refund is money back from a merchant. It reduces spending rather than counting as income.
+nonisolated enum EntryKind: String, Codable, Sendable { case income, expense, transfer, refund }
 nonisolated enum EntrySource: String, Codable, Sendable { case manual, csv, wise }
 nonisolated enum TrackedKind: String, Codable, CaseIterable, Sendable {
     case banks, crypto, metals, cashFlow
@@ -157,6 +158,9 @@ nonisolated struct MonthTotals {
     var otherBusiness: Decimal = 0
     var moneyIn: Decimal = 0
     var moneyOut: Decimal = 0
+    /// USD paid to you by a connected company. Included in `moneyIn` and `personalIncome`;
+    /// "All" replaces it with your share of that company's profit.
+    var ownerPayments: Decimal = 0
     var net: Decimal { moneyIn - moneyOut + otherBusiness }
 }
 nonisolated struct CurrencyMonthTotals: Identifiable {
@@ -196,6 +200,7 @@ nonisolated enum MonthlyLedger {
             var totals = MonthTotals()
             for row in rows {
                 if row.kind == .income { totals.moneyIn = try MoneyInput.add(totals.moneyIn, row.amount) }
+                else if row.kind == .refund { totals.moneyOut = try MoneyInput.add(totals.moneyOut, -row.amount) }
                 else { totals.moneyOut = try MoneyInput.add(totals.moneyOut, row.amount) }
             }
             _ = try MoneyInput.add(totals.moneyIn, -totals.moneyOut)
@@ -217,6 +222,10 @@ nonisolated enum MonthlyLedger {
         }
         let personalUnavailable = result.unavailable != nil
         var partial = result.totals ?? MonthTotals()
+        // Company profit already includes what the company paid you, so the payment itself is not counted again here.
+        if partial.ownerPayments != 0, let moneyIn = try? MoneyInput.add(partial.moneyIn, -partial.ownerPayments), let income = try? MoneyInput.add(partial.personalIncome, -partial.ownerPayments) {
+            partial.moneyIn = moneyIn; partial.personalIncome = income
+        }
         var missing: [String] = []
         for book in books {
             let observation = book.months.first { $0.month == monthID }
@@ -243,7 +252,7 @@ nonisolated enum MonthlyLedger {
             if result.unavailable == .noEntries { result.waitingCaption = "Personal income and spending are not recorded for this month. Your known business shares are shown below." }
         } else if result.unavailable == nil {
             result.totals = partial
-            result.waitingCaption = result.warnings.isEmpty ? "Personal income − personal spending + your share of business profit." : "Accounting includes estimates or checks needing review."
+            result.waitingCaption = result.warnings.isEmpty ? (partial.ownerPayments != 0 ? "Outside income − personal spending + your share of business profit. Company payments to you are counted through profit, not twice." : "Personal income − personal spending + your share of business profit.") : "Accounting includes estimates or checks needing review."
         }
         return result
     }
@@ -270,12 +279,15 @@ nonisolated enum MonthlyLedger {
                     return PanelState(totals: nil, isEstimated: true, waitingCaption: "Needs a dated " + e.currency + " exchange rate", unavailable: .exchangeRates([e.currency]))
                 }
                 let value = try MoneyInput.multiply(e.amount, rate)
+                let spent = e.kind == .refund ? -value : value
                 if e.kind == .income { totals.moneyIn = try MoneyInput.add(totals.moneyIn, value) }
-                else { totals.moneyOut = try MoneyInput.add(totals.moneyOut, value) }
+                else { totals.moneyOut = try MoneyInput.add(totals.moneyOut, spent) }
                 if e.bucket == .otherBusiness || e.bucket == .businessCost {
-                    totals.otherBusiness = try MoneyInput.add(totals.otherBusiness, e.kind == .income ? value : -value)
-                } else if e.kind == .income { totals.personalIncome = try MoneyInput.add(totals.personalIncome, value) }
-                else { totals.personalSpend = try MoneyInput.add(totals.personalSpend, value) }
+                    totals.otherBusiness = try MoneyInput.add(totals.otherBusiness, e.kind == .income ? value : -spent)
+                } else if e.kind == .income {
+                    totals.personalIncome = try MoneyInput.add(totals.personalIncome, value)
+                    if OwnerPayments.isCompanyCounterparty(e.label, month: monthID, document: document) { totals.ownerPayments = try MoneyInput.add(totals.ownerPayments, value) }
+                } else { totals.personalSpend = try MoneyInput.add(totals.personalSpend, spent) }
             }
             _ = try MoneyInput.add(totals.moneyIn, -totals.moneyOut)
             return PanelState(totals: totals, isEstimated: provisional, waitingCaption: provisional ? "Based on recorded entries" : nil)
