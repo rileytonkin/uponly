@@ -139,6 +139,8 @@ nonisolated struct PriceUpdate: Codable, Sendable {
     var coverage: [PriceHistoryCoverage] = []
     var messages: [String] = []
     var fxIssues: [String: String] = [:]
+    /// Per-source problems from the last update, keyed "crypto", "metals" or "fx", for the Sources page.
+    var sourceIssues: [String: String] = [:]
 }
 nonisolated enum PriceHistory {
     static func requests(document: VaultDocument, now: Date, reconnected: Bool = false) -> [PriceHistoryRequest] {
@@ -281,8 +283,12 @@ extension PublicPrices {
         let metals = Set(active.compactMap { PreciousMetal.asset($0.assetID) })
         func message(_ error: Error) -> String { (error as? PriceError)?.localizedDescription ?? "A price source is unavailable. Missing history will be retried." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
-            do { result.quotes += try await quotes(ids: crypto, key: document.settings.coinGeckoKey) }
-            catch { try Task.checkCancellation(); result.messages.append(message(error)) }
+            do {
+                let quotes = try await quotes(ids: crypto, key: document.settings.coinGeckoKey)
+                result.quotes += quotes
+                let missing = Set(crypto).subtracting(quotes.map(\.assetID.rawValue)).sorted()
+                if !missing.isEmpty { result.sourceIssues["crypto"] = "CoinGecko has no price for " + missing.joined(separator: ", ") + ". Check the coin ID matches CoinGecko's." }
+            } catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["crypto"] = message(error) }
         }
         if includeCurrent && document.settings.automaticMetals {
             for metal in metals.sorted(by: { $0.rawValue < $1.rawValue }) {
@@ -290,7 +296,7 @@ extension PublicPrices {
                     try await Task.sleep(for: .seconds(1.1))
                     let data = try await request(host: "api.gold-api.com", path: "/price/" + metal.rawValue, query: [])
                     result.quotes.append(try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: now))
-                } catch { try Task.checkCancellation(); result.messages.append(message(error)) }
+                } catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["metals"] = message(error) }
             }
             if !metals.isEmpty && document.settings.metalHistoryKey.isEmpty { result.messages.append("Add a free Gold API key in Sources to recover metal price history after time offline.") }
         }
@@ -299,7 +305,7 @@ extension PublicPrices {
                 let update = try await fx(currencies: Set(document.accounts.map(\.currency) + document.entries.map(\.currency)))
                 result.rates += update.rates; result.messages += update.messages; result.fxIssues = update.fxIssues
             }
-            catch { try Task.checkCancellation(); result.messages.append(message(error)) }
+            catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["fx"] = message(error) }
         }
         // Monthly personal performance needs its dated FX immediately; do not
         // queue years of month-end rates behind unrelated asset history.

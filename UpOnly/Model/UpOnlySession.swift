@@ -17,6 +17,8 @@ final class UpOnlySession {
     private(set) var sessionToken = UUID()
     var message: String?
     private(set) var fxIssues: [String: String] = [:]
+    /// Last manual or scheduled update's problem per price source ("crypto", "metals", "fx"), cleared on success.
+    private(set) var sourceIssues: [String: String] = [:]
     var destination = 0
     var addingInMenu = false
     var managementInMenu = false
@@ -1062,10 +1064,11 @@ extension UpOnlySession {
             guard token == sessionToken, revision == sourceRevision else { return }
             if !automatic { sourceMessage = update.messages.isEmpty ? "Updated " + Date().formatted(date: .omitted, time: .shortened) : update.messages.joined(separator: "\n") }
             fxIssues = update.fxIssues
+            if !automatic { sourceIssues = update.sourceIssues }
         } catch {
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled {
                 let issue = (error as? PriceError)?.localizedDescription ?? "Prices could not be saved. Your saved observations are unchanged; catch-up will retry."
-                if !automatic { sourceMessage = issue }
+                if !automatic { sourceMessage = issue; sourceIssues = ["crypto": issue, "metals": issue, "fx": issue] }
                 if doc.settings.automaticFX {
                     fxIssues = Dictionary(uniqueKeysWithValues: Set(doc.accounts.map(\.currency) + doc.entries.map(\.currency)).subtracting(["USD"]).map { ($0, issue) })
                 }
