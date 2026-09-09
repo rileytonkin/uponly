@@ -611,6 +611,13 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var monthEntryCount: Int { session.document?.entries.filter { $0.month == model.month.description }.count ?? 0 }
+    private func companyFigure(_ title: String, _ value: Decimal?, tint: Color? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            UpOnlyPrivateText(value.map(UpOnlyFormat.exactMoney) ?? "—").font(.system(size: 14, weight: .medium).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.8)
+                .foregroundStyle(tint ?? .primary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
     /// Revenue, expenses, profit and your share summed over the months in the selected range.
     private func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String) {
         let end = MonthKey.current()
@@ -899,26 +906,27 @@ private struct UpOnlyUnlockedPanel: View {
         let total = bankValues.isEmpty ? nil : AssetOwnership.sum(bankValues)
         let share = document.flatMap { doc in bankValues.isEmpty ? nil : AssetOwnership.personalTotal(bankValues, at: selectedInterval.end, document: doc) }
         let points = groupPoints(selection)
-        return VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                headline(eyebrow("Bank balance")).padding(.bottom, 4)
+        let ownership = book?.ownership(at: AssetOwnership.month(at: selectedInterval.end).description)
+        let partOwner = ownership.map { $0.numerator != $0.denominator } ?? false
+        return VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(eyebrow("Bank balance")).padding(.bottom, 2)
                 if let total { UpOnlyAmount(value: total) }
-                else { Text("Balance needed").font(.system(size: 18, weight: .semibold)) }
-                Text(total == nil ? "Add a balance to value this account." : "As of " + UpOnlyFormat.utcDay(selectedInterval.end))
-                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                else {
+                    Text("Balance needed").font(.system(size: 18, weight: .semibold))
+                    Text("Add a balance to value this account.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
-            if let share, let total, share != total {
-                UpOnlyValueRow(label: "Your share" + (book?.ownership(at: AssetOwnership.month(at: selectedInterval.end).description).map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
+            if partOwner, let share, total != nil {
+                UpOnlyValueRow(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
             }
             if let companyID, let book = model.books.first(where: { $0.id == companyID }) {
                 let totals = rangeTotals(book)
-                VStack(spacing: 6) {
-                    UpOnlyValueRow(label: "Revenue", value: totals.revenue.map(UpOnlyFormat.exactMoney) ?? "Not reported")
-                    UpOnlyValueRow(label: "Expenses", value: totals.expenses.map { UpOnlyFormat.exactMoney(-$0) } ?? "Not reported")
-                    UpOnlyValueRow(label: "Profit / loss", value: totals.profit.map(UpOnlyFormat.exactMoney) ?? "Not reported")
-                    if let share = totals.share, share != totals.profit { UpOnlyValueRow(label: "Your profit / loss", value: UpOnlyFormat.exactMoney(share)) }
+                HStack(alignment: .top, spacing: 12) {
+                    companyFigure("Net revenue", totals.revenue)
+                    companyFigure("Expenses", totals.expenses.map { -$0 })
+                    companyFigure(partOwner ? "Your share" : "Profit / loss", partOwner ? totals.share : totals.profit, tint: (partOwner ? totals.share : totals.profit).map { $0 < 0 ? Color(nsColor: .systemRed) : UpOnlyTint.cashFlow })
                 }
-                Text(totals.caption).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else if companyID != nil { Text("Accounting unavailable for this period").font(.system(size: 12)).foregroundStyle(.secondary) }
             let hasBalanceChart = points.contains(where: { $0.value != nil })
             if hasBalanceChart || companyID != nil {
@@ -933,10 +941,8 @@ private struct UpOnlyUnlockedPanel: View {
                     } else {
                         Text(showProfit ? "Profit / loss" : "Bank balance").font(.system(size: 12, weight: .semibold))
                     }
-                    Spacer(minLength: 8)
-                    Text(showProfit ? "Monthly" : visibleSamples.first.map { "Since " + UpOnlyFormat.utcDay($0.utcDay) } ?? "Daily")
-                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                }.padding(.top, 18)
+                    Spacer(minLength: 0)
+                }.padding(.top, 6)
                 if showProfit || !hasBalanceChart {
                     UpOnlyChart(points: rangeMonthPoints, includesZero: true, showsAllMarkers: true,
                                 selected: nil, tint: UpOnlyTint.cashFlow,
