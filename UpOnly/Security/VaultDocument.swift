@@ -32,6 +32,8 @@ struct VaultDocument: Codable, Sendable, Equatable {
     var backgroundSignerPublicKey: Data?
     var backgroundAppliedAt: [String: Date]?
     var purchases: [PurchaseLot]?
+    /// Payees whose personal transactions are always transfers (money moved to your own company or accounts).
+    var transferCounterparties: [String]?
 
     static func empty(
         vaultID: UUID = UUID(),

@@ -339,23 +339,72 @@ struct BulkInputTests {
         let explicit = ImportAccount(name: "My card", currency: "GBP")
         #expect(ImportParser.account(for: source, preferred: explicit, saved: saved.accounts) == explicit)
     }
-    @Test("Exact owner payments are transfers while unrelated costs and edits remain")
+    @Test("Company payments to you are income; money sent to your company is a transfer; unrelated costs and edits remain")
     func ownerPayments() throws {
         var doc = empty()
         doc.businessAccounting = [BusinessBook(id: "studio", name: "Studio", ownership: [OwnershipPeriod(fromMonth: "2026-02", numerator: 1, denominator: 2)], firstMonth: "2026-02", sourceURL: "", basis: "Profit before draws", fetchedAt: Date(), transferCounterparties: ["Studio Holdings", "Studio App"])]
         var draft = try batch("Date,Description,Amount,Currency\n2026-02-01,Studio Holdings,500,USD\n2026-02-02,Studio App,-100,USD\n2026-02-03,Studio Holdings Store,-20,USD\n2026-01-01,Studio Holdings,30,USD", mode: .statements)
         var saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
-        #expect(saved.entries.map(\.kind) == [.transfer, .transfer, .expense, .income])
-        #expect(try MonthlyLedger.nativeTotals(MonthKey("2026-02")!, document: saved).first?.totals.moneyOut == 20)
-        draft.rows[0].statement.kindIsUserEdited = true
+        #expect(saved.entries.map(\.kind) == [.income, .transfer, .expense, .income])
+        let february = try #require(MonthlyLedger.nativeTotals(MonthKey("2026-02")!, document: saved).first?.totals)
+        #expect(february.moneyIn == 500 && february.moneyOut == 20)
+        // Personal shows the payment as income. All replaces it with the profit share.
+        let personal = MonthlyLedger.personal(MonthKey("2026-02")!, document: saved)
+        #expect(personal.totals?.personalIncome == 500 && personal.totals?.ownerPayments == 500 && personal.totals?.net == 480)
+        saved.businessAccounting?[0].months = [BusinessMonth(month: "2026-02", profitUSD: 1200, sourceRange: "test")]
+        let all = MonthlyLedger.evaluate(MonthKey("2026-02")!, document: saved)
+        #expect(all.totals?.personalIncome == 0 && all.totals?.otherBusiness == 600 && all.totals?.net == 580)
+        draft.rows[1].statement.kindIsUserEdited = true; draft.rows[1].statement.kind = .expense
         saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
-        #expect(saved.entries[0].kind == .income && saved.entries[0].kindIsUserEdited == true)
-        saved.entries[1].kind = .expense
+        #expect(saved.entries[1].kind == .expense && saved.entries[1].kindIsUserEdited == true)
+        saved.entries[0].kind = .transfer; saved.entries[2].kind = .transfer
         OwnerPayments.reconcile(in: &saved)
-        #expect(saved.entries[0].kind == .income && saved.entries[1].kind == .transfer)
+        #expect(saved.entries[0].kind == .income && saved.entries[1].kind == .expense && saved.entries[2].kind == .transfer)
         draft.sources[0].account.ownerBusinessID = "studio"
         saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
         #expect(saved.entries.allSatisfy { $0.bucket == .otherBusiness })
+    }
+    @Test("A payee marked as always a transfer reclassifies imports, syncs and future statements")
+    func personalTransferCounterparties() throws {
+        var doc = empty()
+        let bank = Account(name: "Monzo", currency: "GBP"); doc.accounts = [bank]
+        let paid = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 2500, currency: "GBP", label: "Amora Ltd", source: .csv, sourceRef: bank.id.uuidString + ":a")
+        var edited = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 10, currency: "GBP", label: "amora ltd", source: .csv, sourceRef: bank.id.uuidString + ":b"); edited.kindIsUserEdited = true
+        let manual = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 5, currency: "GBP", label: "Amora Ltd")
+        doc.entries = [paid, edited, manual]
+        OwnerPayments.setTransferCounterparty(" Amora Ltd ", enabled: true, in: &doc)
+        #expect(doc.transferCounterparties == ["Amora Ltd"])
+        #expect(doc.entries.map(\.kind) == [.transfer, .expense, .expense])
+        #expect(OwnerPayments.isPersonalTransferCounterparty("AMORA LTD", document: doc))
+        #expect(try MonthlyLedger.nativeTotals(MonthKey("2026-05")!, document: doc).first?.totals.moneyOut == 15)
+        let draft = try batch("Date,Description,Amount,Currency\n2026-06-01,Amora Ltd,-300,GBP\n2026-06-02,Amora Cafe,-3,GBP", mode: .statements)
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries.suffix(2).map(\.kind) == [.transfer, .expense])
+        doc.entries[0].kind = .expense
+        OwnerPayments.reconcile(in: &doc)
+        #expect(doc.entries[0].kind == .transfer)
+        OwnerPayments.setTransferCounterparty("Amora Ltd", enabled: false, in: &doc)
+        #expect(doc.transferCounterparties == nil && doc.entries[0].kind == .transfer)
+    }
+    @Test("Monzo refunds and cashback reduce spending instead of counting as income")
+    func monzoRefunds() throws {
+        let doc = empty()
+        let csv = "id,created,title,subtitle,amount,currency,categories\ntx1,\"15/07/26, 10:00\",Airbnb,,-1000,GBP,Holidays\ntx2,\"29/07/26, 10:00\",Tomorrowland,,159.06,GBP,Entertainment\ntx3,\"23/07/26, 10:00\",Monzo Premium cashback,,0.05,GBP,Income\ntx4,\"30/07/26, 10:00\",APPLE INC,,516.05,GBP,Income\ntx5,\"11/07/26, 10:00\",agoda.com,Declined,,,Holidays"
+        let draft = try batch(csv, mode: .statements)
+        #expect(draft.rows.map(\.included) == [true, true, true, true, false])
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries.map(\.kind) == [.expense, .refund, .refund, .income])
+        let totals = try #require(MonthlyLedger.nativeTotals(MonthKey("2026-07")!, document: saved).first?.totals)
+        #expect(totals.moneyIn == 516.05 && totals.moneyOut == Decimal(string: "840.89"))
+        let typed = try batch("Date,Description,Amount,Currency,Type\n2026-07-01,Shop,20,USD,refund", mode: .statements)
+        #expect(try #require(ImportBatchProcessor.evaluate(typed, document: doc).document).entries.first?.kind == .refund)
+    }
+    @Test("Imported entries expose their bank account; manual and Wise entries do not")
+    func entryAccountID() {
+        let bank = Account(name: "Monzo", currency: "GBP")
+        #expect(Entry(month: .current(), kind: .expense, amount: 1, currency: "GBP", label: "a", source: .csv, sourceRef: bank.id.uuidString + ":tx:1").accountID == bank.id)
+        #expect(Entry(month: .current(), kind: .expense, amount: 1, currency: "GBP", label: "a").accountID == nil)
+        #expect(Entry(month: .current(), kind: .expense, amount: 1, currency: "GBP", label: "a", source: .wise, sourceRef: "wise:1:x").accountID == nil)
     }
     @Test("Legacy settings and empty settings preserve defaults")
     func legacySettings() throws {

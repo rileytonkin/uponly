@@ -343,8 +343,12 @@ nonisolated enum ImportParser {
                 let inferred: EntryKind = (try? source.numberFormat.decimal(field(.amount))) .map { $0 < 0 ? .expense : .income } ?? (!field(.credit).isEmpty && (try? source.numberFormat.decimal(field(.credit))) != 0 ? .income : .expense)
                 let typed = EntryKind(rawValue: rawType)
                 let categoryIndex = isMonzoSearch(source.grid) ? source.grid[0].firstIndex(where: { $0.lowercased() == "categories" }) : nil
-                let isTransfer = categoryIndex.map { cells.indices.contains($0) && cells[$0].lowercased() == "transfers" } == true
-                content = .statement(StatementInput(date: field(.date), label: field(.description), amount: field(.amount), debit: field(.debit), credit: field(.credit), currency: field(.currency).isEmpty ? source.account.currency : field(.currency), transactionID: field(.transactionID), kind: isTransfer ? .transfer : typed ?? inferred, originalType: rawType))
+                let category = categoryIndex.flatMap { cells.indices.contains($0) ? cells[$0].lowercased() : nil }
+                let isTransfer = category == "transfers"
+                // Monzo files a merchant refund under the merchant's own category; only real income is filed under "Income".
+                // Cashback is a rebate on spending, not earnings.
+                let isRefund = categoryIndex != nil && inferred == .income && (category != "income" || field(.description).lowercased().contains("cashback"))
+                content = .statement(StatementInput(date: field(.date), label: field(.description), amount: field(.amount), debit: field(.debit), credit: field(.credit), currency: field(.currency).isEmpty ? source.account.currency : field(.currency), transactionID: field(.transactionID), kind: isTransfer ? .transfer : isRefund ? .refund : typed ?? inferred, originalType: rawType))
             case .bankBalances:
                 content = .bankBalance(BankBalanceInput(account: ImportAccount(name: field(.account), currency: field(.currency).isEmpty ? "USD" : field(.currency)), balance: field(.balance), date: field(.date).isEmpty ? ImportDateFormat.today() : field(.date)))
             case .holdings, .metals:
@@ -667,7 +671,7 @@ nonisolated enum ImportBatchProcessor {
                     } else {
                         let amount = try source.numberFormat.decimal(input.amount)
                         if !input.originalType.isEmpty {
-                            guard let type = EntryKind(rawValue: input.originalType), amount >= 0 else { throw ImportFailure("Explicit types need income, expense or transfer and a nonnegative amount.") }
+                            guard let type = EntryKind(rawValue: input.originalType), amount >= 0 else { throw ImportFailure("Explicit types need income, expense, refund or transfer and a nonnegative amount.") }
                             signed = type == .expense ? -amount : amount
                         } else { signed = amount }
                     }
@@ -689,7 +693,7 @@ nonisolated enum ImportBatchProcessor {
                     }
                     var entry = Entry(month: month, kind: input.kind, amount: abs(signed), currency: currency, label: label, source: .csv, sourceRef: reference)
                     if next.accounts.first(where: { $0.id == accountID })?.ownerBusinessID != nil { entry.bucket = .otherBusiness }
-                    if !input.kindIsUserEdited && input.originalType.isEmpty && entry.kind != .transfer && OwnerPayments.isCompanyCounterparty(label, month: month.description, document: next) { entry.kind = .transfer }
+                    if !input.kindIsUserEdited && input.originalType.isEmpty { entry.kind = OwnerPayments.classify(entry.kind, label: label, month: month.description, document: next) }
                     entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
                     entry.importFingerprint = fingerprint
                     next.entries.append(entry); next.track(.cashFlow)
