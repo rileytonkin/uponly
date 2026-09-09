@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import Observation
 import UniformTypeIdentifiers
 import SwiftUI
@@ -1043,9 +1044,15 @@ extension UpOnlySession {
         }
     }
     func refreshPrices(reconnected: Bool = false, automatic: Bool = false) async {
+        let log = Logger(subsystem: "org.uponly", category: "prices")
         // A manual refresh takes over from a scheduled catch-up instead of silently doing nothing.
-        if !automatic, priceRequestIsAutomatic, let running = priceRequest { running.cancel(); priceRequest = nil; priceRequestIsAutomatic = false }
-        guard state == .unlocked, !refreshing, priceRequest == nil, !isFixture, let doc = document else { return }
+        if !automatic, priceRequestIsAutomatic, let running = priceRequest { running.cancel(); priceRequest = nil; priceRequestIsAutomatic = false; log.notice("manual refresh pre-empted scheduled catch-up") }
+        guard state == .unlocked, !refreshing, priceRequest == nil, !isFixture, let doc = document else {
+            log.notice("refresh skipped automatic=\(automatic) unlocked=\(self.state == .unlocked) refreshing=\(self.refreshing) pending=\(self.priceRequest != nil)")
+            return
+        }
+        let activeHoldings = doc.holdings.filter { $0.isActive(at: Date()) && doc.portfolio(id: $0.portfolioID)?.isActive(at: Date()) == true }
+        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices) metals=\(doc.settings.automaticMetals) fx=\(doc.settings.automaticFX) keyLength=\(doc.settings.coinGeckoKey.count) holdings=\(doc.holdings.count) active=\(activeHoldings.count) portfolios=\(doc.portfolios.count)")
         let token = sessionToken, revision = sourceRevision
         if automatic {
             guard priceRequest == nil,
@@ -1063,7 +1070,8 @@ extension UpOnlySession {
             let request = Task.detached(priority: automatic ? .utility : .userInitiated) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
             priceRequest = request; priceRequestIsAutomatic = automatic; mine = request
             let update = try await request.value
-            guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
+            log.notice("refresh result quotes=\(update.quotes.count) rates=\(update.rates.count) messages=\(update.messages.joined(separator: " | "), privacy: .public) issues=\(update.sourceIssues.values.joined(separator: " | "), privacy: .public)")
+            guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { log.notice("refresh result discarded: session changed or cancelled"); return }
             if !update.quotes.isEmpty || !update.rates.isEmpty || !update.coverage.isEmpty {
                 try await commitPriceUpdate(update)
             }
@@ -1072,6 +1080,7 @@ extension UpOnlySession {
             fxIssues = update.fxIssues
             if !automatic { sourceIssues = update.sourceIssues }
         } catch {
+            log.error("refresh failed: \(String(describing: error), privacy: .public)")
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled {
                 let issue = (error as? PriceError)?.localizedDescription ?? "Prices could not be saved. Your saved observations are unchanged; catch-up will retry."
                 if !automatic { sourceMessage = issue; sourceIssues = ["crypto": issue, "metals": issue, "fx": issue] }

@@ -282,6 +282,8 @@ extension PublicPrices {
         let crypto = active.filter { PreciousMetal.asset($0.assetID) == nil }.map { $0.assetID.rawValue }
         let metals = Set(active.compactMap { PreciousMetal.asset($0.assetID) })
         func message(_ error: Error) -> String { (error as? PriceError)?.localizedDescription ?? "A price source is unavailable. Missing history will be retried." }
+        if includeCurrent && document.settings.automaticPrices && crypto.isEmpty { result.sourceIssues["crypto"] = "No coins are tracked yet. Add a crypto holding under Manage." }
+        if includeCurrent && document.settings.automaticMetals && metals.isEmpty { result.sourceIssues["metals"] = "No gold or silver is tracked yet. Add a holding under Manage." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
             do {
                 let quotes = try await quotes(ids: crypto, key: document.settings.coinGeckoKey)
