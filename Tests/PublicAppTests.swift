@@ -661,6 +661,12 @@ struct WiseInputTests {
         let saved = try WiseAPI.apply(snapshot, to: empty())
         let repeated = try WiseAPI.apply(snapshot, to: saved)
         #expect(saved.entries.count == 3 && repeated.entries.count == 3)
+        // The synced balance anchors a rebuilt history: 100 today, so 100 at the end of Jan 3 and 150 at the end of Jan 2, before the 50 went out.
+        let personalUSD = try #require(saved.accounts.first { $0.externalProfileID == "1" && $0.currency == "USD" })
+        let derived = saved.bankBalances.filter { $0.accountID == personalUSD.id && $0.source == BalanceReconstruction.source }.sorted { $0.observedAt < $1.observedAt }
+        #expect(derived.map(\.amount.value) == [150, 100])
+        #expect(saved.isBankTracked(personalUSD.id, at: BalanceReconstruction.dayFormatter().date(from: "2026-01-02")!))
+        #expect(saved.entries.allSatisfy { $0.day != nil && $0.outflow != nil })
         #expect(saved.entries.filter { $0.kind == .transfer }.count == 2)
         #expect(saved.entries.first { $0.kind == .expense }?.amount == Decimal(string: "10.05"))
         #expect(saved.accounts[0].profileImage == first.image)
