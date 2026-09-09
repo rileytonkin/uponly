@@ -232,6 +232,57 @@ struct UpOnlySettingsCard<Content: View>: View {
     }
 }
 
+/// Whether a live source is actually delivering data, not just switched on.
+struct UpOnlySourceStatus: View {
+    enum Kind { case wise, crypto, metals, fx }
+    let kind: Kind
+    let savedOn: Bool
+    @Environment(UpOnlySession.self) private var session
+    private var lastUpdate: Date? {
+        guard let doc = session.document else { return nil }
+        switch kind {
+        case .wise: return doc.bankBalances.filter { $0.source == "Wise" }.map(\.observedAt).max()
+        case .crypto: return doc.quotes.filter { $0.provider.hasPrefix("CoinGecko") }.map(\.fetchedAt).max()
+        case .metals: return doc.quotes.filter { $0.provider.hasPrefix("Gold API") }.map(\.fetchedAt).max()
+        case .fx: return doc.fx.filter { $0.provider.hasPrefix("Frankfurter") }.map(\.fetchedAt).max()
+        }
+    }
+    private var problem: String? {
+        switch kind {
+        case .wise:
+            #if UPONLY_PERSONAL
+            if let error = session.wiseError { return error }
+            #endif
+            return session.backgroundIssues.contains("Bank balances") ? "The last background sync failed." : nil
+        case .crypto: return session.backgroundIssues.contains(where: { $0.hasPrefix("Crypto") }) ? "The last price update failed." : nil
+        case .metals: return session.backgroundIssues.contains(where: { $0.hasPrefix("Metals") }) ? "The last price update failed." : nil
+        case .fx: return session.backgroundIssues.contains(where: { $0.hasPrefix("Exchange rates") }) ? "The last rate update failed." : nil
+        }
+    }
+    private var busy: Bool {
+        #if UPONLY_PERSONAL
+        if kind == .wise { return session.wiseRefreshing }
+        #endif
+        return session.refreshing
+    }
+    var body: some View {
+        let last = lastUpdate
+        let stale = last.map { Date().timeIntervalSince($0) > (kind == .wise ? 36 : 3) * 3600 } ?? true
+        let (color, text): (Color, String) = {
+            if !savedOn { return (.secondary, "Off") }
+            if busy { return (.secondary, "Updating…") }
+            if let problem { return (Color(nsColor: .systemRed), "Not receiving data. " + problem) }
+            guard let last else { return (Color(nsColor: .systemOrange), "Waiting for first data") }
+            let when = last.formatted(.relative(presentation: .named))
+            return stale ? (Color(nsColor: .systemOrange), "Last data " + when) : (UpOnlyTint.cashFlow, "Connected · updated " + when)
+        }()
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7).accessibilityHidden(true)
+            Text(text).font(.system(size: 12)).foregroundStyle(savedOn ? .primary : .secondary).fixedSize(horizontal: false, vertical: true)
+        }.accessibilityElement(children: .combine)
+    }
+}
+
 struct UpOnlySources: View {
     @Binding var pendingChanges: Bool
     @Environment(UpOnlySession.self) private var session
@@ -260,6 +311,7 @@ struct UpOnlySources: View {
                                symbol: "building.columns.fill", tint: UpOnlyTint.netWorth,
                                isOn: $wise,
                                controlDisabled: session.isBusy) {
+                UpOnlySourceStatus(kind: .wise, savedOn: session.document?.settings.automaticWise == true)
                 HStack(alignment: .top, spacing: 16) {
                     ForEach(session.wiseProfiles) { profile in
                         VStack(spacing: 7) {
@@ -288,6 +340,7 @@ struct UpOnlySources: View {
                 UpOnlySettingsCard(title: "Crypto prices", subtitle: "Current USD prices for the coins you track.",
                                    symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, isOn: $prices,
                                    controlDisabled: session.isBusy) {
+                    UpOnlySourceStatus(kind: .crypto, savedOn: session.document?.settings.automaticPrices == true)
                     if prices {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("CoinGecko Demo API key").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -303,17 +356,15 @@ struct UpOnlySources: View {
             }
             if session.document?.shows(.metals) == true {
                 UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals, controlDisabled: session.isBusy) {
-                    Text("Current prices need no API key.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    UpOnlySourceStatus(kind: .metals, savedOn: session.document?.settings.automaticMetals == true)
                     if metals {
-                        DisclosureGroup("Price history") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                SecureField("Gold API history key", text: $metalKey).textFieldStyle(.roundedBorder)
-                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).buttonStyle(.bordered)
-                                Text("A key fills gaps after time offline. Your weights and storage locations stay private.")
-                                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }.padding(.top, 8)
-                        }.font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Gold API history key (optional)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder)
+                            Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            Text("Current prices need no key. A key fills gaps after time offline. Your weights and storage locations stay private.")
+                                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
@@ -321,6 +372,7 @@ struct UpOnlySources: View {
                 UpOnlySettingsCard(title: "Exchange rates", subtitle: "Convert your balances and cash flow to USD.",
                                    symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.cashFlow, isOn: $fx,
                                    controlDisabled: session.isBusy) {
+                    UpOnlySourceStatus(kind: .fx, savedOn: session.document?.settings.automaticFX == true)
                     DisclosureGroup("About exchange rates") {
                         Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Historical entries need a rate dated near the end of their month.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
