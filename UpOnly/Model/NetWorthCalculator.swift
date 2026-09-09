@@ -834,6 +834,12 @@ nonisolated enum BalanceReconstruction {
             if unchanged { continue }
             document.bankBalances.removeAll { $0.accountID == accountID && $0.source == source }
             document.bankBalances.append(contentsOf: derived)
+            // Net worth only counts an account from the day tracking began; the rebuilt history starts earlier.
+            if let firstDerived = derived.map(\.observedAt).min(), document.isBankTracked(accountID, at: now),
+               !document.isBankTracked(accountID, at: firstDerived) {
+                document.bankTracking.removeAll { $0.accountID == accountID && $0.tracked && $0.effectiveAt > firstDerived }
+                document.setBankTracked(accountID, tracked: true, at: UTCDay.start(of: firstDerived))
+            }
             if let first = (previous.map(\.observedAt) + derived.map(\.observedAt)).min() { earliest = min(earliest ?? first, first) }
         }
         return earliest

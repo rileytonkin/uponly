@@ -575,8 +575,10 @@ struct OwnedAssetTests {
         // Sep 7 end: anchor 1000 + the 50 spent on the 9th = 1050. Sep 1 end: 1050 + 200 − 30 = 1220. Sep 12: 1000 + 100.
         #expect(derived.map { ($0.amount.value, formatter.string(from: $0.observedAt)) }.map { "\($0.0)@\($0.1)" } == ["1220@2026-09-01", "1050@2026-09-07", "1100@2026-09-12"])
         #expect(derived.allSatisfy { $0.source == BalanceReconstruction.source })
+        doc.trackedBankAccountIDs = []; doc.setBankTracked(monzo.id, tracked: true, at: anchorDay)
         let start = BalanceReconstruction.apply(accountIDs: [monzo.id], to: &doc, now: formatter.date(from: "2026-09-20")!)
         #expect(start == derived.first?.observedAt && doc.bankBalances.count == 4)
+        #expect(doc.isBankTracked(monzo.id, at: formatter.date(from: "2026-09-02")!))
         #expect(BalanceReconstruction.apply(accountIDs: [monzo.id], to: &doc, now: formatter.date(from: "2026-09-20")!) == nil)
         #expect(NetWorthCalculator.value(at: formatter.date(from: "2026-09-05")!, scope: .banks, document: doc).components.first?.nativeAmount?.value == 1220)
     }
