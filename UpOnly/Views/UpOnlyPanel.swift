@@ -609,6 +609,24 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var monthEntryCount: Int { session.document?.entries.filter { $0.month == model.month.description }.count ?? 0 }
+    private func chartTitle(_ title: String, detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).font(.system(size: 12, weight: .semibold))
+            Spacer(minLength: 8)
+            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+        }.padding(.top, 18)
+    }
+    /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.
+    private var rangeMonthPoints: [UpOnlyChartPoint] {
+        let start = AssetOwnership.month(at: selectedInterval.start), end = MonthKey.current()
+        var months: [MonthKey] = [], cursor = start
+        while cursor <= end && months.count < 120 { months.append(cursor); cursor = cursor.next }
+        let showYear = months.count > 12
+        return months.map { key in
+            let row = model.history.first { $0.month == key } ?? (key, nil, false)
+            return UpOnlyChartPoint(id: key.description, label: String(key.shortName.prefix(3)) + (showYear ? " " + String(key.year).suffix(2) : ""), value: row.net, provisional: !row.settled, detailLabel: key.title)
+        }
+    }
     private var monthPoints: [UpOnlyChartPoint] {
         model.chartHistory.map {
             UpOnlyChartPoint(id: $0.month.description, label: String($0.month.shortName.prefix(3)) + (model.period != .allTime ? "" : " " + String($0.month.year).suffix(2)), value: $0.net, provisional: !$0.settled, detailLabel: $0.month.title)
@@ -882,10 +900,14 @@ private struct UpOnlyUnlockedPanel: View {
                     UpOnlyValueRow(label: "Your profit / loss", value: row.share.map(UpOnlyFormat.exactMoney) ?? "Not reported")
                 }
             } else if companyID != nil { Text("Accounting unavailable for this period").font(.system(size: 12)).foregroundStyle(.secondary) }
-            if points.contains(where: { $0.value != nil }) { UpOnlyChart(points: points, tint: UpOnlyTint.netWorth) }
+            if points.contains(where: { $0.value != nil }) {
+                chartTitle("Bank balance", detail: visibleSamples.first.map { "Daily, since " + UpOnlyFormat.utcDay($0.utcDay) } ?? "")
+                UpOnlyChart(points: points, tint: UpOnlyTint.netWorth)
+            }
             if companyID != nil {
-                UpOnlyChart(points: monthPoints, includesZero: true, showsAllMarkers: true,
-                            selected: model.period == .monthly ? model.month.description : nil, tint: UpOnlyTint.cashFlow,
+                chartTitle("Profit / loss", detail: "By month, " + worthRange.phrase)
+                UpOnlyChart(points: rangeMonthPoints, includesZero: true, showsAllMarkers: true,
+                            selected: nil, tint: UpOnlyTint.cashFlow,
                             onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
             }
             VStack(alignment: .leading, spacing: 8) {
