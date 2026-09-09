@@ -662,6 +662,7 @@ private struct UpOnlyDataAttention: View {
                     reviewTotal("Spending", value: totals.moneyOut)
                 }
             }
+            if let doc = session.document { reviewEvidence(MonthEvidence.build(month, document: doc), document: doc) }
             HStack(spacing: 8) {
                 Button("Transactions") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
                 Menu("Add missing") {
@@ -704,6 +705,54 @@ private struct UpOnlyDataAttention: View {
                     }.buttonStyle(.glassProminent).disabled(session.isBusy)
                 }
             }
+        }
+    }
+    /// Shows what the totals were built from: each source's own figures, the biggest items, and anything that went quiet.
+    private func reviewEvidence(_ evidence: MonthEvidence, document: VaultDocument) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !evidence.sources.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Where it came from").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(evidence.sources) { source in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Text("\(source.count) transaction\(source.count == 1 ? "" : "s")").font(.system(size: 11)).foregroundStyle(.secondary)
+                                Spacer(minLength: 4)
+                                UpOnlyPrivateText("+" + UpOnlyFormat.currencyMoney(source.moneyIn, currency: source.currency) + "  −" + UpOnlyFormat.currencyMoney(source.moneyOut, currency: source.currency) + " " + source.currency)
+                                    .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            if let date = source.lastImport {
+                                Text("Statement imported " + date.formatted(date: .abbreviated, time: .omitted)).font(.system(size: 10)).foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    if evidence.transfers > 0 || evidence.refunds > 0 {
+                        Text([evidence.transfers > 0 ? "\(evidence.transfers) transfer\(evidence.transfers == 1 ? "" : "s") not counted" : nil,
+                              evidence.refunds > 0 ? "\(evidence.refunds) refund\(evidence.refunds == 1 ? "" : "s") taken off spending" : nil].compactMap { $0 }.joined(separator: " · "))
+                            .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if !evidence.largestIncome.isEmpty || !evidence.largestSpending.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Largest items").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    ForEach(evidence.largestIncome) { entry in evidenceRow(entry, tint: UpOnlyTint.cashFlow) }
+                    ForEach(evidence.largestSpending) { entry in evidenceRow(entry, tint: .primary) }
+                }
+            }
+            ForEach(evidence.silent, id: \.self) { name in
+                Label(name + ": nothing recorded this month. Import its statement if you used it.", systemImage: "exclamationmark.circle")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    private func evidenceRow(_ entry: Entry, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(entry.label).font(.system(size: 12)).lineLimit(1).help(entry.label)
+            Spacer(minLength: 4)
+            UpOnlyPrivateText((entry.kind == .income ? "+" : "−") + UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency) + " " + entry.currency)
+                .font(.system(size: 12).monospacedDigit()).foregroundStyle(tint).lineLimit(1)
         }
     }
     private func reviewTotal(_ title: String, value: Decimal) -> some View {
