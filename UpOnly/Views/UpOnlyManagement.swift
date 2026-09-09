@@ -469,6 +469,7 @@ private struct UpOnlyManagementContent: View {
                     Text(entry.currency)
                     if entry.kind == .transfer { Text("· Transfer") }
                     if entry.kind == .refund { Text("· Refund") }
+                    if entry.bucket == .businessCost { Text("· Business cost") } else if entry.bucket == .otherBusiness { Text("· Business") }
                     if importedEntryAccounts.count > 1, let account = session.document?.accounts.first(where: { $0.id == entry.accountID }) {
                         Text("·")
                         Text(account.name).lineLimit(1).help(account.name)
@@ -499,6 +500,15 @@ private struct UpOnlyManagementContent: View {
                 Text("Refund").tag(EntryKind.refund)
                 Text("Transfer").tag(EntryKind.transfer)
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transaction type")
+            if entry.kind == .expense, entry.bucket == .personal || entry.bucket == .businessCost {
+                Picker("Paid for", selection: Binding(get: { entry.bucket }, set: { reassign(entry, to: $0) })) {
+                    Text("Me").tag(Bucket.personal)
+                    Text("The business").tag(Bucket.businessCost)
+                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Paid for")
+                if entry.bucket == .businessCost {
+                    Text("Left out of personal spending. The company's accounting is unchanged.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if entry.source != .manual, entry.bucket == .personal, let doc = session.document {
                 let always = OwnerPayments.isPersonalTransferCounterparty(entry.label, document: doc)
                 Toggle(isOn: Binding(get: { always }, set: { setTransferCounterparty(entry.label, enabled: $0) })) {
@@ -520,6 +530,13 @@ private struct UpOnlyManagementContent: View {
     private func reclassify(_ entry: Entry, as kind: EntryKind) {
         Task { await session.perform { doc in
             if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].kind = kind; doc.entries[index].kindIsUserEdited = true }
+        } }
+    }
+    /// Moves a transaction between your personal money and the business. A business cost paid from a personal
+    /// account leaves personal spending; it does not change the company's accounting.
+    private func reassign(_ entry: Entry, to bucket: Bucket) {
+        Task { await session.perform { doc in
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket }
         } }
     }
     private var filteredEntries: [Entry] {
@@ -769,6 +786,10 @@ private struct UpOnlyDataAttention: View {
                 Divider()
                 Button("Always a transfer: " + entry.label) { setTransferCounterparty(entry.label, enabled: true) }
             }
+            if entry.kind == .expense {
+                Divider()
+                Button("Paid for the business, not me") { reassign(entry, to: .businessCost) }
+            }
         } label: {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -794,6 +815,11 @@ private struct UpOnlyDataAttention: View {
     private func reclassify(_ entry: Entry, as kind: EntryKind) {
         Task { await session.perform { doc in
             if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].kind = kind; doc.entries[index].kindIsUserEdited = true }
+        } }
+    }
+    private func reassign(_ entry: Entry, to bucket: Bucket) {
+        Task { await session.perform { doc in
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket }
         } }
     }
     private func reviewTotal(_ title: String, value: Decimal) -> some View {
