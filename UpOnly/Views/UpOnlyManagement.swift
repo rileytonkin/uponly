@@ -784,7 +784,7 @@ private struct UpOnlyDataAttention: View {
                                 evidenceRow(item, document: document)
                                 if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
                             }
-                        }
+                        }.padding(.trailing, 14) // keep the row's chevron clear of the scroll bar
                     }
                 }
             }
