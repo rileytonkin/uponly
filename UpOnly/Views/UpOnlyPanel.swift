@@ -215,7 +215,15 @@ private struct UpOnlyUnlockedPanel: View {
     @State private var scope: ValuationScope = .allTracked
     @State private var detail: String?
     @State private var companySelection: CompanySelection?
-    private var selectedInterval: DateInterval { model.selectedInterval() }
+    @State private var worthRange: WorthRange = .year
+    /// Net worth is always today's value; the range only sets how much history the chart shows.
+    /// Cash flow keeps the month, year or all-time selector.
+    private var isWorthPage: Bool { !(session.destination == 0 && shows(.cashFlow)) }
+    private var selectedInterval: DateInterval {
+        guard isWorthPage else { return model.selectedInterval() }
+        let now = Date()
+        return DateInterval(start: now.addingTimeInterval(-worthRange.seconds), end: now)
+    }
 
     private func shows(_ kind: TrackedKind) -> Bool { session.document?.shows(kind) == true }
     private var showsNetWorth: Bool { session.document?.showsNetWorth == true }
@@ -414,8 +422,17 @@ private struct UpOnlyUnlockedPanel: View {
         HStack(alignment: .center, spacing: 8) {
             eyebrow
             Spacer(minLength: 8)
-            periodSelector
+            if isWorthPage { rangeSelector } else { periodSelector }
         }.frame(minHeight: 26)
+    }
+    private var rangeSelector: some View {
+        Menu {
+            ForEach(WorthRange.allCases, id: \.self) { range in
+                Toggle(range.title, isOn: Binding(get: { worthRange == range }, set: { _ in worthRange = range }))
+            }
+        } label: { Text(worthRange.title).font(.system(size: 12, weight: .medium)).lineLimit(1) }
+            .modifier(UpOnlyPillMenu()).fixedSize()
+            .accessibilityLabel("Chart range").accessibilityValue(worthRange.title)
     }
     private func eyebrow(_ title: String) -> some View {
         Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
@@ -428,7 +445,8 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var periodPhrase: String {
-        switch model.period {
+        if isWorthPage { return "over the " + worthRange.phrase }
+        return switch model.period {
         case .monthly: model.month == .current() ? "this month" : "in " + String(model.month.shortName.prefix(3)) + " " + String(model.month.year)
         case .annual: model.month.year == MonthKey.current().year ? "this year" : "in " + String(model.month.year)
         case .allTime: "all time"
@@ -1199,4 +1217,15 @@ struct UpOnlyPillMenu: ViewModifier {
 private struct PersonalAccountGroup: Identifiable, Hashable {
     var id: UUID?
     var name: String
+}
+/// How much net worth history the chart shows. The headline value is always today's.
+enum WorthRange: CaseIterable {
+    case month, quarter, year, twoYears, fiveYears
+    var title: String {
+        switch self { case .month: "Last 30 days"; case .quarter: "Last 3 months"; case .year: "Last 12 months"; case .twoYears: "Last 24 months"; case .fiveYears: "Last 5 years" }
+    }
+    var phrase: String { title.lowercased() }
+    var seconds: TimeInterval {
+        switch self { case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .twoYears: 730 * 86400; case .fiveYears: 1826 * 86400 }
+    }
 }
