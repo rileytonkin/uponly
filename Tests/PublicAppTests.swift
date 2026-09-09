@@ -299,6 +299,26 @@ struct BulkInputTests {
         source.account = ImportAccount(name: name)
         return ImportBatchDraft(mode: mode, sources: [source], rows: try ImportParser.rows(source: source, mode: mode))
     }
+    @Test("A holding entered with a past date and a cost records a lot; the same total on that date is a duplicate")
+    func backdatedHoldingImport() throws {
+        var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t1", mode: .holdings)
+        draft.rows[0].holding.date = "2026-03-10"; draft.rows[0].holding.paid = "40000"; draft.rows[0].holding.paidCurrency = "usd"
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty(), catalog: []).document)
+        let holding = try #require(saved.holdings.first)
+        #expect(saved.portfolios[0].createdAt == holding.createdAt)
+        #expect(saved.effectiveQuantity(holdingID: holding.id, at: try ImportDateFormat.iso.date("2026-04-01")) == 1)
+        #expect(saved.purchases?.count == 1 && saved.purchases?[0].paid.value == 40000 && saved.purchases?[0].currency == "USD" && saved.purchases?[0].quantity.value == 1)
+        var again = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t1", mode: .holdings)
+        again.rows[0].holding.portfolioID = saved.portfolios[0].id; again.rows[0].holding.date = "2026-03-10"
+        #expect(ImportBatchProcessor.evaluate(again, document: saved, catalog: []).duplicates == 1)
+        var more = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t1.5", mode: .holdings)
+        more.rows[0].holding.portfolioID = saved.portfolios[0].id; more.rows[0].holding.date = "2026-06-01"; more.rows[0].holding.paid = "30000"
+        let next = try #require(ImportBatchProcessor.evaluate(more, document: saved, catalog: []).document)
+        #expect(next.purchases?.count == 2 && next.purchases?[1].quantity.value == 0.5)
+        var future = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t2", mode: .holdings)
+        future.rows[0].holding.date = "2999-01-01"
+        #expect(ImportBatchProcessor.evaluate(future, document: next, catalog: []).hasErrors)
+    }
     @Test("Monzo search exports span months, exclude declines and merge overlaps")
     func monzoSearchMonths() throws {
         let csv = "id,created,title,subtitle,amount,currency,categories\na,\"02/01/26, 12:03\",Coffee,,-5,GBP,General\nb,\"03/08/26, 01:47\",Deposit,,20,GBP,Transfers\nc,\"04/08/26, 01:47\",Card,Declined,,,General"
@@ -361,7 +381,7 @@ struct BulkInputTests {
         #expect(doc.defaultDestination == 0 && doc.defaultManagementSection == "Entries" && !doc.showsNetWorth)
         doc.settings.tracked = []
         doc.portfolios = [Portfolio(name: "Archived", archivedAt: Date())]
-        #expect(!doc.shows(.crypto) && doc.defaultManagementSection == "Tracking")
+        #expect(!doc.shows(.crypto) && doc.defaultManagementSection == "Manage")
         doc.track(.cashFlow); doc.track(.banks); doc.track(.banks)
         #expect(doc.settings.tracked == [.banks, .cashFlow])
     }
@@ -1665,7 +1685,9 @@ struct CoinSuggestionTests {
         let coins = ImportCoins.common + [CatalogCoin(id: "wrapped-bitcoin", symbol: "btc", name: "Wrapped Bitcoin")]
         #expect(ImportCoins.suggestions("  ", coins: coins).isEmpty)
         #expect(ImportCoins.suggestions(" BItCoin ", coins: coins).first?.id == "bitcoin")
-        #expect(ImportCoins.suggestions("BTC", coins: coins).count == 2)
+        #expect(ImportCoins.suggestions("BTC", coins: coins).prefix(2).map(\.id) == ["bitcoin", "wrapped-bitcoin"])
+        #expect(ImportCoins.suggestions("bsv", coins: coins).first?.id == "bitcoin-cash-sv")
+        #expect(Set(ImportCoins.common.map(\.id)).count == ImportCoins.common.count)
         #expect(ImportCoins.suggestions("no-such-coin", coins: coins).isEmpty)
         #expect(ImportCoins.suggestions("a", coins: (0..<20).map { CatalogCoin(id: "asset-\($0)", symbol: "a", name: "Asset \($0)") }).count == 8)
     }

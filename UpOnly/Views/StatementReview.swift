@@ -57,6 +57,8 @@ struct UpOnlyEntryFlow: View {
                 UpOnlyEditSheet(editor: .entry, compact: true,
                                 onCancel: { addingEntry = false },
                                 onSave: { addingEntry = false; saved = "Entry saved" })
+                    .onAppear { session.entryEditorInMenu = true }
+                    .onDisappear { session.entryEditorInMenu = false }
             } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count <= 1, batch.sources.allSatisfy({ $0.grid.isEmpty }) {
                 if let row = batch.rows.first {
                     UpOnlyGuidedEntry(mode: batch.mode, row: Binding(get: { session.importDraft?.rows.first ?? row }, set: { session.importDraft?.rows = [$0] }),
@@ -67,42 +69,49 @@ struct UpOnlyEntryFlow: View {
             } else {
                 VStack(alignment: .leading, spacing: 16) {
                     if !session.managementInMenu {
-                    HStack {
-                        UpOnlyBrandMark(width: 26)
-                        Spacer()
-                        Button { session.addingInMenu = false } label: { Label("Back", systemImage: "chevron.left").font(.system(size: 12)) }.buttonStyle(.bordered).foregroundStyle(.secondary).accessibilityLabel("Back to overview")
-                    }
+                        UpOnlyPageHeader(title: "Add", backLabel: "Back to overview") { session.addingInMenu = false }
                     }
                     VStack(spacing: 9) {
-                        Button { addingEntry = true } label: {
-                            HStack(spacing: 12) {
-                                UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 32)
-                                Text("Income or expense").font(.system(size: 14, weight: .medium))
-                                Spacer()
-                                Image(systemName: "arrow.right").font(.system(size: 12)).foregroundStyle(.secondary)
-                            }.padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14)).contentShape(RoundedRectangle(cornerRadius: 14))
-                        }.buttonStyle(UpOnlyCardButtonStyle(radius: 14))
                         ForEach([ImportMode.bankBalances, .holdings, .metals], id: \.self) { mode in
-                            Button {
+                            addCard(UpOnlyEntryBadge(mode: mode, size: 32),
+                                    title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver",
+                                    detail: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight") {
                                 if session.startImport(mode) { seed(mode) }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    UpOnlyEntryBadge(mode: mode, size: 32)
-                                    Text(mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Precious metals").font(.system(size: 14, weight: .medium))
-                                    Spacer()
-                                    Image(systemName: "arrow.right").font(.system(size: 12)).foregroundStyle(.secondary)
-                                }.padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14)).contentShape(RoundedRectangle(cornerRadius: 14))
-                            }.buttonStyle(UpOnlyCardButtonStyle(radius: 14))
+                            }
                         }
+                        addCard(UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 32),
+                                title: "Income or expense", detail: "One transaction, typed in") { addingEntry = true }
+                        addCard(UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 32),
+                                title: "Bank statement", detail: "Import transactions from a CSV file", action: importStatement)
                     }
-                    Button(session.importDraft == nil ? "Statements & bulk import…" : "Continue your existing import…", action: showBulk)
-                        .buttonStyle(.bordered).font(.system(size: 12)).foregroundStyle(.secondary)
+                    Button(session.importDraft == nil ? "Import several at once from a spreadsheet…" : "Continue your unfinished import…", action: showBulk)
+                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary).accessibilityIdentifier("BulkImport")
                 }
             }
         }.frame(maxWidth: compact ? .infinity : 400)
             .padding(UpOnlyLayout.inset)
             .frame(maxWidth: .infinity, maxHeight: compact ? nil : .infinity, alignment: .top)
             .background(Color(nsColor: .windowBackgroundColor))
+    }
+    private func addCard<Badge: View>(_ badge: Badge, title: String, detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                badge
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 14, weight: .medium))
+                    Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+            }.padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14)).contentShape(RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(UpOnlyCardButtonStyle(radius: 14)).accessibilityLabel(title).accessibilityHint(detail)
+    }
+    // A statement goes straight to the file picker; the summary and review follow.
+    private func importStatement() {
+        guard session.startImport(.statements) else { showBulk(); return }
+        session.importTableMode = false
+        if compact { session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true; session.importReturnsHome = true }
+        Task { await session.chooseImportFiles() }
     }
     private func seed(_ mode: ImportMode) {
         guard var batch = session.importDraft, batch.rows.isEmpty, let source = batch.sources.first else { return }
@@ -188,13 +197,14 @@ private struct UpOnlyGuidedEntry: View {
     private var title: String { mode == .bankBalances ? row.bank.account.name : mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.name ?? "Metal") : row.holding.assetName.isEmpty ? row.holding.resolvedCoinID : row.holding.assetName }
     private var quantity: Binding<String> { mode == .bankBalances ? $row.bank.balance : $row.holding.quantity }
     private var date: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? Date() }, set: { row.bank.date = ImportDateFormat.today($0) }) }
+    private var holdingDate: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.holding.date)) ?? Date() }, set: { row.holding.date = ImportDateFormat.today($0) }) }
     var body: some View {
         Group {
         if discard {
             UpOnlyConfirmation(title: "Discard this entry?", confirmTitle: "Discard entry", confirm: back, cancel: { discard = false })
         } else {
         VStack(alignment: .leading, spacing: 16) {
-            UpOnlyPageHeader(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto holding" : "Precious metals") {
+            UpOnlyPageHeader(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver") {
                 if step > 0 { step -= 1; error = nil; review = nil }
                 else if mode == .bankBalances && newAccount && !accounts.isEmpty { newAccount = false }
                 else if exactCoin { exactCoin = false }
@@ -323,7 +333,8 @@ private struct UpOnlyGuidedEntry: View {
             VStack(spacing: 5) {
                 Text(mode == .bankBalances ? "Balance · " + row.bank.account.currency : mode == .metals ? "Pure metal weight" : "Total quantity")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                UpOnlyValueField(mode == .bankBalances ? "0.00" : "0", text: quantity)
+                // No placeholder: a centered one sits under the insertion point.
+                UpOnlyValueField("", text: quantity)
                     .font(.system(size: 38, weight: .medium).monospacedDigit()).textFieldStyle(.plain).multilineTextAlignment(.center)
                     .focused($amountFocused).accessibilityLabel(mode == .bankBalances ? "Bank balance" : "Total quantity")
             }.padding(.vertical, 8).frame(maxWidth: .infinity)
@@ -334,6 +345,20 @@ private struct UpOnlyGuidedEntry: View {
                 HStack { Text("As of").font(.system(size: 12)).foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: date) }
                     .padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
             } else {
+                // When it was held, and optionally what it cost, so the app can show gain since purchase.
+                VStack(spacing: 10) {
+                    HStack { Text("As of").font(.system(size: 12)).foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: holdingDate) }
+                    Divider().opacity(0.5)
+                    HStack(spacing: 8) {
+                        Text("Paid").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("optional").font(.system(size: 11)).foregroundStyle(.tertiary)
+                        Spacer()
+                        UpOnlyValueField("0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                            .font(.system(size: 13, weight: .medium).monospacedDigit()).frame(width: 96).accessibilityLabel("Amount paid")
+                        TextField("USD", text: $row.holding.paidCurrency).textFieldStyle(.plain).font(.system(size: 12, weight: .medium)).frame(width: 40)
+                            .accessibilityLabel("Currency paid")
+                    }
+                }.padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Portfolio").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -352,7 +377,7 @@ private struct UpOnlyGuidedEntry: View {
                     }
                 }.padding(12).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
             }
-            primary(mode == .bankBalances ? "Review balance" : "Review holding") { Task { await evaluate() } }.disabled(quantity.wrappedValue.isEmpty || working)
+            primary("Next") { Task { await evaluate() } }.disabled(quantity.wrappedValue.isEmpty || working)
         }.task { amountFocused = true }
     }
     private var reviewAmount: some View {
@@ -362,14 +387,36 @@ private struct UpOnlyGuidedEntry: View {
                 Text(mode == .bankBalances ? row.bank.account.currency : mode == .metals ? row.holding.unit + " pure metal weight" : coin?.symbol.uppercased() ?? "total quantity").font(.system(size: 12)).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity).padding(.vertical, 6)
             VStack(spacing: 12) {
-                if mode == .bankBalances { reviewLine("As of", date.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))); reviewLine("Account", row.bank.account.existingID == nil ? "Create new" : "Update balance") }
+                if mode == .bankBalances { reviewLine("Account", row.bank.account.name + (row.bank.account.existingID == nil ? " (new)" : "")); reviewLine("As of", date.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))) }
                 else {
                     reviewLine("Portfolio", row.holding.portfolioName)
+                    reviewLine("As of", holdingDate.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
+                    if !row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reviewLine("Paid", row.holding.paid + " " + row.holding.paidCurrency.uppercased()) }
+                    ForEach(holdingNotes, id: \.self) { note in
+                        Label(note, systemImage: "info.circle").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     if let state = review?.states[row.id] { Text(state.displayText(privacy: session.privacyMode)).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 }
             }.padding(14).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
-            primary(mode == .bankBalances ? "Save balance" : "Save holding") { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
+            primary("Save") { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
         }
+    }
+    // Say out loud what a past date or a cost without an increase will do before it is saved.
+    private var holdingNotes: [String] {
+        guard mode != .bankBalances, let document = session.document else { return [] }
+        let date = holdingDate.wrappedValue
+        var notes: [String] = []
+        let when = date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
+        if let portfolio = portfolios.first(where: { $0.id == row.holding.portfolioID }), UTCDay.start(of: date) < UTCDay.start(of: portfolio.createdAt) {
+            notes.append("Dates " + portfolio.name + " back to " + when + ".")
+        }
+        if !row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let holding = document.holdings.first(where: { $0.portfolioID == row.holding.portfolioID && $0.archivedAt == nil && $0.assetID.rawValue == (mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID) }),
+           let before = document.effectiveQuantity(holdingID: holding.id, at: date),
+           let entered = try? MoneyInput.parseExact(row.holding.quantity), entered <= before {
+            notes.append("No increase on " + when + ", so this cost is recorded for the whole position.")
+        }
+        return notes
     }
     private func reviewLine(_ label: String, _ value: String) -> some View {
         HStack(alignment: .top) { Text(label).foregroundStyle(.secondary); Spacer(minLength: 8); Text(value).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true) }.font(.system(size: 12))
@@ -626,7 +673,7 @@ struct UpOnlyImportView: View {
                     if review.hasErrors || !mappingChanged.isEmpty {
                         Text(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        Button("Fix import") {
+                        Button("Fix rows") {
                             problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
                         }.buttonStyle(.glassProminent)
                     } else if review.added == 0 {
@@ -654,7 +701,7 @@ struct UpOnlyImportView: View {
                             .buttonStyle(.glassProminent).disabled(busy || editingStatementAccount != nil)
                     }
                 } else if !busy, editingStatementAccount == nil {
-                    Button("Check file") { beginReview() }.buttonStyle(.bordered)
+                    Button("Review") { beginReview() }.buttonStyle(.bordered)
                 }
             }
             if let message = error ?? session.importMessage, !session.importLoading {

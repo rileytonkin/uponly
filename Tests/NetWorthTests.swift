@@ -608,3 +608,42 @@ struct OwnedAssetTests {
         #expect(DashboardPeriod.samples(in: february, scope: .allTracked, document: doc).isEmpty)
     }
 }
+
+struct PurchaseLotTests {
+    private func utc(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        var parts = DateComponents(); parts.calendar = Calendar(identifier: .gregorian); parts.timeZone = TimeZone(secondsFromGMT: 0)
+        parts.year = year; parts.month = month; parts.day = day; parts.hour = 12
+        return parts.date!
+    }
+    private func document() -> VaultDocument {
+        let inbox = VaultCrypto.makeInboxKeyPair()
+        return VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
+    }
+    @Test("A backdated purchase moves the holding's start back and reports gain against what was paid")
+    func backdatedPurchaseWithCost() throws {
+        var doc = document()
+        let portfolio = Portfolio(name: "Ledger", createdAt: utc(2026, 9, 1))
+        doc.portfolios = [portfolio]
+        let bought = utc(2026, 3, 10)
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: bought, document: doc)
+        let holding = try #require(doc.holdings.first)
+        #expect(doc.portfolios[0].createdAt == bought && holding.createdAt == bought)
+        #expect(doc.effectiveQuantity(holdingID: holding.id, at: utc(2026, 4, 1)) == 1)
+        // A later total, then an earlier one inserted before it.
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 2, at: utc(2026, 8, 1), document: doc)
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 1.5, at: utc(2026, 6, 1), document: doc)
+        #expect(doc.effectiveQuantity(holdingID: holding.id, at: utc(2026, 7, 1)) == 1.5)
+        #expect(doc.effectiveQuantity(holdingID: holding.id, at: utc(2026, 9, 1)) == 2)
+        doc.purchases = [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(1), paid: PreciseDecimal(40000), currency: "USD", at: bought),
+                         PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(1), paid: PreciseDecimal(20000), currency: "USD", at: utc(2026, 8, 1))]
+        let summary = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 90000, document: doc, at: utc(2026, 9, 4))
+        #expect(summary.since == bought && summary.costUSD == 60000 && summary.gainUSD == 30000 && summary.returnFraction == 0.5)
+        #expect(UpOnlyFormat.performance(summary) == "Since Mar 2026 · Paid $60,000 · +$30,000 (+50%)")
+        let unknown = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 90000, document: doc, at: utc(2026, 3, 1))
+        #expect(unknown.costUSD == nil && UpOnlyFormat.performance(unknown) == "Since Mar 2026")
+        let foreign = PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(1), paid: PreciseDecimal(500), currency: "GBP", at: bought)
+        doc.purchases = [foreign]
+        let native = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 90000, document: doc, at: utc(2026, 9, 4))
+        #expect(native.costUSD == nil && native.costNative == 500 && native.costCurrency == "GBP")
+    }
+}
