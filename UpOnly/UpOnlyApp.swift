@@ -56,6 +56,13 @@ import Observation
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
         observeLifetime()
+        // Switching to another app hides the menu, unless a statement drop zone or file picker is in use.
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, popover.isShown, !session.menuStaysOpen else { return }
+                popover.performClose(nil)
+            }
+        }
         #if UPONLY_FIXTURE
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self else { return }
