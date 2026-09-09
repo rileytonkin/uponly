@@ -552,6 +552,8 @@ nonisolated enum WiseAPI {
             }
         }
         next.track(.banks); if next.entries.contains(where: { $0.source == .wise }) { next.track(.cashFlow) }
+        // Synced balances anchor a day-by-day history rebuilt from the activity list.
+        _ = BalanceReconstruction.apply(accountIDs: Set(next.accounts.filter { $0.externalProfileID != nil }.map(\.id)), to: &next, now: snapshot.fetchedAt)
         return next
     }
 }

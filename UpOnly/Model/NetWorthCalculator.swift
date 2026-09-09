@@ -794,7 +794,10 @@ nonisolated enum BalanceReconstruction {
               let anchor = document.bankBalances.filter({ $0.accountID == accountID && $0.source != source }).max(by: { $0.observedAt < $1.observedAt }) else { return nil }
         let formatter = dayFormatter()
         var byDay: [Date: Decimal] = [:]
-        for entry in document.entries where entry.accountID == accountID {
+        // Statement rows name the account directly; Wise activity belongs to the profile's balance in its currency.
+        let wisePrefix = account.externalProfileID.map { "wise:" + $0 + ":" }
+        for entry in document.entries where entry.accountID == accountID
+            || (wisePrefix != nil && entry.source == .wise && entry.currency == account.currency && entry.sourceRef?.hasPrefix(wisePrefix!) == true) {
             guard let text = entry.day, let day = formatter.date(from: text), let amount = signed(entry) else { continue }
             byDay[day, default: 0] += amount
         }
