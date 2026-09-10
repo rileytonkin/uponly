@@ -92,8 +92,9 @@ nonisolated enum NetWorthCalculator {
             }
             if hasComplete { return next }
         }
+        // A complete value supersedes earlier partial attempts for the day; partial ones only replace each other.
         next.dailyValuations.removeAll {
-            UTCDay.start(of: $0.utcDay) == day && $0.scope == result.scope && ($0.isComplete == incoming.isComplete)
+            UTCDay.start(of: $0.utcDay) == day && $0.scope == result.scope && (incoming.isComplete || !$0.isComplete)
         }
         next.dailyValuations.append(incoming)
         return next
