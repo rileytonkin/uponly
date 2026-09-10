@@ -822,13 +822,15 @@ private struct UpOnlyUnlockedPanel: View {
                         HStack(spacing: 8) {
                             if let image = group.image { UpOnlyProfileImage(data: image, name: group.name, size: 24) }
                             else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 24) }
-                            UpOnlyValueRow(label: group.name, value: group.total.map(UpOnlyFormat.exactMoney) ?? "Needs update", chevron: true, primaryLabel: true)
+                            let total = groupTotal(group, valuation)
+                            UpOnlyValueRow(label: group.name, value: total.map(UpOnlyFormat.exactMoney) ?? "Needs update", chevron: true, primaryLabel: true)
                         }.padding(.vertical, 3).contentShape(Rectangle())
-                    }.buttonStyle(.bordered).accessibilityLabel(group.name + " bank balance")
-                        .accessibilityValue(session.privacyMode ? "Hidden value" : group.total.map(UpOnlyFormat.exactMoney) ?? "Needs update")
+                    }.buttonStyle(.bordered).accessibilityLabel(group.name + (group.businessID == nil ? " bank balance" : " assets"))
+                        .accessibilityValue(session.privacyMode ? "Hidden value" : groupTotal(group, valuation).map(UpOnlyFormat.exactMoney) ?? "Needs update")
                 }
                 if case .allTracked = scope {
-                    ForEach(session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) } ?? []) { portfolio in
+                    // A company's own portfolios live on the company page and in its row total.
+                    ForEach(session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) && $0.ownerBusinessID == nil } ?? []) { portfolio in
                         Button { scope = .portfolio(portfolio.id) } label: {
                             HStack(spacing: 10) {
                                 UpOnlySymbolBadge(symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol, tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 24)
@@ -885,6 +887,16 @@ private struct UpOnlyUnlockedPanel: View {
                 if hasLater { add.buttonStyle(.bordered) } else { add.buttonStyle(.glassProminent) }
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(14).modifier(UpOnlyContentSurface())
+    }
+    /// Bank cash plus, for a company, the holdings in portfolios it owns.
+    private func groupTotal(_ group: BankBalanceGroup, _ valuation: ValuationResult?) -> Decimal? {
+        guard let businessID = group.businessID, let document = session.document else { return group.total }
+        let owned = Set(document.portfolios.filter { $0.ownerBusinessID == businessID }.map(\.id))
+        let holdings = (valuation?.components ?? []).filter { component in
+            component.kind == .holding && document.holdings.first { $0.id == component.id }.map { owned.contains($0.portfolioID) } == true
+        }
+        guard let cash = group.total, let assets = AssetOwnership.sum(holdings) else { return nil }
+        return try? MoneyInput.add(cash, assets)
     }
     private func bankGroups(_ valuation: ValuationResult?) -> [BankBalanceGroup] {
         guard let document = session.document else { return [] }
@@ -1040,7 +1052,7 @@ private struct UpOnlyUnlockedPanel: View {
                 return ids.contains(component.id)
             }
             guard !parts.isEmpty, parts.allSatisfy({ $0.usdValue != nil }) else { return nil }
-            return AssetOwnership.sum(parts)
+            return AssetOwnership.sum(parts).map { ($0, nil) }
         }
     }
     private func worthRowLabel(_ portfolio: Portfolio) -> some View {
@@ -1088,11 +1100,20 @@ private struct UpOnlyUnlockedPanel: View {
     }
     private var worthPoints: [UpOnlyChartPoint] {
         dailyPoints { sample in
-            guard sample.isComplete, let document = session.document else { return nil }
-            return AssetOwnership.personalTotal(sample.components, at: sample.utcDay, document: document)
+            guard let document = session.document else { return nil }
+            if sample.isComplete {
+                return AssetOwnership.personalTotal(sample.components, at: sample.utcDay, document: document).map { ($0, nil) }
+            }
+            // A day with an unpriced holding still shows what could be valued, marked as an estimate.
+            let valued = sample.components.filter { $0.usdValue != nil && $0.missing == nil }
+            let unpriced = sample.components.filter { $0.usdValue == nil || $0.missing != nil }.map(\.label)
+            guard !valued.isEmpty, !unpriced.isEmpty, let total = AssetOwnership.personalTotal(valued, at: sample.utcDay, document: document) else { return nil }
+            return (total, "Excludes " + unpriced.joined(separator: ", ") + " (no price that day)")
         }
     }
-    private func dailyPoints(_ value: (DailyValuation) -> Decimal?) -> [UpOnlyChartPoint] {
+    /// One point per day between the first and last sample. `value` returns the day's figure and, when the
+    /// figure is an estimate, a note saying what it leaves out.
+    private func dailyPoints(_ value: (DailyValuation) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
         let samples = visibleSamples
         guard let first = samples.first, let last = samples.last else { return [] }
         var byDay: [Date: DailyValuation] = [:]
@@ -1101,7 +1122,8 @@ private struct UpOnlyUnlockedPanel: View {
         var day = UTCDay.start(of: first.utcDay)
         let end = UTCDay.start(of: last.utcDay)
         while day <= end && points.count < 10000 {
-            points.append(UpOnlyChartPoint(id: String(day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(day), value: byDay[day].flatMap(value)))
+            let figure = byDay[day].flatMap(value)
+            points.append(UpOnlyChartPoint(id: String(day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(day), value: figure?.0, partial: figure?.1 != nil, note: figure?.1))
             day = day.addingTimeInterval(86400)
         }
         return points

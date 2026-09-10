@@ -391,6 +391,8 @@ final class UpOnlySession {
         historyRebuilding = true
         historyRebuildTask = Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.historyRebuildTask = nil; self?.historyRebuilding = false } }
+            // Prices and rates first, newest chunks first, so the rebuilt days can be valued on the first pass.
+            await self?.refreshPrices()
             var cursor = Date()
             while let self, self.state == .unlocked, let from = self.historyRebuildFrom, cursor > from {
                 if self.isBusy { try? await Task.sleep(for: .seconds(1)); continue }
