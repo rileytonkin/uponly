@@ -814,7 +814,7 @@ private struct UpOnlyUnlockedPanel: View {
                 }.padding(.top, 16)
             }
             if points.contains(where: { $0.value != nil }) {
-                UpOnlyChart(points: points, tint: UpOnlyTint.netWorth).padding(.top, 20)
+                UpOnlyChart(points: points, tint: UpOnlyTint.netWorth, spansRange: true).padding(.top, 20)
             }
             VStack(spacing: 6) {
                 ForEach(bankGroups(valuation)) { group in
@@ -985,7 +985,7 @@ private struct UpOnlyUnlockedPanel: View {
                                 selected: nil, tint: UpOnlyTint.cashFlow,
                                 onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
                 } else if hasAssetChart {
-                    UpOnlyChart(points: points, tint: UpOnlyTint.netWorth)
+                    UpOnlyChart(points: points, tint: UpOnlyTint.netWorth, spansRange: true)
                 } else { Text("No history yet for this selection.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
             // Breakdown: one USD line per bank. Tapping a row focuses the chart and headline on it; the pencil on a
@@ -1163,12 +1163,14 @@ private struct UpOnlyUnlockedPanel: View {
         for sample in samples { byDay[UTCDay.start(of: sample.utcDay)] = sample }
         var points: [UpOnlyChartPoint] = []
         let end = UTCDay.start(of: last.utcDay)
+        // Points run from the start of the selected range, not the first sample, so the line is placed by date.
+        let rangeStart = min(UTCDay.start(of: first.utcDay), UTCDay.start(of: selectedInterval.start))
         // Longer ranges sample the daily series at a coarser step so the line reads as a trend: weekly for a
         // year or two, monthly for five. The value is the actual figure on that day; the last point is today.
         let stride = TimeInterval(worthRange.chartStepDays * 86400)
         var day = worthRange.chartStepDays == 1 ? UTCDay.start(of: first.utcDay) : end
         var stops: [Date] = []
-        while day >= UTCDay.start(of: first.utcDay) && stops.count < 10000 { stops.append(day); day = day.addingTimeInterval(-stride) }
+        while day >= rangeStart && stops.count < 10000 { stops.append(day); day = day.addingTimeInterval(-stride) }
         for stop in stops.sorted() {
             let figure = byDay[stop].flatMap(value)
             points.append(UpOnlyChartPoint(id: String(stop.timeIntervalSince1970), label: UpOnlyFormat.utcDay(stop), value: figure?.0, partial: figure?.1 != nil, note: figure?.1))
