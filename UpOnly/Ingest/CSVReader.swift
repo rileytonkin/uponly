@@ -534,7 +534,8 @@ nonisolated enum ImportCoins {
         func rank(_ coin: CatalogCoin) -> (Int, Int) {
             let fields = [coin.id, coin.symbol, coin.name].map { $0.lowercased() }
             let match = fields.contains(query) ? 0 : fields.contains(where: { $0.hasPrefix(query) }) ? 1 : 2
-            return (prominence[coin.id] ?? Int.max, match)
+            // Built-in majors first, then CoinGecko's market-cap rank, then everything else.
+            return (prominence[coin.id] ?? (coin.rank.map { 1000 + $0 } ?? Int.max), match)
         }
         return Array(coins.filter { coin in
             [coin.id, coin.symbol, coin.name].contains { $0.localizedCaseInsensitiveContains(query) }

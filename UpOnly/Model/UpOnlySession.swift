@@ -49,6 +49,10 @@ final class UpOnlySession {
     private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var backgroundTask: Task<Void, Never>?
     @ObservationIgnored private var requestWatcher: Task<Void, Never>?
+    @ObservationIgnored private var historyRebuildTask: Task<Void, Never>?
+    @ObservationIgnored private var historyRebuildFrom: Date?
+    /// True while past days are being recomputed in the background.
+    private(set) var historyRebuilding = false
     @ObservationIgnored private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
     private(set) var backgroundCheckedAt: Date?
     private(set) var backgroundIssues: [String] = []
@@ -349,10 +353,12 @@ final class UpOnlySession {
     private func persist(_ proposed: VaultDocument, replacing current: VaultSession, token: UUID) async throws {
         guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
         var next = proposed
-        let addedAccount = next.accounts.contains { account in !current.document.accounts.contains { $0.id == account.id } }
-        next.reviewedMonths.removeAll { month in
-            addedAccount || current.document.entries.filter { $0.month == month } != next.entries.filter { $0.month == month }
+        // A confirmed month reopens only when its figures change: a row added, removed, re-amounted or re-typed.
+        // Learning a row's day, a relabel from a sync, or a new empty account is not a reason to ask again.
+        func ledger(_ entries: [Entry], _ month: String) -> [String] {
+            entries.filter { $0.month == month }.map { $0.id.uuidString + "|" + $0.kind.rawValue + "|" + $0.bucket.rawValue + "|" + $0.currency + "|" + NSDecimalNumber(decimal: $0.amount).stringValue }.sorted()
         }
+        next.reviewedMonths.removeAll { month in ledger(current.document.entries, month) != ledger(next.entries, month) }
         let now = Date()
         // A backdated quantity changes past days; recompute them away from the main actor.
         var backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
@@ -363,13 +369,8 @@ final class UpOnlySession {
         if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
         // Backdated tracking makes an account count on earlier days, so those days change too.
         if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < UTCDay.start(of: now) { backdated = min(backdated ?? tracked, tracked) }
-        var rebuilt = false
-        if let backdated, backdated < UTCDay.start(of: now) {
-            let proposed = next
-            next = await Task.detached(priority: .userInitiated) { HoldingMutations.rebuildHistory(from: backdated, document: proposed, now: now) }.value
-            guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
-            rebuilt = true
-        }
+        // Past days are rebuilt afterwards in short background chunks, newest first, so saving never waits on years of history.
+        let rebuilt = backdated.map { $0 < UTCDay.start(of: now) } ?? false
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
         for scope in scopes {
             next = NetWorthCalculator.recordingSample(
@@ -380,8 +381,29 @@ final class UpOnlySession {
         try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
         guard token == sessionToken else { throw VaultError.locked }
         publish(next)
-        // Rebuilt days need daily exchange rates to be valued; fetch them now rather than at the next scheduled slot.
-        if rebuilt { Task { [weak self] in await self?.refreshPrices(); _ = self?.writeDiagnostics() } }
+        if rebuilt, let backdated { scheduleHistoryRebuild(from: backdated) }
+    }
+    /// Recomputes stored daily values from `start` in 45-day chunks, newest first, each saved on its own so the
+    /// interface stays responsive and the chart fills in progressively. Fetches history prices once finished.
+    private func scheduleHistoryRebuild(from start: Date) {
+        historyRebuildFrom = min(historyRebuildFrom ?? start, start)
+        guard historyRebuildTask == nil else { return }
+        historyRebuilding = true
+        historyRebuildTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.historyRebuildTask = nil; self?.historyRebuilding = false } }
+            var cursor = Date()
+            while let self, self.state == .unlocked, let from = self.historyRebuildFrom, cursor > from {
+                if self.isBusy { try? await Task.sleep(for: .seconds(1)); continue }
+                let chunkStart = max(UTCDay.start(of: from), UTCDay.start(of: cursor).addingTimeInterval(-45 * 86400))
+                let chunkEnd = cursor
+                do { try await self.mutatePrepared { HoldingMutations.rebuildHistory(from: chunkStart, to: chunkEnd, document: $0, now: Date()) } }
+                catch { break }
+                cursor = chunkStart
+                if cursor <= UTCDay.start(of: from) { self.historyRebuildFrom = nil }
+            }
+            guard let self, self.state == .unlocked else { return }
+            await self.refreshPrices(); _ = self.writeDiagnostics()
+        }
     }
     /// Re-runs balance reconstruction for every account so tracking and derived series match the current rules.
     func repairBalanceHistory() async {
@@ -1205,6 +1227,20 @@ extension UpOnlySession {
             try await mutate { $0.settings.automaticFX = true }
             scheduleRefresh()
         } catch { message = "Exchange rates could not be enabled. Please try again." }
+    }
+    /// Replaces the catalog with ranked search hits for `query`. Cheap enough to run as the user types.
+    func searchCatalog(_ query: String) async {
+        guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 2 else { return }
+        let token = sessionToken, revision = sourceRevision
+        catalogRequest?.cancel()
+        let request = Task { try await PublicPrices.searchCoins(clean, key: settings.automaticPrices ? settings.coinGeckoKey : "") }
+        catalogRequest = request
+        guard let coins = try? await request.value, token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
+        var merged = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
+        for coin in coins { merged[coin.id] = coin }
+        catalog = Array(merged.values)
     }
     func loadCatalog() async {
         // The public coin list needs no key; a Demo key is used when present.

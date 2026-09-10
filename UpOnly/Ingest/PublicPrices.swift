@@ -4,6 +4,8 @@ nonisolated struct CatalogCoin: Codable, Identifiable, Sendable, Hashable {
     var id: String
     var symbol: String
     var name: String
+    /// CoinGecko market-cap rank when known; lower is bigger.
+    var rank: Int?
 }
 nonisolated enum PriceError: LocalizedError {
     case unavailable, invalidResponse, credentials, metalCredentials, rateLimited
@@ -48,6 +50,17 @@ nonisolated enum PublicPrices {
             guard data.count < limit else { throw PriceError.invalidResponse }; data.append(byte)
         }
         return data
+    }
+    /// CoinGecko's search endpoint: a few hundred kilobytes at most, ranked by market cap, instead of the whole 16 MB coin list.
+    static func searchCoins(_ query: String, key: String) async throws -> [CatalogCoin] {
+        struct Hit: Decodable { var id: String; var name: String; var symbol: String; var market_cap_rank: Int? }
+        struct Response: Decodable { var coins: [Hit] }
+        let data = try await request(host: "api.coingecko.com", path: "/api/v3/search", query: [URLQueryItem(name: "query", value: query)], key: key)
+        let hits = try JSONDecoder().decode(Response.self, from: data).coins
+        var seen = Set<String>()
+        return hits.filter { hit in
+            (try? MoneyInput.canonicalAssetID(hit.id)) == hit.id && !hit.name.isEmpty && hit.name.count <= 150 && hit.symbol.count <= 30 && seen.insert(hit.id).inserted
+        }.map { CatalogCoin(id: $0.id, symbol: $0.symbol, name: $0.name, rank: $0.market_cap_rank) }
     }
     static func catalog(key: String) async throws -> [CatalogCoin] {
         let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/list", query: [], key: key, limit: 16 * 1024 * 1024)

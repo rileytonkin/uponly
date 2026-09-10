@@ -301,8 +301,8 @@ private struct UpOnlyGuidedEntry: View {
         } else {
             entryField("Search coins", text: $search, symbol: "magnifyingglass")
                 .accessibilityLabel("Search coins").focused($searchFocused).onAppear { searchFocused = true }
-                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.catalog.isEmpty { await session.loadCatalog() }
+                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
                 }
             let suggestions = ImportCoins.suggestions(search, coins: coins)
             if !suggestions.isEmpty {
@@ -1261,8 +1261,8 @@ private struct ImportRowEditor: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Choose a coin").font(.system(size: 16, weight: .semibold))
             TextField("Search name, ticker or ID", text: $search).textFieldStyle(.roundedBorder).accessibilityLabel("Search coins")
-                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.catalog.isEmpty { await session.loadCatalog() }
+                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
                 }
             if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             ScrollView {

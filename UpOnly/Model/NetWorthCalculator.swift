@@ -497,12 +497,13 @@ nonisolated struct HoldingPerformance: Equatable {
 
 nonisolated enum HoldingMutations {
     /// Recompute stored daily values from a day in the past, after a backdated quantity or balance.
-    static func rebuildHistory(from start: Date, document: VaultDocument, now: Date) -> VaultDocument {
+    static func rebuildHistory(from start: Date, to end: Date? = nil, document: VaultDocument, now: Date) -> VaultDocument {
         var next = document
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
         let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-2200 * 86400))
+        let last = min(UTCDay.start(of: now), end.map { UTCDay.start(of: $0) } ?? UTCDay.start(of: now))
         var day = first
-        while day < UTCDay.start(of: now) {
+        while day < last {
             // Old samples for the day no longer describe the holdings held then; drop them
             // so a day without saved prices shows as a gap rather than a wrong value.
             next.dailyValuations.removeAll { UTCDay.start(of: $0.utcDay) == day }
