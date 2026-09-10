@@ -772,7 +772,9 @@ nonisolated struct BankBalanceGroup: Identifiable {
             .map { id, values in
                 let sorted = values.sorted { ($0.usdValue?.value ?? -1) > ($1.usdValue?.value ?? -1) }
                 let account = sorted.first.flatMap { accounts[$0.id] }
-                let name = account.map { $0.externalProfileID == nil ? $0.name : AssetOwnership.profileName($0).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName($0) } ?? "Bank account"
+                // A Wise profile is just "Wise" here: the personal one is called Personal by Wise, and a company's
+                // profile carries the company's name, which the page already shows.
+                let name = account.map { $0.externalProfileID == nil ? $0.name : "Wise" } ?? "Bank account"
                 return BankBalanceGroup(id: id, name: name, image: account?.profileImage, businessID: nil, components: sorted)
             }.sorted { ($0.total ?? -1) > ($1.total ?? -1) }
     }

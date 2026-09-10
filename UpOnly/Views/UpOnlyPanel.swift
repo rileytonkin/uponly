@@ -652,9 +652,14 @@ private struct UpOnlyUnlockedPanel: View {
         var months: [MonthKey] = [end]
         while months.count < worthRange.months { months.insert(months[0].previous, at: 0) }
         let showYear = months.first?.year != end.year
+        let book = companySelection.flatMap { selection in model.books.first { $0.id == selection.group.businessID } }
         return months.map { key in
             let row = model.history.first { $0.month == key } ?? (key, nil, false)
-            return UpOnlyChartPoint(id: key.description, label: String(key.shortName.prefix(3)) + (showYear ? " " + String(key.year).suffix(2) : ""), value: row.net, provisional: !row.settled, detailLabel: key.title)
+            // Say where the figure came from, so it can be checked against the sheet.
+            let sheet = book?.months.first { $0.month == key.description }
+            let parts = [sheet?.revenueUSD.map { "Net revenue " + UpOnlyFormat.money($0) }, sheet?.expensesUSD.map { "expenses " + UpOnlyFormat.money($0) }].compactMap { $0 }
+            let note = sheet.map { (parts.isEmpty ? "" : parts.joined(separator: " − ") + " · ") + $0.sourceRange + ($0.estimated ? " · provisional" : "") }
+            return UpOnlyChartPoint(id: key.description, label: String(key.shortName.prefix(3)) + (showYear ? " " + String(key.year).suffix(2) : ""), value: row.net, provisional: !row.settled, detailLabel: key.title, note: note)
         }
     }
     private var monthPoints: [UpOnlyChartPoint] {
@@ -1007,10 +1012,13 @@ private struct UpOnlyUnlockedPanel: View {
                         Spacer(minLength: 8)
                         UpOnlyPrivateText(bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"))
                             .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
-                        if manual, let component = bank.components.first {
-                            Button { if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true } } label: { Image(systemName: "square.and.pencil").font(.system(size: 11)) }
-                                .buttonStyle(.plain).foregroundStyle(.secondary).help("Update this balance").accessibilityLabel("Update " + component.label + " balance")
-                        }
+                        // Every row reserves the same trailing slot so the amounts line up.
+                        Group {
+                            if manual, let component = bank.components.first {
+                                Button { if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true } } label: { Image(systemName: "square.and.pencil").font(.system(size: 11)) }
+                                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Update this balance").accessibilityLabel("Update " + component.label + " balance")
+                            } else { Color.clear }
+                        }.frame(width: 16, height: 16)
                     }.padding(.vertical, 9).contentShape(Rectangle())
                         .background(companyFocus == .bank(ids) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
                         .onTapGesture { companyFocus = companyFocus == .bank(ids) ? .all : .bank(ids) }
@@ -1023,13 +1031,15 @@ private struct UpOnlyUnlockedPanel: View {
                         Divider().opacity(0.4)
                         HStack(alignment: .center, spacing: 10) {
                             UpOnlySymbolBadge(symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol, tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 22)
-                            Text(portfolio.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                            Text(parts.map(\.label).joined(separator: ", ")).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(portfolio.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                if !parts.isEmpty { Text(parts.map(\.label).joined(separator: ", ")).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1) }
+                            }
                             Spacer(minLength: 8)
                             UpOnlyPrivateText(AssetOwnership.sum(parts).map(UpOnlyFormat.exactMoney) ?? (parts.isEmpty ? "No holdings" : "Price needed"))
                                 .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
-                            Button { companySelection = nil; model.selectScope(selection.previousScope); scope = .portfolio(portfolio.id) } label: { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)) }
-                                .buttonStyle(.plain).foregroundStyle(.tertiary).help("Open " + portfolio.name).accessibilityLabel("Open " + portfolio.name)
+                            Button { companySelection = nil; model.selectScope(selection.previousScope); scope = .portfolio(portfolio.id) } label: { Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)) }
+                                .buttonStyle(.plain).foregroundStyle(.secondary).frame(width: 16, height: 16).help("Open " + portfolio.name).accessibilityLabel("Open " + portfolio.name)
                         }.padding(.vertical, 9).contentShape(Rectangle())
                             .background(companyFocus == .portfolio(portfolio.id) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
                             .onTapGesture { companyFocus = companyFocus == .portfolio(portfolio.id) ? .all : .portfolio(portfolio.id) }
