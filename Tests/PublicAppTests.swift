@@ -655,7 +655,7 @@ struct WiseInputTests {
         let outgoing = WiseActivity(id: "out", type: "TRANSFER", resource: .init(type: "TRANSFER", id: "shared"), title: "Own transfer", primaryAmount: "50 USD", status: "COMPLETED", createdOn: "2026-01-03T12:00:00Z")
         let incoming = WiseActivity(id: "in", type: "TRANSFER", resource: .init(type: "TRANSFER", id: "shared"), title: "Own transfer", primaryAmount: "+ 50 USD", status: "COMPLETED", createdOn: "2026-01-03T12:00:00Z")
         var snapshot = WiseSnapshot(profiles: [
-            WiseProfileSnapshot(profile: first, balances: [WiseBalance(id: 11, currency: "USD", amount: WiseAmount(value: 100, currency: "USD"))], activities: [payment, outgoing]),
+            WiseProfileSnapshot(profile: first, balances: [WiseBalance(id: 11, currency: "USD", amount: WiseAmount(value: 100, currency: "USD")), WiseBalance(id: 12, currency: "USD", amount: WiseAmount(value: 40, currency: "USD"), type: "SAVINGS", name: "Tax")], activities: [payment, outgoing]),
             WiseProfileSnapshot(profile: second, balances: [WiseBalance(id: 22, currency: "USD", amount: WiseAmount(value: 50, currency: "USD"))], activities: [incoming])
         ], fetchedAt: date)
         let saved = try WiseAPI.apply(snapshot, to: empty())
@@ -667,6 +667,10 @@ struct WiseInputTests {
         #expect(derived.map(\.amount.value) == [150, 100])
         #expect(saved.isBankTracked(personalUSD.id, at: BalanceReconstruction.dayFormatter().date(from: "2026-01-02")!))
         #expect(saved.entries.allSatisfy { $0.day != nil && $0.outflow != nil })
+        // A jar is its own account, named after the jar, valued from the sync alone: no activity is attributed to it.
+        let jar = try #require(saved.accounts.first { $0.externalBalanceID == "12" })
+        #expect(jar.name == "Personal · USD · Tax" && AssetOwnership.jarName(jar) == "Tax" && AssetOwnership.profileName(jar) == "Personal")
+        #expect(saved.bankBalances.filter { $0.accountID == jar.id }.count == 1)
         #expect(saved.entries.filter { $0.kind == .transfer }.count == 2)
         #expect(saved.entries.first { $0.kind == .expense }?.amount == Decimal(string: "10.05"))
         #expect(saved.accounts[0].profileImage == first.image)
