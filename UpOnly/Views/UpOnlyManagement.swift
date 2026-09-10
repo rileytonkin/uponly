@@ -331,14 +331,14 @@ private struct UpOnlyManagementContent: View {
                 ForEach(funded, id: \.0.id) { account, observation in
                     Divider().opacity(0.4)
                     HStack(spacing: 8) {
-                        Text(account.currency).font(.system(size: 12, weight: .medium))
+                        Text(account.currency + (AssetOwnership.jarName(account).map { " · " + $0 } ?? "")).font(.system(size: 12, weight: .medium))
                         Spacer(minLength: 8)
                         UpOnlyPrivateText(UpOnlyFormat.currencyMoney(observation?.amount.value ?? 0, currency: account.currency)).font(.system(size: 13, weight: .medium).monospacedDigit())
                     }.padding(.vertical, 6)
                 }
                 if !empty.isEmpty {
                     Divider().opacity(0.4)
-                    Text((funded.isEmpty ? "No money in " : "Empty: ") + empty.map(\.0.currency).sorted().joined(separator: ", "))
+                    Text((funded.isEmpty ? "No money in " : "Empty: ") + empty.map { $0.0.currency + (AssetOwnership.jarName($0.0).map { " " + $0 } ?? "") }.sorted().joined(separator: ", "))
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }

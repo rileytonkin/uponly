@@ -679,12 +679,16 @@ nonisolated enum AssetOwnership {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
         return MonthKey.current(now: date, calendar: calendar)
     }
+    /// The Wise profile's name: everything before " · currency" (and before a jar's name after that).
     static func profileName(_ account: Account) -> String {
-        var name = account.name
-        if account.externalProfileID != nil, name.hasSuffix(" · " + account.currency) {
-            name.removeLast(3 + account.currency.count)
-        }
-        return name
+        guard account.externalProfileID != nil, let range = account.name.range(of: " · " + account.currency) else { return account.name }
+        return String(account.name[..<range.lowerBound])
+    }
+    /// A Wise jar's name, when the account is a jar rather than the profile's main balance.
+    static func jarName(_ account: Account) -> String? {
+        guard account.externalProfileID != nil, let range = account.name.range(of: " · " + account.currency + " · ") else { return nil }
+        let jar = String(account.name[range.upperBound...])
+        return jar.isEmpty ? nil : jar
     }
     static func businessID(for account: Account, in document: VaultDocument) -> String? {
         if let explicit = account.ownerBusinessID { return explicit.isEmpty ? nil : explicit }
@@ -799,7 +803,8 @@ nonisolated enum BalanceReconstruction {
         let formatter = dayFormatter()
         var byDay: [Date: Decimal] = [:]
         // Statement rows name the account directly; Wise activity belongs to the profile's balance in its currency.
-        let wisePrefix = account.externalProfileID.map { "wise:" + $0 + ":" }
+        // Wise activity is money moving through the main balance; a jar's balance comes only from the sync.
+        let wisePrefix = AssetOwnership.jarName(account) == nil ? account.externalProfileID.map { "wise:" + $0 + ":" } : nil
         for entry in document.entries where entry.accountID == accountID
             || (wisePrefix != nil && entry.source == .wise && entry.currency == account.currency && entry.sourceRef?.hasPrefix(wisePrefix!) == true) {
             guard let text = entry.day, let day = formatter.date(from: text), let amount = signed(entry) else { continue }

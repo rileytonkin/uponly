@@ -422,6 +422,10 @@ nonisolated struct WiseBalance: Codable, Sendable {
     var id: Int64
     var currency: String
     var amount: WiseAmount
+    /// "STANDARD" for the main balance, "SAVINGS" for a jar. Optional so older fixtures decode.
+    var type: String?
+    /// A jar's name; the main balance has none.
+    var name: String?
 }
 nonisolated struct WiseActivity: Codable, Sendable {
     struct Resource: Codable, Sendable { var type: String; var id: String }
@@ -472,7 +476,8 @@ nonisolated enum WiseAPI {
         var profiles: [WiseProfileSnapshot] = []
         for profile in connection.profiles {
             try Task.checkCancellation()
-            let balanceData = try await request(path: "/v4/profiles/\(profile.id)/balances", query: [URLQueryItem(name: "types", value: "STANDARD")], token: connection.token)
+            // Jars (SAVINGS) hold money too; leaving them out understates the company's cash.
+            let balanceData = try await request(path: "/v4/profiles/\(profile.id)/balances", query: [URLQueryItem(name: "types", value: "STANDARD,SAVINGS")], token: connection.token)
             let balances = try JSONDecoder().decode([WiseBalance].self, from: balanceData)
             var activities: [WiseActivity] = [], cursor: String?, cursors = Set<String>(), complete = false
             for _ in 0..<200 {
@@ -525,7 +530,8 @@ nonisolated enum WiseAPI {
                 if let index = next.accounts.firstIndex(where: { $0.externalProfileID == profileID && $0.externalBalanceID == externalBalance }) {
                     accountID = next.accounts[index].id; next.accounts[index].profileImage = item.profile.image
                 } else {
-                    var account = Account(name: item.profile.name + " · " + currency, currency: currency)
+                    let jar = balance.type == "SAVINGS" ? (balance.name ?? "Jar") : nil
+                    var account = Account(name: item.profile.name + " · " + currency + (jar.map { " · " + $0 } ?? ""), currency: currency)
                     account.ownerBusinessID = next.accounts.first { $0.externalProfileID == profileID }?.ownerBusinessID
                     account.externalProfileID = profileID; account.externalBalanceID = externalBalance; account.profileImage = item.profile.image
                     next.accounts.append(account); accountID = account.id
