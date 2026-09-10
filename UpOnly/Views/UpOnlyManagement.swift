@@ -751,7 +751,7 @@ private struct UpOnlyDataAttention: View {
                             let names = session.backgroundIssues.filter { $0 != "Bank balances" && $0 != "Accounting" && !$0.hasSuffix(" accounting") }
                             note(names.joined(separator: ", ") + (names.count == 1 ? " could not refresh in the background." : " could not refresh in the background.") + " Saved values are still shown.")
                         }
-                        if attention.pricesNeeded { note("Some prices or exchange rates are missing.") }
+                        if attention.pricesNeeded { note("Missing today: " + attention.missingPriceLabels.joined(separator: ", ") + ". Press refresh on that source.") }
                         if !attention.accountingNames.isEmpty { note(attention.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                         Button("Open Prices & rates") { session.managementSection = "Sources" }
                     }
