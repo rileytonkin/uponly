@@ -128,7 +128,8 @@ struct UpOnlyChart: View {
             path.move(to: first)
             // Match the admin's low-tension line. Clamped controls cannot invent
             // a higher peak or lower loss between the actual monthly observations.
-            let tension: CGFloat = 0.08
+            // Daily series get a rounder curve; monthly ones keep a taut line so each point reads as a data point.
+            let tension: CGFloat = coordinates.count > 60 ? 0.3 : 0.08
             for i in coordinates.indices.dropFirst() {
                 let p = coordinates[i - 1], q = coordinates[i]
                 let before = coordinates[max(0, i - 2)], after = coordinates[min(coordinates.count - 1, i + 1)]
