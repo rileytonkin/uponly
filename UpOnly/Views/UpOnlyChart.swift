@@ -18,24 +18,34 @@ nonisolated struct UpOnlyChartScale {
         guard let minimum = values.min(), let maximum = values.max() else {
             lower = 0; upper = 1; ticks = [0, 0.5, 1]; return
         }
-        var low = includesZero ? min(0, minimum) : minimum
-        var high = includesZero ? max(0, maximum) : maximum
-        let minimumSpan = max(max(abs(low), abs(high)) * 0.04, 0.01)
-        if high - low < minimumSpan {
-            let midpoint = (low + high) / 2
-            low = includesZero && low == 0 ? 0 : midpoint - minimumSpan / 2
-            high = midpoint + minimumSpan / 2
+        var rawLow = includesZero ? min(0, minimum) : minimum
+        var rawHigh = includesZero ? max(0, maximum) : maximum
+        // A near-flat series is widened to 4% of its size so the tick labels stay distinct.
+        let minimumSpan = max(max(abs(rawLow), abs(rawHigh)) * 0.04, 0.01)
+        if rawHigh - rawLow < minimumSpan {
+            let midpoint = (rawLow + rawHigh) / 2
+            rawLow = includesZero && rawLow == 0 ? 0 : midpoint - minimumSpan / 2
+            rawHigh = midpoint + minimumSpan / 2
         }
-        let raw = (high - low) / 2
-        let magnitude = pow(10, floor(log10(raw)))
-        let normalized = raw / magnitude
-        let nice = [1.0, 2, 2.5, 5, 10].first { $0 >= normalized } ?? 10
-        let step = nice * magnitude
-        lower = floor(low / step) * step; upper = ceil(high / step) * step
-        let count = min(6, Int(((upper - lower) / step).rounded()) + 1)
-        let first = lower
-        let allTicks = (0..<count).map { first + Double($0) * step }
-        ticks = allTicks.count > 3 ? [lower, (lower + upper) / 2, upper] : allTicks
+        let span = rawHigh - rawLow
+        // The smallest round step that keeps the gridlines to four, so the top line lands just above the peak
+        // instead of spending a third of the plot on headroom.
+        let magnitude = pow(10, floor(log10(span)) - 1)
+        let candidates = [1.0, 2, 2.5, 5, 10, 20, 25, 50, 100].map { $0 * magnitude }
+        let step = candidates.first { (ceil(rawHigh / $0) - floor(rawLow / $0)) <= 4 } ?? span
+        var high = ceil(rawHigh / step) * step
+        var low = floor(rawLow / step) * step
+        if includesZero, rawLow >= 0 { low = 0 }
+        // A small dip below zero gets a little room, not a whole band.
+        if includesZero, rawLow < 0, abs(rawLow) < step * 0.35 { low = -step * 0.35 }
+        if high == low { high = low + step }
+        if !includesZero, high - rawHigh < step * 0.1 { high += step * 0.2 }
+        lower = low; upper = high
+        var marks: [Double] = []
+        var tick = ceil(low / step) * step
+        while tick <= high + step / 2 { marks.append(tick); tick += step }
+        if includesZero, low < 0, !marks.contains(0) { marks.append(0) }
+        ticks = marks.sorted()
     }
     func fraction(_ value: Decimal) -> Double {
         (NSDecimalNumber(decimal: value).doubleValue - lower) / (upper - lower)
@@ -120,25 +130,23 @@ struct UpOnlyChart: View {
         return max(0, min(visiblePoints.count - 1, Int((location / max(width, 1) * CGFloat(visiblePoints.count - 1)).rounded())))
     }
     private func line(_ run: [Int], width: CGFloat, scale: UpOnlyChartScale) -> Path {
-        let coordinates = run.compactMap { index -> CGPoint? in
+        let pts = run.compactMap { index -> CGPoint? in
             visiblePoints[index].value.map { CGPoint(x: x(index, width: width), y: y($0, scale: scale)) }
         }
-        return Path { path in
-            guard let first = coordinates.first else { return }
-            path.move(to: first)
-            // Match the admin's low-tension line. Clamped controls cannot invent
-            // a higher peak or lower loss between the actual monthly observations.
-            // Daily series get a rounder curve; monthly ones keep a taut line so each point reads as a data point.
-            let tension: CGFloat = coordinates.count > 60 ? 0.3 : 0.08
-            for i in coordinates.indices.dropFirst() {
-                let p = coordinates[i - 1], q = coordinates[i]
-                let before = coordinates[max(0, i - 2)], after = coordinates[min(coordinates.count - 1, i + 1)]
-                let low = min(p.y, q.y), high = max(p.y, q.y)
-                let c1 = CGPoint(x: p.x + (q.x - before.x) * tension, y: min(high, max(low, p.y + (q.y - before.y) * tension)))
-                let c2 = CGPoint(x: q.x - (after.x - p.x) * tension, y: min(high, max(low, q.y - (after.y - p.y) * tension)))
-                path.addCurve(to: q, control1: c1, control2: c2)
-            }
+        var path = Path()
+        guard let first = pts.first else { return path }
+        path.move(to: first)
+        guard pts.count > 1 else { return path }
+        // Cubic through the points with handles at a third of the neighbour distance: the admin Earnings
+        // chart's tension of 0.3. Handles are clamped vertically so the curve never invents a peak or dip.
+        for i in 1..<pts.count {
+            let p0 = pts[max(i - 2, 0)], p1 = pts[i - 1], p2 = pts[i], p3 = pts[min(i + 1, pts.count - 1)]
+            let low = min(p1.y, p2.y), high = max(p1.y, p2.y)
+            let c1 = CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: min(high, max(low, p1.y + (p2.y - p0.y) / 6)))
+            let c2 = CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: min(high, max(low, p2.y - (p3.y - p1.y) / 6)))
+            path.addCurve(to: p2, control1: c1, control2: c2)
         }
+        return path
     }
     private var accessibilitySummary: String {
         session.privacyMode ? "Values hidden" : points.map { "\($0.detailLabel ?? $0.label): \($0.value.map(UpOnlyFormat.exactMoney) ?? "Not reported")" }.joined(separator: ". ")
@@ -163,45 +171,61 @@ struct UpOnlyChart: View {
                 Canvas { context, size in
                     for tick in bounds.ticks where !runs.isEmpty {
                         let yy = y(Decimal(tick), scale: bounds)
-                        var grid = Path(); grid.move(to: CGPoint(x: axisWidth, y: yy)); grid.addLine(to: CGPoint(x: size.width, y: yy))
-                        context.stroke(grid, with: .color(.primary.opacity(tick == 0 && includesZero ? 0.17 : contrast == .increased ? 0.15 : 0.07)), lineWidth: 0.5)
-                        if !session.privacyMode && !runs.isEmpty {
-                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary), at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
+                        var grid = Path(); grid.move(to: CGPoint(x: axisWidth - 4, y: yy)); grid.addLine(to: CGPoint(x: size.width, y: yy))
+                        let zero = tick == 0 && includesZero
+                        context.stroke(grid, with: .color(.primary.opacity(zero ? 0.28 : contrast == .increased ? 0.18 : 0.09)), lineWidth: 1)
+                        if !session.privacyMode {
+                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10, weight: .medium).monospacedDigit()).foregroundStyle(.secondary.opacity(0.85)), at: CGPoint(x: axisWidth - 8, y: yy), anchor: .trailing)
                         }
                     }
                     var plot = context; plot.translateBy(x: axisWidth, y: 0)
+                    let zeroY = includesZero ? y(0, scale: bounds) : plotHeight - 6
+                    let loss = Color(nsColor: .systemRed)
                     for run in runs {
                         guard let first = run.first, let last = run.last else { continue }
-                        if visiblePoints.count == 1, let value = visiblePoints[first].value {
-                            let baseline = includesZero ? y(0, scale: bounds) : plotHeight - 6
-                            let yy = y(value, scale: bounds)
-                            let bar = Path(roundedRect: CGRect(x: 0, y: min(yy, baseline), width: 24, height: max(1, abs(baseline - yy))), cornerRadius: 3)
-                            plot.fill(bar, with: .color(tint.opacity(0.25)))
+                        if run.count == 1, let value = visiblePoints[first].value {
+                            // A lone value is a point, not a bar; the hover shows its figure.
+                            let dot = Path(ellipseIn: CGRect(x: x(first, width: plotWidth) - 3, y: y(value, scale: bounds) - 3, width: 6, height: 6))
+                            plot.fill(dot, with: .color(tint))
+                            continue
                         }
-                        if run.count > 1 {
-                            var area = line(run, width: plotWidth, scale: bounds)
-                            let baseline = includesZero ? y(0, scale: bounds) : plotHeight - 6
-                            area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: baseline)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: baseline)); area.closeSubpath()
-                            plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.14), tint.opacity(0.01)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
-                            // Only the still-provisional tail is dashed. Historical review
-                            // warnings do not turn an entire timeline into dotted noise.
+                        var area = line(run, width: plotWidth, scale: bounds)
+                        area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: zeroY)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: zeroY)); area.closeSubpath()
+                        let stroke = line(run, width: plotWidth, scale: bounds)
+                        if includesZero {
+                            // Above zero green, below red, so the answer is a colour before it is a number.
+                            var above = plot; above.clip(to: Path(CGRect(x: 0, y: 0, width: plotWidth, height: zeroY)))
+                            above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
+                            above.stroke(stroke, with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            var below = plot; below.clip(to: Path(CGRect(x: 0, y: zeroY, width: plotWidth, height: plotHeight - zeroY)))
+                            below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0.02), loss.opacity(0.22)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
+                            below.stroke(stroke, with: .color(loss), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        } else {
+                            plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                            // Only the still-provisional tail is dashed.
                             let provisionalTail = last == visiblePoints.count - 1 && visiblePoints[last].provisional
                             let solid = provisionalTail ? Array(run.dropLast()) : run
                             plot.stroke(line(solid, width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                             if provisionalTail { plot.stroke(line(Array(run.suffix(2)), width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 4])) }
                         }
-                        for index in run where showsAllMarkers || run.count == 1 || visiblePoints.count <= 12 || selected == visiblePoints[index].id || hovered == index {
-                            let isSelected = selected == visiblePoints[index].id
-                            let radius: CGFloat = hovered == index || isSelected ? 4 : visiblePoints.count > 60 ? 1.5 : 2.5
-                            let dot = Path(ellipseIn: CGRect(x: x(index, width: plotWidth) - radius, y: y(visiblePoints[index].value!, scale: bounds) - radius, width: radius * 2, height: radius * 2))
-                            plot.fill(dot, with: .color(tint))
-                            if hovered == index || isSelected { plot.stroke(dot, with: .color(Color(nsColor: .windowBackgroundColor)), lineWidth: 1.5) }
+                        // Points only where they help: a sparse monthly series, the selection, and the hover.
+                        for index in run where visiblePoints.count <= 12 || selected == visiblePoints[index].id || hovered == index {
+                            let value = visiblePoints[index].value!
+                            let isActive = hovered == index || selected == visiblePoints[index].id
+                            let colour = includesZero && value < 0 ? loss : tint
+                            let radius: CGFloat = isActive ? 5.5 : 2.5
+                            let dot = Path(ellipseIn: CGRect(x: x(index, width: plotWidth) - radius, y: y(value, scale: bounds) - radius, width: radius * 2, height: radius * 2))
+                            if isActive {
+                                plot.fill(dot, with: .color(Color(nsColor: .windowBackgroundColor)))
+                                let core = Path(ellipseIn: CGRect(x: x(index, width: plotWidth) - 3.5, y: y(value, scale: bounds) - 3.5, width: 7, height: 7))
+                                plot.fill(core, with: .color(colour))
+                            } else { plot.fill(dot, with: .color(colour)) }
                         }
                     }
                     if let active = hovered ?? visiblePoints.firstIndex(where: { $0.id == selected }), visiblePoints.indices.contains(active) {
                         var crosshair = Path(); let xx = x(active, width: plotWidth)
-                        crosshair.move(to: CGPoint(x: xx, y: 6)); crosshair.addLine(to: CGPoint(x: xx, y: plotHeight - 6))
-                        plot.stroke(crosshair, with: .color(.secondary.opacity(0.35)), style: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                        crosshair.move(to: CGPoint(x: xx, y: 4)); crosshair.addLine(to: CGPoint(x: xx, y: plotHeight - 4))
+                        plot.stroke(crosshair, with: .color(.secondary.opacity(0.35)), lineWidth: 1)
                     }
                 }.frame(height: plotHeight).accessibilityHidden(true)
                 if runs.isEmpty {
