@@ -35,7 +35,7 @@ nonisolated struct UpOnlyChartScale {
         // instead of spending a third of the plot on headroom.
         let magnitude = pow(10, floor(log10(span)) - 1)
         let candidates = [1.0, 2, 2.5, 5, 10, 20, 25, 50, 100].map { $0 * magnitude }
-        let step = candidates.first { (ceil(rawHigh / $0) - floor(rawLow / $0)) <= 4 } ?? span
+        let step = candidates.first { (ceil(rawHigh / $0) - floor(rawLow / $0)) <= 4 } ?? span  // at most five gridlines
         var high = ceil(rawHigh / step) * step
         var low = floor(rawLow / step) * step
         if includesZero, rawLow >= 0 { low = 0 }
@@ -78,7 +78,11 @@ nonisolated enum UpOnlyChartAxis {
         let candidates: [Int]
         if count <= 8 { candidates = Array(widths.indices) }
         else if count <= 12 { candidates = Array(Set(stride(from: 0, to: count - 2, by: 2)).union([count - 1])).sorted() }
-        else { candidates = [0, count / 2, count - 1] }
+        else {
+            // Up to eight evenly spaced labels, like the admin axis's maxTicksLimit; overlaps are dropped below.
+            let step = max(1, Int((Double(count - 1) / 7).rounded(.up)))
+            candidates = Array(Set(stride(from: 0, to: count - 1, by: step)).union([count - 1])).sorted()
+        }
         let ticks = candidates.compactMap { index -> Tick? in
             let width = widths[index]
             guard width <= plotWidth else { return nil }
@@ -140,13 +144,14 @@ struct UpOnlyChart: View {
         guard let first = pts.first else { return path }
         path.move(to: first)
         guard pts.count > 1 else { return path }
-        // Cubic through the points with handles at a third of the neighbour distance: the admin Earnings
-        // chart's tension of 0.3. Handles are clamped vertically so the curve never invents a peak or dip.
+        // The admin Earnings chart's line tension (REPORTING_LINE_TENSION = 0.08): a barely softened line whose
+        // handles are clamped vertically so it never invents a peak or dip between real observations.
+        let tension: CGFloat = 0.08
         for i in 1..<pts.count {
             let p0 = pts[max(i - 2, 0)], p1 = pts[i - 1], p2 = pts[i], p3 = pts[min(i + 1, pts.count - 1)]
             let low = min(p1.y, p2.y), high = max(p1.y, p2.y)
-            let c1 = CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: min(high, max(low, p1.y + (p2.y - p0.y) / 6)))
-            let c2 = CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: min(high, max(low, p2.y - (p3.y - p1.y) / 6)))
+            let c1 = CGPoint(x: p1.x + (p2.x - p0.x) * tension, y: min(high, max(low, p1.y + (p2.y - p0.y) * tension)))
+            let c2 = CGPoint(x: p2.x - (p3.x - p1.x) * tension, y: min(high, max(low, p2.y - (p3.y - p1.y) * tension)))
             path.addCurve(to: p2, control1: c1, control2: c2)
         }
         return path
@@ -175,10 +180,12 @@ struct UpOnlyChart: View {
                     for tick in bounds.ticks where !runs.isEmpty {
                         let yy = y(Decimal(tick), scale: bounds)
                         var grid = Path(); grid.move(to: CGPoint(x: axisWidth - 4, y: yy)); grid.addLine(to: CGPoint(x: size.width, y: yy))
+                        // Gridlines at 4.5% (the admin's rgba(255,255,255,0.045)); the zero line a little firmer on cash-flow charts.
                         let zero = tick == 0 && includesZero
-                        context.stroke(grid, with: .color(.primary.opacity(zero ? 0.28 : contrast == .increased ? 0.18 : 0.09)), lineWidth: 1)
+                        context.stroke(grid, with: .color(.primary.opacity(zero ? 0.2 : contrast == .increased ? 0.14 : 0.06)), lineWidth: 1)
                         if !session.privacyMode {
-                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10, weight: .medium).monospacedDigit()).foregroundStyle(.secondary.opacity(0.85)), at: CGPoint(x: axisWidth - 8, y: yy), anchor: .trailing)
+                            // Axis labels in the series colour at 68%, as the admin chart does.
+                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(tint.opacity(0.68)), at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
                         }
                     }
                     var plot = context; plot.translateBy(x: axisWidth, y: 0)
@@ -203,7 +210,7 @@ struct UpOnlyChart: View {
                             }
                         }
                         for stretch in stretches where stretch.partial && stretch.indices.count > 1 {
-                            plot.stroke(line(stretch.indices, width: plotWidth, scale: bounds), with: .color(tint.opacity(0.55)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [3, 4]))
+                            plot.stroke(line(stretch.indices, width: plotWidth, scale: bounds), with: .color(tint.opacity(0.55)), style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round, dash: [4, 4]))
                         }
                         for stretch in stretches where !stretch.partial && stretch.indices.count > 1 {
                             let run = stretch.indices, first = run[0], last = run[run.count - 1]
@@ -213,39 +220,39 @@ struct UpOnlyChart: View {
                             if includesZero {
                                 // Above zero green, below red, so the answer is a colour before it is a number.
                                 var above = plot; above.clip(to: Path(CGRect(x: 0, y: 0, width: plotWidth, height: zeroY)))
-                                above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
-                                above.stroke(stroke, with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                                above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.19), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
+                                above.stroke(stroke, with: .color(tint), style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
                                 var below = plot; below.clip(to: Path(CGRect(x: 0, y: zeroY, width: plotWidth, height: plotHeight - zeroY)))
-                                below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0.02), loss.opacity(0.22)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
-                                below.stroke(stroke, with: .color(loss), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                                below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0), loss.opacity(0.19)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
+                                below.stroke(stroke, with: .color(loss), style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
                             } else {
-                                plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                                plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.19), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
                                 // Only the still-provisional tail is dashed.
                                 let provisionalTail = last == visiblePoints.count - 1 && visiblePoints[last].provisional
                                 let solid = provisionalTail ? Array(run.dropLast()) : run
-                                plot.stroke(line(solid, width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                                if provisionalTail { plot.stroke(line(Array(run.suffix(2)), width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 4])) }
+                                plot.stroke(line(solid, width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
+                                if provisionalTail { plot.stroke(line(Array(run.suffix(2)), width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2.25, lineCap: .round, dash: [4, 4])) }
                             }
                         }
                         let run = wholeRun
-                        // Points only where they help: a sparse monthly series, the selection, and the hover.
-                        for index in run where visiblePoints.count <= 12 || selected == visiblePoints[index].id || hovered == index {
+                        // Points only when there are ten or fewer values (the admin's showPoints rule), plus the
+                        // selection and the hover: a 5pt dot ringed in the background colour.
+                        let sparse = visiblePoints.filter { $0.value != nil }.count <= 10
+                        for index in run where sparse || selected == visiblePoints[index].id || hovered == index {
                             let value = visiblePoints[index].value!
                             let isActive = hovered == index || selected == visiblePoints[index].id
                             let colour = includesZero && value < 0 ? loss : tint
-                            let radius: CGFloat = isActive ? 5.5 : 2.5
-                            let dot = Path(ellipseIn: CGRect(x: x(index, width: plotWidth) - radius, y: y(value, scale: bounds) - radius, width: radius * 2, height: radius * 2))
-                            if isActive {
-                                plot.fill(dot, with: .color(Color(nsColor: .windowBackgroundColor)))
-                                let core = Path(ellipseIn: CGRect(x: x(index, width: plotWidth) - 3.5, y: y(value, scale: bounds) - 3.5, width: 7, height: 7))
-                                plot.fill(core, with: .color(colour))
-                            } else { plot.fill(dot, with: .color(colour)) }
+                            let radius: CGFloat = isActive ? 5 : 2.5
+                            let centre = CGPoint(x: x(index, width: plotWidth), y: y(value, scale: bounds))
+                            let dot = Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2))
+                            plot.fill(dot, with: .color(colour))
+                            if isActive { plot.stroke(dot, with: .color(Color(nsColor: .windowBackgroundColor)), lineWidth: 2) }
                         }
                     }
                     if let active = hovered ?? visiblePoints.firstIndex(where: { $0.id == selected }), visiblePoints.indices.contains(active) {
                         var crosshair = Path(); let xx = x(active, width: plotWidth)
                         crosshair.move(to: CGPoint(x: xx, y: 4)); crosshair.addLine(to: CGPoint(x: xx, y: plotHeight - 4))
-                        plot.stroke(crosshair, with: .color(.secondary.opacity(0.35)), lineWidth: 1)
+                        plot.stroke(crosshair, with: .color(.primary.opacity(0.18)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     }
                 }.frame(height: plotHeight).accessibilityHidden(true)
                 if runs.isEmpty {
@@ -253,15 +260,15 @@ struct UpOnlyChart: View {
                         .frame(width: plotWidth, height: plotHeight).offset(x: axisWidth)
                 }
                 if let hovered, visiblePoints.indices.contains(hovered) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(visiblePoints[hovered].detailLabel ?? visiblePoints[hovered].label).font(.system(size: 10)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(visiblePoints[hovered].detailLabel ?? visiblePoints[hovered].label).font(.system(size: 10, weight: .medium)).foregroundStyle(Color(red: 0.553, green: 0.553, blue: 0.592))
                         Text(session.privacyMode ? "Value hidden" : visiblePoints[hovered].value.map(UpOnlyFormat.exactMoney) ?? "No observation")
-                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                        if let note = visiblePoints[hovered].note { Text(note).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    }.padding(8).frame(width: 142, alignment: .leading)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.12)))
-                        .offset(x: min(max(axisWidth + x(hovered, width: plotWidth) - 71, axisWidth), max(axisWidth, geometry.size.width - 142)), y: -8)
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit()).foregroundStyle(Color(red: 0.957, green: 0.957, blue: 0.961))
+                        if let note = visiblePoints[hovered].note { Text(note).font(.system(size: 10)).foregroundStyle(Color(red: 0.553, green: 0.553, blue: 0.592)).fixedSize(horizontal: false, vertical: true) }
+                    }.padding(11).frame(width: 150, alignment: .leading)
+                        .background(Color(red: 0.039, green: 0.039, blue: 0.051).opacity(0.94), in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.1)))
+                        .offset(x: min(max(axisWidth + x(hovered, width: plotWidth) - 75, axisWidth), max(axisWidth, geometry.size.width - 150)), y: -8)
                         .allowsHitTesting(false)
                 }
                 Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth, height: plotHeight)
@@ -273,7 +280,7 @@ struct UpOnlyChart: View {
                 ZStack(alignment: .topLeading) {
                     let widths = visiblePoints.map { ($0.label as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 10)]).width }
                     ForEach(UpOnlyChartAxis.ticks(widths: widths, plotWidth: plotWidth)) { tick in
-                        Text(visiblePoints[tick.index].label).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
+                        Text(visiblePoints[tick.index].label).font(.system(size: 10)).foregroundStyle(.primary.opacity(0.34)).fixedSize()
                             .position(x: tick.center, y: 6)
                     }
                 }.frame(width: plotWidth, height: 14).offset(x: axisWidth, y: plotHeight + 6)
