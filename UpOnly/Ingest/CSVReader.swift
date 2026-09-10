@@ -762,7 +762,9 @@ nonisolated enum ImportBatchProcessor {
                             portfolioID = id
                         }
                         else {
-                            guard !document.portfolios.contains(where: { !$0.isArchived && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { throw ImportFailure("This portfolio exists. Select it from the portfolio menu.") }
+                            // Unique within an owner: a personal "Crypto" and a company's "Crypto" are different portfolios.
+                            let owner = input.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
+                            guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { throw ImportFailure("This portfolio exists. Select it from the portfolio menu.") }
                             let portfolio = Portfolio(name: name, createdAt: now, kind: batch.mode.kind, ownerBusinessID: input.ownerBusinessID); next.portfolios.append(portfolio)
                             portfolioID = portfolio.id; createdPortfolios[key] = portfolio.id
                         }
