@@ -463,7 +463,9 @@ final class UpOnlySession {
     func addPortfolio(name: String, ownerBusinessID: String? = nil) async throws {
         let clean = try Self.name(name)
         try await mutate { document in
-            guard !document.portfolios.contains(where: { !$0.isArchived && $0.name.caseInsensitiveCompare(clean) == .orderedSame })
+            // Unique within an owner: a personal portfolio and a company's may share a name.
+            let owner = ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
+            guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame })
             else { throw VaultError.invalidAmount }
             if let ownerBusinessID, !(document.businessAccounting ?? []).contains(where: { $0.id == ownerBusinessID }) { throw VaultError.invalidAmount }
             document.portfolios.append(Portfolio(name: clean, ownerBusinessID: ownerBusinessID)); document.track(.crypto)

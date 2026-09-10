@@ -1143,7 +1143,9 @@ struct UpOnlyEditSheet: View {
             switch editor {
             case .portfolio:
                 let clean = try validName(name, title: "portfolio name")
-                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists. Choose another name.") }
+                // Names only need to be unique within an owner: a personal "Crypto" and Equinox's "Crypto" never share a page.
+                let owner = (ownerBusinessID ?? "").isEmpty ? nil : ownerBusinessID
+                guard session.document?.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID ?? "").nilIfEmpty == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists here. Choose another name.") }
                 try await session.addPortfolio(name: clean, ownerBusinessID: ownerBusinessID)
             case .account:
                 _ = try validName(name, title: "account name"); _ = try validCurrency(); _ = try validAmount(nonnegative: false)
@@ -1180,7 +1182,8 @@ struct UpOnlyEditSheet: View {
                 }
             case .renamePortfolio(let portfolio):
                 let clean = try validName(name, title: "portfolio name")
-                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.id != portfolio.id && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists. Choose another name.") }
+                let owner = (portfolio.ownerBusinessID ?? "").nilIfEmpty
+                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.id != portfolio.id && ($0.ownerBusinessID ?? "").nilIfEmpty == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists here. Choose another name.") }
                 try await session.mutate { doc in
                     if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].name = clean }
                 }
@@ -1252,4 +1255,7 @@ struct UpOnlyOwnerPicker: View {
             }.pickerStyle(.menu).font(.system(size: 12)).accessibilityLabel("Asset owner")
         }
     }
+}
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
