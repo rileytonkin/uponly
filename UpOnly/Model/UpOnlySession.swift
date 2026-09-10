@@ -48,6 +48,7 @@ final class UpOnlySession {
     @ObservationIgnored private var preparedMutation: Task<VaultDocument, Error>?
     private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var backgroundTask: Task<Void, Never>?
+    @ObservationIgnored private var requestWatcher: Task<Void, Never>?
     @ObservationIgnored private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
     private(set) var backgroundCheckedAt: Date?
     private(set) var backgroundIssues: [String] = []
@@ -145,6 +146,7 @@ final class UpOnlySession {
             monitor.start(queue: DispatchQueue(label: "org.uponly.network"))
             networkMonitor = monitor
             startBackgroundRefresh()
+            startRequestWatcher()
         }
         #if UPONLY_FIXTURE
         if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IDLE_LOCK"] == "1" { installLockObservers() }
@@ -1360,6 +1362,25 @@ private final class UpOnlyFixtureWindow: NSWindow {
 
 
 extension UpOnlySession {
+    /// A `refresh.request` file in the support folder asks an unlocked app to repair balance history and refresh
+    /// prices and rates now. It lets a script trigger the same work as the Sources refresh button.
+    private func startRequestWatcher() {
+        requestWatcher?.cancel()
+        requestWatcher = Task { [weak self] in
+            let url = Config.supportDirectory.appendingPathComponent("refresh.request")
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, FileManager.default.fileExists(atPath: url.path) else { continue }
+                guard self.state == .unlocked, !self.isBusy, !self.refreshing else { continue }
+                try? FileManager.default.removeItem(at: url)
+                await self.repairBalanceHistory()
+                #if UPONLY_PERSONAL
+                if self.document?.settings.automaticWise == true { await self.refreshWise() }
+                #endif
+                await self.refreshPrices()
+            }
+        }
+    }
     func startBackgroundRefresh() {
         guard !isFixture else { return }
         backgroundTask?.cancel()
