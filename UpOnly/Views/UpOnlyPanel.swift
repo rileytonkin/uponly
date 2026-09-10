@@ -1162,12 +1162,16 @@ private struct UpOnlyUnlockedPanel: View {
         var byDay: [Date: DailyValuation] = [:]
         for sample in samples { byDay[UTCDay.start(of: sample.utcDay)] = sample }
         var points: [UpOnlyChartPoint] = []
-        var day = UTCDay.start(of: first.utcDay)
         let end = UTCDay.start(of: last.utcDay)
-        while day <= end && points.count < 10000 {
-            let figure = byDay[day].flatMap(value)
-            points.append(UpOnlyChartPoint(id: String(day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(day), value: figure?.0, partial: figure?.1 != nil, note: figure?.1))
-            day = day.addingTimeInterval(86400)
+        // Longer ranges sample the daily series at a coarser step so the line reads as a trend: weekly for a
+        // year or two, monthly for five. The value is the actual figure on that day; the last point is today.
+        let stride = TimeInterval(worthRange.chartStepDays * 86400)
+        var day = worthRange.chartStepDays == 1 ? UTCDay.start(of: first.utcDay) : end
+        var stops: [Date] = []
+        while day >= UTCDay.start(of: first.utcDay) && stops.count < 10000 { stops.append(day); day = day.addingTimeInterval(-stride) }
+        for stop in stops.sorted() {
+            let figure = byDay[stop].flatMap(value)
+            points.append(UpOnlyChartPoint(id: String(stop.timeIntervalSince1970), label: UpOnlyFormat.utcDay(stop), value: figure?.0, partial: figure?.1 != nil, note: figure?.1))
         }
         return points
     }
@@ -1405,5 +1409,9 @@ enum WorthRange: CaseIterable {
     }
     var seconds: TimeInterval {
         switch self { case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .twoYears: 730 * 86400; case .fiveYears: 1826 * 86400 }
+    }
+    /// Days between chart points: daily up to three months, weekly for a year or two, monthly for five.
+    var chartStepDays: Int {
+        switch self { case .month, .quarter: 1; case .year, .twoYears: 7; case .fiveYears: 30 }
     }
 }
