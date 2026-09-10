@@ -1420,13 +1420,13 @@ extension UpOnlySession {
             // `rebuild.request` recomputes every stored day from the earliest asset or balance, in the background.
             let rebuild = Config.supportDirectory.appendingPathComponent("rebuild.request")
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
-                guard let self, self.state == .unlocked, !self.isBusy, !self.refreshing else { continue }
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, self.state == .unlocked, !self.isBusy else { continue }
                 if FileManager.default.fileExists(atPath: rebuild.path) {
                     try? FileManager.default.removeItem(at: rebuild)
                     await self.rebuildAllHistory()
                 }
-                guard FileManager.default.fileExists(atPath: refresh.path) else { continue }
+                guard FileManager.default.fileExists(atPath: refresh.path), !self.refreshing else { continue }
                 try? FileManager.default.removeItem(at: refresh)
                 await self.repairBalanceHistory()
                 #if UPONLY_PERSONAL
