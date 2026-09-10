@@ -6,6 +6,9 @@ struct UpOnlyChartPoint: Identifiable, Equatable {
     var value: Decimal?
     var provisional = false
     var detailLabel: String?
+    /// The value counts only what could be priced that day. Drawn lighter and dashed, with `note` on hover.
+    var partial = false
+    var note: String?
 }
 
 /// Rendering-only scale. Exact money stays Decimal in the ledger and tooltip.
@@ -181,33 +184,50 @@ struct UpOnlyChart: View {
                     var plot = context; plot.translateBy(x: axisWidth, y: 0)
                     let zeroY = includesZero ? y(0, scale: bounds) : plotHeight - 6
                     let loss = Color(nsColor: .systemRed)
-                    for run in runs {
-                        guard let first = run.first, let last = run.last else { continue }
-                        if run.count == 1, let value = visiblePoints[first].value {
+                    for wholeRun in runs {
+                        guard let lone = wholeRun.first else { continue }
+                        if wholeRun.count == 1, let value = visiblePoints[lone].value {
                             // A lone value is a point, not a bar; the hover shows its figure.
-                            let dot = Path(ellipseIn: CGRect(x: x(first, width: plotWidth) - 3, y: y(value, scale: bounds) - 3, width: 6, height: 6))
+                            let dot = Path(ellipseIn: CGRect(x: x(lone, width: plotWidth) - 3, y: y(value, scale: bounds) - 3, width: 6, height: 6))
                             plot.fill(dot, with: .color(tint))
                             continue
                         }
-                        var area = line(run, width: plotWidth, scale: bounds)
-                        area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: zeroY)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: zeroY)); area.closeSubpath()
-                        let stroke = line(run, width: plotWidth, scale: bounds)
-                        if includesZero {
-                            // Above zero green, below red, so the answer is a colour before it is a number.
-                            var above = plot; above.clip(to: Path(CGRect(x: 0, y: 0, width: plotWidth, height: zeroY)))
-                            above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
-                            above.stroke(stroke, with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            var below = plot; below.clip(to: Path(CGRect(x: 0, y: zeroY, width: plotWidth, height: plotHeight - zeroY)))
-                            below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0.02), loss.opacity(0.22)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
-                            below.stroke(stroke, with: .color(loss), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                        } else {
-                            plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
-                            // Only the still-provisional tail is dashed.
-                            let provisionalTail = last == visiblePoints.count - 1 && visiblePoints[last].provisional
-                            let solid = provisionalTail ? Array(run.dropLast()) : run
-                            plot.stroke(line(solid, width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            if provisionalTail { plot.stroke(line(Array(run.suffix(2)), width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 4])) }
+                        // Days that could only be partly valued are drawn dashed and lighter, without fill, so the
+                        // estimate is visible as an estimate. Each stretch shares its boundary point with its neighbour.
+                        var stretches: [(indices: [Int], partial: Bool)] = []
+                        for index in wholeRun {
+                            let partial = visiblePoints[index].partial
+                            if let lastStretch = stretches.last, lastStretch.partial == partial { stretches[stretches.count - 1].indices.append(index) }
+                            else {
+                                if let previous = stretches.last?.indices.last { stretches.append(([previous, index], partial)) } else { stretches.append(([index], partial)) }
+                            }
                         }
+                        for stretch in stretches where stretch.partial && stretch.indices.count > 1 {
+                            plot.stroke(line(stretch.indices, width: plotWidth, scale: bounds), with: .color(tint.opacity(0.55)), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: [3, 4]))
+                        }
+                        for stretch in stretches where !stretch.partial && stretch.indices.count > 1 {
+                            let run = stretch.indices, first = run[0], last = run[run.count - 1]
+                            var area = line(run, width: plotWidth, scale: bounds)
+                            area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: zeroY)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: zeroY)); area.closeSubpath()
+                            let stroke = line(run, width: plotWidth, scale: bounds)
+                            if includesZero {
+                                // Above zero green, below red, so the answer is a colour before it is a number.
+                                var above = plot; above.clip(to: Path(CGRect(x: 0, y: 0, width: plotWidth, height: zeroY)))
+                                above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
+                                above.stroke(stroke, with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                                var below = plot; below.clip(to: Path(CGRect(x: 0, y: zeroY, width: plotWidth, height: plotHeight - zeroY)))
+                                below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0.02), loss.opacity(0.22)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
+                                below.stroke(stroke, with: .color(loss), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            } else {
+                                plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0.02)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                                // Only the still-provisional tail is dashed.
+                                let provisionalTail = last == visiblePoints.count - 1 && visiblePoints[last].provisional
+                                let solid = provisionalTail ? Array(run.dropLast()) : run
+                                plot.stroke(line(solid, width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                                if provisionalTail { plot.stroke(line(Array(run.suffix(2)), width: plotWidth, scale: bounds), with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 4])) }
+                            }
+                        }
+                        let run = wholeRun
                         // Points only where they help: a sparse monthly series, the selection, and the hover.
                         for index in run where visiblePoints.count <= 12 || selected == visiblePoints[index].id || hovered == index {
                             let value = visiblePoints[index].value!
@@ -237,6 +257,7 @@ struct UpOnlyChart: View {
                         Text(visiblePoints[hovered].detailLabel ?? visiblePoints[hovered].label).font(.system(size: 10)).foregroundStyle(.secondary)
                         Text(session.privacyMode ? "Value hidden" : visiblePoints[hovered].value.map(UpOnlyFormat.exactMoney) ?? "No observation")
                             .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        if let note = visiblePoints[hovered].note { Text(note).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     }.padding(8).frame(width: 142, alignment: .leading)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(0.12)))
