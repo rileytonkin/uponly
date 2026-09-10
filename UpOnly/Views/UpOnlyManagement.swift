@@ -313,10 +313,19 @@ private struct UpOnlyManagementContent: View {
     /// A synced profile: currencies with money listed, empty ones summarised in one line.
     private func profileCard(_ first: Account, members: [Account]) -> some View {
         let name = AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first)
-        let rows = members.map { ($0, latestBalance($0)) }
-        let funded = rows.filter { ($0.1?.amount.value ?? 0) != 0 }.sorted { ($0.1?.amount.value ?? 0) > ($1.1?.amount.value ?? 0) }
-        let empty = rows.filter { ($0.1?.amount.value ?? 0) == 0 }
-        let synced = rows.compactMap { $0.1?.observedAt }.max()
+        // Jars merge into their currency: one figure per currency for the whole profile.
+        var byCurrency: [String: (Account, Decimal, Date?)] = [:]
+        for account in members {
+            let observation = latestBalance(account)
+            let amount = observation?.amount.value ?? 0
+            if let existing = byCurrency[account.currency] {
+                byCurrency[account.currency] = (existing.0, existing.1 + amount, [existing.2, observation?.observedAt].compactMap { $0 }.max())
+            } else { byCurrency[account.currency] = (account, amount, observation?.observedAt) }
+        }
+        let rows = byCurrency.values.map { ($0.0, $0.1) }
+        let funded = rows.filter { $0.1 != 0 }.sorted { $0.1 > $1.1 }
+        let empty = rows.filter { $0.1 == 0 }
+        let synced = byCurrency.values.compactMap { $0.2 }.max()
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 12) {
                 UpOnlyProfileImage(data: first.profileImage, name: name, size: 30)
@@ -328,17 +337,17 @@ private struct UpOnlyManagementContent: View {
             }
             ownerLine(first)
             VStack(spacing: 0) {
-                ForEach(funded, id: \.0.id) { account, observation in
+                ForEach(funded, id: \.0.currency) { account, amount in
                     Divider().opacity(0.4)
                     HStack(spacing: 8) {
-                        Text(account.currency + (AssetOwnership.jarName(account).map { " · " + $0 } ?? "")).font(.system(size: 12, weight: .medium))
+                        Text(account.currency).font(.system(size: 12, weight: .medium))
                         Spacer(minLength: 8)
-                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(observation?.amount.value ?? 0, currency: account.currency)).font(.system(size: 13, weight: .medium).monospacedDigit())
+                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(amount, currency: account.currency)).font(.system(size: 13, weight: .medium).monospacedDigit())
                     }.padding(.vertical, 6)
                 }
                 if !empty.isEmpty {
                     Divider().opacity(0.4)
-                    Text((funded.isEmpty ? "No money in " : "Empty: ") + empty.map { $0.0.currency + (AssetOwnership.jarName($0.0).map { " " + $0 } ?? "") }.sorted().joined(separator: ", "))
+                    Text((funded.isEmpty ? "No money in " : "Empty: ") + empty.map(\.0.currency).sorted().joined(separator: ", "))
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
