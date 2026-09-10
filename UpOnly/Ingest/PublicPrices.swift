@@ -164,43 +164,27 @@ nonisolated enum PriceHistory {
                 if let first = (balances + entries).min() { targets.append((.fx, currency, first)) }
             }
         }
-        var result: [PriceHistoryRequest] = [], fxRequests: [PriceHistoryRequest] = []
+        var result: [PriceHistoryRequest] = []
         let accountCurrencies = Set(document.accounts.map(\.currency))
         for (source, identifier, first) in targets {
             let key = (source == .fx ? "fx:" : "asset:") + identifier
             let coverage = (document.priceHistoryCoverage ?? []).filter { $0.key == key && ($0.complete || (!reconnected && now.timeIntervalSince($0.checkedAt) < 6 * 3600)) }.sorted { $0.start < $1.start }
-            if source == .fx {
-                // Every uncovered stretch, split into 90-day chunks. Recent days are what the chart needs first.
-                var cursor = UTCDay.start(of: first)
-                while cursor < end {
-                    if let covering = coverage.first(where: { $0.start <= cursor && $0.end > cursor }) { cursor = covering.end; continue }
-                    let gapEnd = min(end, coverage.first { $0.start > cursor }?.start ?? end, cursor.addingTimeInterval(90 * 86400))
-                    fxRequests.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: cursor, end: gapEnd))
-                    cursor = gapEnd
-                }
-                continue
+            // Every uncovered stretch, split into 90-day chunks.
+            var cursor = UTCDay.start(of: first)
+            while cursor < end {
+                if let covering = coverage.first(where: { $0.start <= cursor && $0.end > cursor }) { cursor = covering.end; continue }
+                let gapEnd = min(end, coverage.first { $0.start > cursor }?.start ?? end, cursor.addingTimeInterval(90 * 86400))
+                result.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: cursor, end: gapEnd))
+                cursor = gapEnd
             }
-            var start = UTCDay.start(of: first)
-            for interval in coverage {
-                if interval.start <= start && interval.end > start { start = interval.end }
-            }
-            guard start < end else { continue }
-            let nextCovered = coverage.first { $0.start > start }?.start ?? end
-            result.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: start, end: min(end, nextCovered, start.addingTimeInterval(90 * 86400))))
         }
-        // Old requests rotate behind untouched assets if an endpoint has persistent gaps.
-        result.sort { a, b in
-            let aa = document.priceHistoryCoverage?.filter { $0.key == a.key }.map(\.checkedAt).max() ?? .distantPast
-            let bb = document.priceHistoryCoverage?.filter { $0.key == b.key }.map(\.checkedAt).max() ?? .distantPast
-            return aa == bb ? a.key < b.key : aa < bb
-        }
-        // Currencies of real accounts before ones that only appear in old entries; newest chunks first.
-        fxRequests.sort { a, b in
-            let ap = accountCurrencies.contains(a.identifier), bp = accountCurrencies.contains(b.identifier)
+        // Recent days are what the chart shows first, so newest chunks go first. Currencies of real accounts
+        // come before ones that only appear in old entries.
+        return result.sorted { a, b in
+            let ap = a.source != .fx || accountCurrencies.contains(a.identifier), bp = b.source != .fx || accountCurrencies.contains(b.identifier)
             if ap != bp { return ap }
-            return a.end == b.end ? a.identifier < b.identifier : a.end > b.end
+            return a.end == b.end ? a.key < b.key : a.end > b.end
         }
-        return result + fxRequests
     }
     static func pricePerGram(_ pricePerOunce: Decimal) throws -> Decimal {
         try MoneyInput.requirePositiveFinite(pricePerOunce)
@@ -343,7 +327,7 @@ extension PublicPrices {
                 guard fxCount < 80 else { continue }
                 fxCount += 1
             } else {
-                guard count < 4 else { continue }
+                guard count < 8 else { continue }
                 if item.source == .metal {
                     if metalCount >= 4 { continue }
                     let last = (document.priceHistoryCoverage ?? []).filter { $0.key.hasPrefix("asset:metal-") }.map(\.checkedAt).max()
