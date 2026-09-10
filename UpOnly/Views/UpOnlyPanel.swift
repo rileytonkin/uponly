@@ -218,7 +218,6 @@ private struct UpOnlyUnlockedPanel: View {
     @State private var worthRange: WorthRange = .year
     @State private var companyChart: CompanyChart = .balance
     @State private var companyFocus: CompanyFocus = .all
-    @State private var showEmptyBalances = false
     enum CompanyChart { case balance, profit }
     /// Net worth is always today's value; the range only sets how much history the chart shows.
     /// Cash flow keeps the month, year or all-time selector.
@@ -989,62 +988,33 @@ private struct UpOnlyUnlockedPanel: View {
                     UpOnlyChart(points: points, tint: UpOnlyTint.netWorth)
                 } else { Text("No history yet for this selection.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
-            // Breakdown. Tapping a row focuses the chart and headline on it; the arrow on a manual account updates its balance.
-            let sorted = bankValues.sorted { ($0.usdValue?.value ?? -1) > ($1.usdValue?.value ?? -1) }
-            let empty = sorted.filter { $0.nativeAmount?.value == 0 && $0.missing == nil }
-            let emptyIDs = Set(empty.map(\.id))
-            let shown = showEmptyBalances ? sorted : sorted.filter { !emptyIDs.contains($0.id) }
+            // Breakdown: one USD line per bank. Tapping a row focuses the chart and headline on it; the pencil on a
+            // manual account updates its balance. Currency detail stays on Manage → Bank accounts.
+            let banks = document.map { BankBalanceGroup.banks(bankValues, document: $0) } ?? []
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("Bank accounts").font(.system(size: 12, weight: .semibold))
-                    Spacer(minLength: 8)
-                    if !empty.isEmpty {
-                        Button(showEmptyBalances ? "Hide empty" : "\(empty.count) empty") { showEmptyBalances.toggle() }
-                            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                }.padding(.bottom, 4)
-                let banks = document.map { BankBalanceGroup.banks(shown, document: $0) } ?? []
+                Text("Bank accounts").font(.system(size: 12, weight: .semibold)).padding(.bottom, 4)
                 ForEach(banks) { bank in
-                    let single = bank.components.count == 1
+                    let ids = Set(bank.components.map(\.id))
+                    let manual = bank.components.count == 1 && document?.accounts.first { $0.id == bank.components[0].id }?.externalProfileID == nil
                     Divider().opacity(0.4)
                     HStack(alignment: .center, spacing: 10) {
                         if let image = bank.image { UpOnlyProfileImage(data: image, name: bank.name, size: 22) }
                         else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 22) }
                         Text(bank.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                        if single, let component = bank.components.first, component.currency != "USD", let native = component.nativeAmount {
+                        if manual, let component = bank.components.first, component.currency != "USD", let native = component.nativeAmount {
                             UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         UpOnlyPrivateText(bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"))
-                            .font(.system(size: 13, weight: single ? .medium : .regular).monospacedDigit()).foregroundStyle(single ? .primary : .secondary).lineLimit(1)
-                        if single, let component = bank.components.first {
-                            let manual = document?.accounts.first { $0.id == component.id }?.externalProfileID == nil
-                            if manual {
-                                Button { if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true } } label: { Image(systemName: "square.and.pencil").font(.system(size: 11)) }
-                                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Update this balance").accessibilityLabel("Update " + component.label + " balance")
-                            }
+                            .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+                        if manual, let component = bank.components.first {
+                            Button { if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true } } label: { Image(systemName: "square.and.pencil").font(.system(size: 11)) }
+                                .buttonStyle(.plain).foregroundStyle(.secondary).help("Update this balance").accessibilityLabel("Update " + component.label + " balance")
                         }
                     }.padding(.vertical, 9).contentShape(Rectangle())
-                        .background(single && companyFocus == .account(bank.components[0].id) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                        .onTapGesture { if single, let component = bank.components.first { companyFocus = companyFocus == .account(component.id) ? .all : .account(component.id) } }
-                    if !single {
-                        ForEach(bank.components, id: \.id) { component in
-                            Button { companyFocus = companyFocus == .account(component.id) ? .all : .account(component.id) } label: {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(component.currency).font(.system(size: 12, weight: .medium)).frame(width: 34, alignment: .leading)
-                                    if component.currency != "USD", let native = component.nativeAmount {
-                                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                    Spacer(minLength: 8)
-                                    UpOnlyPrivateText(component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "fx" ? "Rate needed" : "Add balance"))
-                                        .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
-                                        .foregroundStyle(component.nativeAmount?.value == 0 ? .secondary : .primary)
-                                }.padding(.vertical, 5).padding(.leading, 32).contentShape(Rectangle())
-                                    .background(companyFocus == .account(component.id) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                            }.buttonStyle(.plain).help("Show this balance over time")
-                                .accessibilityLabel(component.label + " balance")
-                        }
-                    }
+                        .background(companyFocus == .bank(ids) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .onTapGesture { companyFocus = companyFocus == .bank(ids) ? .all : .bank(ids) }
+                        .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton)
                 }
                 if !portfolios.isEmpty {
                     Text("Portfolios").font(.system(size: 12, weight: .semibold)).padding(.top, 12).padding(.bottom, 4)
@@ -1079,7 +1049,8 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     // Daily history of just this group's bank balances, from the saved valuations.
-    enum CompanyFocus: Hashable { case all, account(UUID), portfolio(UUID) }
+    /// `.bank` holds every account of one bank (a Wise profile's currencies together), valued as one USD figure.
+    enum CompanyFocus: Hashable { case all, bank(Set<UUID>), portfolio(UUID) }
     /// Holdings in the portfolios a company owns, from a set of valuation components.
     private func companyHoldings(_ components: [ValuationComponent], companyID: String?) -> [ValuationComponent] {
         guard let companyID, let document = session.document else { return [] }
@@ -1091,17 +1062,15 @@ private struct UpOnlyUnlockedPanel: View {
     private func focusedParts(_ parts: [ValuationComponent], companyID: String?) -> [ValuationComponent] {
         switch companyFocus {
         case .all: return parts
-        case .account(let id): return parts.filter { $0.id == id }
+        case .bank(let ids): return parts.filter { ids.contains($0.id) }
         case .portfolio(let portfolioID): return parts.filter { component in session.document?.holdings.first { $0.id == component.id }?.portfolioID == portfolioID }
         }
     }
     private func companyFocusOptions(bankValues: [ValuationComponent], portfolios: [Portfolio]) -> [(focus: CompanyFocus, label: String)] {
         guard let document = session.document else { return [] }
         var options: [(CompanyFocus, String)] = [(.all, "All")]
-        for component in bankValues.sorted(by: { ($0.usdValue?.value ?? -1) > ($1.usdValue?.value ?? -1) }) where component.nativeAmount?.value != 0 {
-            let account = document.accounts.first { $0.id == component.id }
-            let name = account.map { $0.externalProfileID == nil ? $0.name : "Wise " + $0.currency } ?? component.label
-            options.append((.account(component.id), name))
+        for bank in BankBalanceGroup.banks(bankValues, document: document) where (bank.total ?? 0) != 0 {
+            options.append((.bank(Set(bank.components.map(\.id))), bank.name))
         }
         for portfolio in portfolios { options.append((.portfolio(portfolio.id), portfolio.name)) }
         return options.map { (focus: $0.0, label: $0.1) }
