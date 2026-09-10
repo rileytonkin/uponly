@@ -50,7 +50,6 @@ final class UpOnlySession {
     @ObservationIgnored private var backgroundTask: Task<Void, Never>?
     @ObservationIgnored private var requestWatcher: Task<Void, Never>?
     @ObservationIgnored private var historyRebuildTask: Task<Void, Never>?
-    @ObservationIgnored private var historyRebuildFrom: Date?
     /// True while past days are being recomputed in the background.
     private(set) var historyRebuilding = false
     @ObservationIgnored private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
@@ -371,6 +370,10 @@ final class UpOnlySession {
         if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < UTCDay.start(of: now) { backdated = min(backdated ?? tracked, tracked) }
         // Past days are rebuilt afterwards in short background chunks, newest first, so saving never waits on years of history.
         let rebuilt = backdated.map { $0 < UTCDay.start(of: now) } ?? false
+        if rebuilt, let backdated {
+            let from = min(next.pendingHistoryRebuild?.from ?? backdated, UTCDay.start(of: backdated))
+            next.pendingHistoryRebuild = PendingHistoryRebuild(from: from, cursor: now)
+        }
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
         for scope in scopes {
             next = NetWorthCalculator.recordingSample(
@@ -381,27 +384,31 @@ final class UpOnlySession {
         try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
         guard token == sessionToken else { throw VaultError.locked }
         publish(next)
-        if rebuilt, let backdated { scheduleHistoryRebuild(from: backdated) }
+        if rebuilt { scheduleHistoryRebuild() }
     }
-    /// Recomputes stored daily values from `start` in 45-day chunks, newest first, each saved on its own so the
-    /// interface stays responsive and the chart fills in progressively. Fetches history prices once finished.
-    private func scheduleHistoryRebuild(from start: Date) {
-        historyRebuildFrom = min(historyRebuildFrom ?? start, start)
-        guard historyRebuildTask == nil else { return }
+    /// Recomputes stored daily values in 45-day chunks, newest first, each saved on its own so the interface stays
+    /// responsive and the chart fills in progressively. Progress lives in the vault, so a relaunch resumes.
+    /// Fetches history prices first, so rebuilt days can be valued on the first pass, and again once finished.
+    func scheduleHistoryRebuild() {
+        guard historyRebuildTask == nil, document?.pendingHistoryRebuild != nil else { return }
         historyRebuilding = true
         historyRebuildTask = Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.historyRebuildTask = nil; self?.historyRebuilding = false } }
-            // Prices and rates first, newest chunks first, so the rebuilt days can be valued on the first pass.
             await self?.refreshPrices()
-            var cursor = Date()
-            while let self, self.state == .unlocked, let from = self.historyRebuildFrom, cursor > from {
+            while let self, self.state == .unlocked, let pending = self.document?.pendingHistoryRebuild {
                 if self.isBusy { try? await Task.sleep(for: .seconds(1)); continue }
-                let chunkStart = max(UTCDay.start(of: from), UTCDay.start(of: cursor).addingTimeInterval(-45 * 86400))
-                let chunkEnd = cursor
-                do { try await self.mutatePrepared { HoldingMutations.rebuildHistory(from: chunkStart, to: chunkEnd, document: $0, now: Date()) } }
-                catch { break }
-                cursor = chunkStart
-                if cursor <= UTCDay.start(of: from) { self.historyRebuildFrom = nil }
+                let from = UTCDay.start(of: pending.from)
+                let chunkStart = max(from, UTCDay.start(of: pending.cursor).addingTimeInterval(-45 * 86400))
+                let chunkEnd = pending.cursor
+                do {
+                    try await self.mutatePrepared { document in
+                        var next = HoldingMutations.rebuildHistory(from: chunkStart, to: chunkEnd, document: document, now: Date())
+                        // A save during the rebuild may have pushed the start further back; keep the earlier of the two.
+                        let latest = next.pendingHistoryRebuild ?? pending
+                        next.pendingHistoryRebuild = chunkStart <= UTCDay.start(of: latest.from) ? nil : PendingHistoryRebuild(from: latest.from, cursor: chunkStart)
+                        return next
+                    }
+                } catch { break }
             }
             guard let self, self.state == .unlocked else { return }
             await self.refreshPrices(); _ = self.writeDiagnostics()
@@ -1089,6 +1096,7 @@ extension UpOnlySession {
                 if self.document?.entries.contains(where: { $0.source == .wise && $0.day == nil }) == true { await self.refreshWise() }
                 #endif
                 await self.repairBalanceHistory()
+                self.scheduleHistoryRebuild()
                 await self.refreshPrices(automatic: true)
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
@@ -1178,7 +1186,10 @@ extension UpOnlySession {
             let line = "complete=\(sample.isComplete) components=\(sample.components.count) missing=[\(missing)]"
             if line != previous { lines.append("  \(day.string(from: sample.utcDay)) " + line); previous = line }
         }
-        lines.append("  … \(samples.count) samples total; a line is printed only when the state changes")
+        let days = Dictionary(grouping: samples) { UTCDay.start(of: $0.utcDay) }
+        let completeDays = days.values.filter { $0.contains(where: \.isComplete) }.count
+        lines.append("  … \(samples.count) samples over \(days.count) days; \(completeDays) days have a complete value, \(days.count - completeDays) do not; a line is printed only when the state changes")
+        lines.append("pending rebuild: " + (doc.pendingHistoryRebuild.map { day.string(from: $0.from) + " .. " + day.string(from: $0.cursor) } ?? "none"))
         let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
         do { try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8); return "Written to " + url.path }
         catch { return "Could not write: " + error.localizedDescription }
@@ -1405,12 +1416,18 @@ extension UpOnlySession {
     private func startRequestWatcher() {
         requestWatcher?.cancel()
         requestWatcher = Task { [weak self] in
-            let url = Config.supportDirectory.appendingPathComponent("refresh.request")
+            let refresh = Config.supportDirectory.appendingPathComponent("refresh.request")
+            // `rebuild.request` recomputes every stored day from the earliest asset or balance, in the background.
+            let rebuild = Config.supportDirectory.appendingPathComponent("rebuild.request")
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
-                guard let self, FileManager.default.fileExists(atPath: url.path) else { continue }
-                guard self.state == .unlocked, !self.isBusy, !self.refreshing else { continue }
-                try? FileManager.default.removeItem(at: url)
+                guard let self, self.state == .unlocked, !self.isBusy, !self.refreshing else { continue }
+                if FileManager.default.fileExists(atPath: rebuild.path) {
+                    try? FileManager.default.removeItem(at: rebuild)
+                    await self.rebuildAllHistory()
+                }
+                guard FileManager.default.fileExists(atPath: refresh.path) else { continue }
+                try? FileManager.default.removeItem(at: refresh)
                 await self.repairBalanceHistory()
                 #if UPONLY_PERSONAL
                 if self.document?.settings.automaticWise == true { await self.refreshWise() }
@@ -1418,6 +1435,15 @@ extension UpOnlySession {
                 await self.refreshPrices()
             }
         }
+    }
+    /// Marks every stored day for recomputation, from the earliest holding or balance, and starts the background rebuild.
+    func rebuildAllHistory() async {
+        guard state == .unlocked, let doc = document else { return }
+        let earliest = (doc.holdings.map(\.createdAt) + doc.bankBalances.map(\.observedAt)).min() ?? Date()
+        try? await mutate { document in
+            document.pendingHistoryRebuild = PendingHistoryRebuild(from: UTCDay.start(of: earliest), cursor: Date())
+        }
+        scheduleHistoryRebuild()
     }
     func startBackgroundRefresh() {
         guard !isFixture else { return }
