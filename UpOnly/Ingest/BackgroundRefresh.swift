@@ -74,6 +74,12 @@ actor BackgroundRefreshSchedule {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path(root, source: source).path)
     }
     func failed(vaultID: UUID, root: URL, source: String = "banks") -> Bool { record(vaultID: vaultID, root: root, source: source)?.failed == true }
+    /// Forgets the last attempt so a changed key or newly enabled source is tried straight away.
+    func reset(vaultID: UUID, root: URL, sources: [String]) {
+        for source in sources where record(vaultID: vaultID, root: root, source: source) != nil {
+            try? FileManager.default.removeItem(at: path(root, source: source))
+        }
+    }
 }
 nonisolated struct BackgroundPacket: Codable, Sendable {
     var source: String

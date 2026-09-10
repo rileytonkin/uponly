@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import Observation
 import UniformTypeIdentifiers
 import SwiftUI
@@ -17,6 +18,8 @@ final class UpOnlySession {
     private(set) var sessionToken = UUID()
     var message: String?
     private(set) var fxIssues: [String: String] = [:]
+    /// Last manual or scheduled update's problem per price source ("crypto", "metals", "fx"), cleared on success.
+    private(set) var sourceIssues: [String: String] = [:]
     var destination = 0
     var addingInMenu = false
     var managementInMenu = false
@@ -45,10 +48,16 @@ final class UpOnlySession {
     @ObservationIgnored private var preparedMutation: Task<VaultDocument, Error>?
     private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var backgroundTask: Task<Void, Never>?
+    @ObservationIgnored private var requestWatcher: Task<Void, Never>?
+    @ObservationIgnored private var historyRebuildTask: Task<Void, Never>?
+    /// True while past days are being recomputed in the background.
+    private(set) var historyRebuilding = false
     @ObservationIgnored private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
     private(set) var backgroundCheckedAt: Date?
     private(set) var backgroundIssues: [String] = []
     private var priceRequest: Task<PriceUpdate, Error>?
+    /// True while `priceRequest` is a scheduled catch-up, which a manual refresh may pre-empt.
+    private var priceRequestIsAutomatic = false
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
     private var networkAvailable = true
     private var catalogRequest: Task<[CatalogCoin], Error>?
@@ -77,10 +86,9 @@ final class UpOnlySession {
     private var pickerDepth = 0
     @ObservationIgnored private var activeFilePanel: NSSavePanel?
     var filePickerIsOpen: Bool { pickerDepth > 0 }
-    var menuStaysOpen: Bool {
-        filePickerIsOpen || (state == .unlocked && importDraft != nil &&
-            (addingInMenu || (managementInMenu && managementSection == "Add your info")))
-    }
+    /// True while the statement drop zone is on screen, so a drag from Finder does not dismiss the menu.
+    var dropZoneVisible = false
+    var menuStaysOpen: Bool { filePickerIsOpen || (state == .unlocked && dropZoneVisible) }
     func focusFilePicker() {
         NSApp.activate(ignoringOtherApps: true)
         activeFilePanel?.makeKeyAndOrderFront(nil)
@@ -141,6 +149,7 @@ final class UpOnlySession {
             monitor.start(queue: DispatchQueue(label: "org.uponly.network"))
             networkMonitor = monitor
             startBackgroundRefresh()
+            startRequestWatcher()
         }
         #if UPONLY_FIXTURE
         if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IDLE_LOCK"] == "1" { installLockObservers() }
@@ -343,17 +352,27 @@ final class UpOnlySession {
     private func persist(_ proposed: VaultDocument, replacing current: VaultSession, token: UUID) async throws {
         guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
         var next = proposed
-        let addedAccount = next.accounts.contains { account in !current.document.accounts.contains { $0.id == account.id } }
-        next.reviewedMonths.removeAll { month in
-            addedAccount || current.document.entries.filter { $0.month == month } != next.entries.filter { $0.month == month }
+        // A confirmed month reopens only when its figures change: a row added, removed, re-amounted or re-typed.
+        // Learning a row's day, a relabel from a sync, or a new empty account is not a reason to ask again.
+        func ledger(_ entries: [Entry], _ month: String) -> [String] {
+            entries.filter { $0.month == month }.map { $0.id.uuidString + "|" + $0.kind.rawValue + "|" + $0.bucket.rawValue + "|" + $0.currency + "|" + NSDecimalNumber(decimal: $0.amount).stringValue }.sorted()
         }
+        next.reviewedMonths.removeAll { month in ledger(current.document.entries, month) != ledger(next.entries, month) }
         let now = Date()
         // A backdated quantity changes past days; recompute them away from the main actor.
-        let backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
-        if let backdated, backdated < UTCDay.start(of: now) {
-            let proposed = next
-            next = await Task.detached(priority: .userInitiated) { HoldingMutations.rebuildHistory(from: backdated, document: proposed, now: now) }.value
-            guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+        var backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
+        // New or removed balance observations dated before today also change past days.
+        let previousBalances = Set(current.document.bankBalances.map(\.id)), nextBalances = Set(next.bankBalances.map(\.id))
+        let changedBalanceDays = current.document.bankBalances.filter { !nextBalances.contains($0.id) }.map(\.observedAt)
+            + next.bankBalances.filter { !previousBalances.contains($0.id) }.map(\.observedAt)
+        if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
+        // Backdated tracking makes an account count on earlier days, so those days change too.
+        if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < UTCDay.start(of: now) { backdated = min(backdated ?? tracked, tracked) }
+        // Past days are rebuilt afterwards in short background chunks, newest first, so saving never waits on years of history.
+        let rebuilt = backdated.map { $0 < UTCDay.start(of: now) } ?? false
+        if rebuilt, let backdated {
+            let from = min(next.pendingHistoryRebuild?.from ?? backdated, UTCDay.start(of: backdated))
+            next.pendingHistoryRebuild = PendingHistoryRebuild(from: from, cursor: now)
         }
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
         for scope in scopes {
@@ -365,6 +384,44 @@ final class UpOnlySession {
         try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
         guard token == sessionToken else { throw VaultError.locked }
         publish(next)
+        if rebuilt { scheduleHistoryRebuild() }
+    }
+    /// Recomputes stored daily values in 45-day chunks, newest first, each saved on its own so the interface stays
+    /// responsive and the chart fills in progressively. Progress lives in the vault, so a relaunch resumes.
+    /// Fetches history prices first, so rebuilt days can be valued on the first pass, and again once finished.
+    func scheduleHistoryRebuild() {
+        guard historyRebuildTask == nil, document?.pendingHistoryRebuild != nil else { return }
+        historyRebuilding = true
+        historyRebuildTask = Task { [weak self] in
+            defer { Task { @MainActor [weak self] in self?.historyRebuildTask = nil; self?.historyRebuilding = false } }
+            await self?.refreshPrices()
+            while let self, self.state == .unlocked, let pending = self.document?.pendingHistoryRebuild {
+                if self.isBusy { try? await Task.sleep(for: .seconds(1)); continue }
+                let from = UTCDay.start(of: pending.from)
+                let chunkStart = max(from, UTCDay.start(of: pending.cursor).addingTimeInterval(-45 * 86400))
+                let chunkEnd = pending.cursor
+                do {
+                    try await self.mutatePrepared { document in
+                        var next = HoldingMutations.rebuildHistory(from: chunkStart, to: chunkEnd, document: document, now: Date())
+                        // A save during the rebuild may have pushed the start further back; keep the earlier of the two.
+                        let latest = next.pendingHistoryRebuild ?? pending
+                        next.pendingHistoryRebuild = chunkStart <= UTCDay.start(of: latest.from) ? nil : PendingHistoryRebuild(from: latest.from, cursor: chunkStart)
+                        return next
+                    }
+                } catch { break }
+            }
+            guard let self, self.state == .unlocked else { return }
+            await self.refreshPrices(); _ = self.writeDiagnostics()
+        }
+    }
+    /// Re-runs balance reconstruction for every account so tracking and derived series match the current rules.
+    func repairBalanceHistory() async {
+        guard state == .unlocked, !isBusy, let doc = document else { return }
+        let ids = Set(doc.accounts.filter { account in doc.bankBalances.contains { $0.accountID == account.id } }.map(\.id))
+        guard !ids.isEmpty else { return }
+        var changed = false
+        try? await mutate { document in changed = BalanceReconstruction.apply(accountIDs: ids, to: &document) != nil }
+        _ = changed
     }
 
     private func mutatePrepared(_ prepare: @escaping @Sendable (VaultDocument) throws -> VaultDocument) async throws {
@@ -406,7 +463,9 @@ final class UpOnlySession {
     func addPortfolio(name: String, ownerBusinessID: String? = nil) async throws {
         let clean = try Self.name(name)
         try await mutate { document in
-            guard !document.portfolios.contains(where: { !$0.isArchived && $0.name.caseInsensitiveCompare(clean) == .orderedSame })
+            // Unique within an owner: a personal portfolio and a company's may share a name.
+            let owner = ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
+            guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame })
             else { throw VaultError.invalidAmount }
             if let ownerBusinessID, !(document.businessAccounting ?? []).contains(where: { $0.id == ownerBusinessID }) { throw VaultError.invalidAmount }
             document.portfolios.append(Portfolio(name: clean, ownerBusinessID: ownerBusinessID)); document.track(.crypto)
@@ -474,6 +533,7 @@ final class UpOnlySession {
     }
     func surfaceOpened() { financeSurfaces += 1; handleActivity() }
     func surfaceClosed() {
+        dropZoneVisible = false
         financeSurfaces = max(0, financeSurfaces - 1)
         // Dismissing a popover keeps the vault available for the remaining idle period.
         if financeSurfaces == 0, authenticationContext != nil { lock() }
@@ -1033,13 +1093,27 @@ extension UpOnlySession {
                 guard let self, self.state == .unlocked else { return }
                 await self.configureBackground()
                 await self.applyBackgroundCache()
+                #if UPONLY_PERSONAL
+                // Wise rows saved before days were kept need one sync to rebuild their balance history.
+                if self.document?.entries.contains(where: { $0.source == .wise && $0.day == nil }) == true { await self.refreshWise() }
+                #endif
+                await self.repairBalanceHistory()
+                self.scheduleHistoryRebuild()
                 await self.refreshPrices(automatic: true)
                 do { try await Task.sleep(for: .seconds(15 * 60)) } catch { return }
             }
         }
     }
-    func refreshPrices(reconnected: Bool = false, automatic: Bool = false) async {
-        guard state == .unlocked, !refreshing, priceRequest == nil, !isFixture, let doc = document else { return }
+    func refreshPrices(reconnected: Bool = false, automatic: Bool = false, round: Int = 0) async {
+        let log = Logger(subsystem: "org.uponly", category: "prices")
+        // A manual refresh takes over from a scheduled catch-up instead of silently doing nothing.
+        if !automatic, priceRequestIsAutomatic, let running = priceRequest { running.cancel(); priceRequest = nil; priceRequestIsAutomatic = false; log.notice("manual refresh pre-empted scheduled catch-up") }
+        guard state == .unlocked, !refreshing, priceRequest == nil, !isFixture, let doc = document else {
+            log.notice("refresh skipped automatic=\(automatic) unlocked=\(self.state == .unlocked) refreshing=\(self.refreshing) pending=\(self.priceRequest != nil)")
+            return
+        }
+        let activeHoldings = doc.holdings.filter { $0.isActive(at: Date()) && doc.portfolio(id: $0.portfolioID)?.isActive(at: Date()) == true }
+        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices) metals=\(doc.settings.automaticMetals) fx=\(doc.settings.automaticFX) keyLength=\(doc.settings.coinGeckoKey.count) holdings=\(doc.holdings.count) active=\(activeHoldings.count) portfolios=\(doc.portfolios.count)")
         let token = sessionToken, revision = sourceRevision
         if automatic {
             guard priceRequest == nil,
@@ -1050,27 +1124,77 @@ extension UpOnlySession {
             sourceMessage = "Updating prices and checking for missed history…"
         }
         fxIssues = [:]
-        defer { if token == sessionToken, revision == sourceRevision { refreshing = false; priceRequest = nil } }
+        var mine: Task<PriceUpdate, Error>?
+        // Only the refresh that owns the current request clears it; a pre-empted catch-up must not clobber its replacement.
+        defer { if token == sessionToken, revision == sourceRevision, priceRequest == mine { refreshing = false; priceRequest = nil; priceRequestIsAutomatic = false } }
         do {
-            let request = Task.detached(priority: .utility) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
-            priceRequest = request
+            let request = Task.detached(priority: automatic ? .utility : .userInitiated) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
+            priceRequest = request; priceRequestIsAutomatic = automatic; mine = request
             let update = try await request.value
-            guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
+            log.notice("refresh result quotes=\(update.quotes.count) rates=\(update.rates.count) messages=\(update.messages.joined(separator: " | "), privacy: .public) issues=\(update.sourceIssues.values.joined(separator: " | "), privacy: .public)")
+            guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { log.notice("refresh result discarded: session changed or cancelled"); return }
             if !update.quotes.isEmpty || !update.rates.isEmpty || !update.coverage.isEmpty {
                 try await commitPriceUpdate(update)
             }
             guard token == sessionToken, revision == sourceRevision else { return }
             if !automatic { sourceMessage = update.messages.isEmpty ? "Updated " + Date().formatted(date: .omitted, time: .shortened) : update.messages.joined(separator: "\n") }
             fxIssues = update.fxIssues
+            if !automatic {
+                sourceIssues = update.sourceIssues
+                // A successful manual update supersedes an earlier background failure for that source.
+                for (source, issue) in [("Crypto", "crypto"), ("Metals", "metals"), ("Exchange rates", "fx")] where update.sourceIssues[issue] == nil {
+                    backgroundIssues.removeAll { $0 == source || $0.lowercased().hasPrefix(issue + " ") }
+                }
+                // Keep going while history is still queued, instead of leaving gaps until the next hourly slot.
+                if round < 6, update.messages.contains(where: { $0.hasPrefix("More price history is queued") }) {
+                    Task { [weak self] in await self?.refreshPrices(round: round + 1) }
+                } else { _ = writeDiagnostics() }
+            }
         } catch {
+            log.error("refresh failed: \(String(describing: error), privacy: .public)")
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled {
                 let issue = (error as? PriceError)?.localizedDescription ?? "Prices could not be saved. Your saved observations are unchanged; catch-up will retry."
-                if !automatic { sourceMessage = issue }
+                if !automatic { sourceMessage = issue; sourceIssues = ["crypto": issue, "metals": issue, "fx": issue] }
                 if doc.settings.automaticFX {
                     fxIssues = Dictionary(uniqueKeysWithValues: Set(doc.accounts.map(\.currency) + doc.entries.map(\.currency)).subtracting(["USD"]).map { ($0, issue) })
                 }
             }
         }
+    }
+    /// A structural summary of the vault for debugging chart gaps. Names and dates only; no amounts.
+    func writeDiagnostics() -> String {
+        guard let doc = document else { return "Unlock first." }
+        let day = BalanceReconstruction.dayFormatter()
+        var lines: [String] = ["generated \(Date())"]
+        lines.append("accounts:")
+        for account in doc.accounts {
+            let balances = doc.bankBalances.filter { $0.accountID == account.id }
+            let derived = balances.filter { $0.source == BalanceReconstruction.source }
+            let entries = doc.entries.filter { $0.accountID == account.id || (account.externalProfileID != nil && $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix("wise:" + account.externalProfileID! + ":") == true) }
+            let tracking = doc.bankTracking.filter { $0.accountID == account.id }.sorted { $0.ordinal < $1.ordinal }.map { ($0.tracked ? "on " : "off ") + day.string(from: $0.effectiveAt) }
+            lines.append("  \(account.name) [\(account.currency)] profile=\(account.externalProfileID ?? "-") balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
+        }
+        lines.append("fx:")
+        for currency in Set(doc.fx.map(\.sourceCurrency)).sorted() {
+            let days = Set(doc.fx.filter { $0.sourceCurrency == currency }.map { day.string(from: UTCDay.start(of: $0.providerTime)) })
+            lines.append("  \(currency) days=\(days.count) first=\(days.min() ?? "-") last=\(days.max() ?? "-")")
+        }
+        lines.append("coverage: " + (doc.priceHistoryCoverage ?? []).map { $0.key + " " + day.string(from: $0.start) + ".." + day.string(from: $0.end) + ($0.complete ? " ok" : " partial") }.joined(separator: " | "))
+        lines.append("daily valuations (allTracked, last 300 days):")
+        let samples = doc.dailyValuations.filter { $0.scope == .allTracked && $0.utcDay > Date().addingTimeInterval(-300 * 86400) }.sorted { $0.utcDay < $1.utcDay }
+        var previous = ""
+        for sample in samples {
+            let missing = sample.components.filter { $0.missing != nil }.map { $0.label + ":" + ($0.missing ?? "") }.sorted().joined(separator: ",")
+            let line = "complete=\(sample.isComplete) components=\(sample.components.count) missing=[\(missing)]"
+            if line != previous { lines.append("  \(day.string(from: sample.utcDay)) " + line); previous = line }
+        }
+        let days = Dictionary(grouping: samples) { UTCDay.start(of: $0.utcDay) }
+        let completeDays = days.values.filter { $0.contains(where: \.isComplete) }.count
+        lines.append("  … \(samples.count) samples over \(days.count) days; \(completeDays) days have a complete value, \(days.count - completeDays) do not; a line is printed only when the state changes")
+        lines.append("pending rebuild: " + (doc.pendingHistoryRebuild.map { day.string(from: $0.from) + " .. " + day.string(from: $0.cursor) } ?? "none"))
+        let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
+        do { try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8); return "Written to " + url.path }
+        catch { return "Could not write: " + error.localizedDescription }
     }
     func commitPriceUpdate(_ update: PriceUpdate) async throws {
         try await mutatePrepared { current in try PriceHistory.applying(update, to: current, now: Date()) }
@@ -1119,6 +1243,20 @@ extension UpOnlySession {
             scheduleRefresh()
         } catch { message = "Exchange rates could not be enabled. Please try again." }
     }
+    /// Replaces the catalog with ranked search hits for `query`. Cheap enough to run as the user types.
+    func searchCatalog(_ query: String) async {
+        guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard clean.count >= 2 else { return }
+        let token = sessionToken, revision = sourceRevision
+        catalogRequest?.cancel()
+        let request = Task { try await PublicPrices.searchCoins(clean, key: settings.automaticPrices ? settings.coinGeckoKey : "") }
+        catalogRequest = request
+        guard let coins = try? await request.value, token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
+        var merged = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
+        for coin in coins { merged[coin.id] = coin }
+        catalog = Array(merged.values)
+    }
     func loadCatalog() async {
         // The public coin list needs no key; a Demo key is used when present.
         guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
@@ -1145,17 +1283,25 @@ extension UpOnlySession {
         try validateSourceKey(key, prices: prices)
         try validateSourceKey(metalKey ?? "", prices: false)
         resetSourceWork()
-        defer { if state == .unlocked { scheduleRefresh() } }
-        try await mutate { doc in
-            #if UPONLY_PERSONAL
-            if let wise { doc.settings.automaticWise = wise }
-            #endif
-            doc.settings.automaticPrices = prices
-            doc.settings.automaticFX = fx
-            doc.settings.coinGeckoKey = key
-            if let metals { doc.settings.automaticMetals = metals }
-            if let metalKey { doc.settings.metalHistoryKey = metalKey }
-            doc.priceHistoryCoverage?.removeAll { !$0.complete }
+        do {
+            try await mutate { doc in
+                #if UPONLY_PERSONAL
+                if let wise { doc.settings.automaticWise = wise }
+                #endif
+                doc.settings.automaticPrices = prices
+                doc.settings.automaticFX = fx
+                doc.settings.coinGeckoKey = key
+                if let metals { doc.settings.automaticMetals = metals }
+                if let metalKey { doc.settings.metalHistoryKey = metalKey }
+                doc.priceHistoryCoverage?.removeAll { !$0.complete }
+            }
+        } catch { if state == .unlocked { scheduleRefresh() }; throw error }
+        // Fetch current prices and rates first so the source shows data, then start the scheduled loop.
+        guard state == .unlocked else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            if prices || fx || metals == true { await self.refreshPrices() }
+            if self.state == .unlocked { self.scheduleRefresh() }
         }
     }
     func completeSetup(tracked: [TrackedKind], prices: Bool, fx: Bool, key: String, metals: Bool = false, metalKey: String = "") async throws {
@@ -1267,6 +1413,40 @@ private final class UpOnlyFixtureWindow: NSWindow {
 
 
 extension UpOnlySession {
+    /// A `refresh.request` file in the support folder asks an unlocked app to repair balance history and refresh
+    /// prices and rates now. It lets a script trigger the same work as the Sources refresh button.
+    private func startRequestWatcher() {
+        requestWatcher?.cancel()
+        requestWatcher = Task { [weak self] in
+            let refresh = Config.supportDirectory.appendingPathComponent("refresh.request")
+            // `rebuild.request` recomputes every stored day from the earliest asset or balance, in the background.
+            let rebuild = Config.supportDirectory.appendingPathComponent("rebuild.request")
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, self.state == .unlocked, !self.isBusy else { continue }
+                if FileManager.default.fileExists(atPath: rebuild.path) {
+                    try? FileManager.default.removeItem(at: rebuild)
+                    await self.rebuildAllHistory()
+                }
+                guard FileManager.default.fileExists(atPath: refresh.path), !self.refreshing else { continue }
+                try? FileManager.default.removeItem(at: refresh)
+                await self.repairBalanceHistory()
+                #if UPONLY_PERSONAL
+                if self.document?.settings.automaticWise == true { await self.refreshWise() }
+                #endif
+                await self.refreshPrices()
+            }
+        }
+    }
+    /// Marks every stored day for recomputation, from the earliest holding or balance, and starts the background rebuild.
+    func rebuildAllHistory() async {
+        guard state == .unlocked, let doc = document else { return }
+        let earliest = (doc.holdings.map(\.createdAt) + doc.bankBalances.map(\.observedAt)).min() ?? Date()
+        try? await mutate { document in
+            document.pendingHistoryRebuild = PendingHistoryRebuild(from: UTCDay.start(of: earliest), cursor: Date())
+        }
+        scheduleHistoryRebuild()
+    }
     func startBackgroundRefresh() {
         guard !isFixture else { return }
         backgroundTask?.cancel()
@@ -1316,6 +1496,13 @@ extension UpOnlySession {
             guard token == sessionToken, state == .unlocked else { return }
             if config != saved {
                 let next = config
+                // Sources whose settings changed are fetched again now rather than after their usual interval.
+                var changed: [String] = []
+                if saved?.pricesEnabled != next.pricesEnabled || saved?.coinGeckoKey != next.coinGeckoKey || saved?.crypto != next.crypto { changed.append("crypto") }
+                if saved?.fxEnabled != next.fxEnabled || saved?.currencies != next.currencies { changed.append("fx") }
+                if saved?.metalsEnabled != next.metalsEnabled || saved?.metals != next.metals { changed.append("metals") }
+                let root = Config.supportDirectory, vaultID = doc.vaultID
+                await BackgroundRefreshSchedule.shared.reset(vaultID: vaultID, root: root, sources: changed)
                 try await Task.detached(priority: .utility) { try next.save() }.value
                 if token == sessionToken, state == .unlocked { startBackgroundRefresh() }
             }

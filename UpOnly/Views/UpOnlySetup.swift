@@ -13,14 +13,20 @@ struct UpOnlyPageHeader: View {
     var backLabel = "Back"
     var profileImage: Data?
     let back: () -> Void
+    var subtitle: String?
+    var trailing: AnyView?
     var body: some View {
         HStack(spacing: 12) {
             Button(action: back) { Label("Back", systemImage: "chevron.left") }
                 .buttonStyle(.glass).accessibilityLabel(backLabel)
             if let profileImage { UpOnlyProfileImage(data: profileImage, name: title, size: 24) }
-            Text(title).font(.system(size: 14, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 14, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let subtitle { Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
             Spacer(minLength: 0)
+            if let trailing { trailing }
         }.controlSize(.regular).frame(minHeight: 32)
     }
 }
@@ -226,6 +232,73 @@ struct UpOnlySettingsCard<Content: View>: View {
     }
 }
 
+/// Whether a live source is actually delivering data, not just switched on.
+struct UpOnlySourceStatus: View {
+    enum Kind { case wise, crypto, metals, fx }
+    let kind: Kind
+    let savedOn: Bool
+    /// How often the source updates on its own, shown under the status.
+    var interval = "Updates every hour"
+    /// Runs a manual update; nil hides the button.
+    var refresh: (() -> Void)?
+    var refreshDisabled = false
+    @Environment(UpOnlySession.self) private var session
+    private var lastUpdate: Date? {
+        guard let doc = session.document else { return nil }
+        switch kind {
+        case .wise: return doc.bankBalances.filter { $0.source == "Wise" }.map(\.observedAt).max()
+        case .crypto: return doc.quotes.filter { $0.provider.hasPrefix("CoinGecko") }.map(\.fetchedAt).max()
+        case .metals: return doc.quotes.filter { $0.provider.hasPrefix("Gold API") }.map(\.fetchedAt).max()
+        case .fx: return doc.fx.filter { $0.provider.hasPrefix("Frankfurter") }.map(\.fetchedAt).max()
+        }
+    }
+    private var problem: String? {
+        switch kind {
+        case .wise:
+            #if UPONLY_PERSONAL
+            if let error = session.wiseError { return error }
+            #endif
+            return session.backgroundIssues.contains("Bank balances") ? "The last background sync failed." : nil
+        case .crypto: return session.sourceIssues["crypto"] ?? (session.backgroundIssues.contains(where: { $0.hasPrefix("Crypto") }) ? "The last price update failed." : nil)
+        case .metals: return session.sourceIssues["metals"] ?? (session.backgroundIssues.contains(where: { $0.hasPrefix("Metals") }) ? "The last price update failed." : nil)
+        case .fx: return session.sourceIssues["fx"] ?? (session.backgroundIssues.contains(where: { $0.hasPrefix("Exchange rates") }) ? "The last rate update failed." : nil)
+        }
+    }
+    private var busy: Bool {
+        #if UPONLY_PERSONAL
+        if kind == .wise { return session.wiseRefreshing }
+        #endif
+        return session.refreshing
+    }
+    var body: some View {
+        let last = lastUpdate
+        let stale = last.map { Date().timeIntervalSince($0) > (kind == .wise ? 36 : 3) * 3600 } ?? true
+        let (color, text): (Color, String) = {
+            if !savedOn { return (.secondary, "Off") }
+            if busy { return (.secondary, "Updating…") }
+            if let problem { return (Color(nsColor: .systemRed), "Not receiving data. " + problem) }
+            guard let last else { return (Color(nsColor: .systemOrange), "Waiting for first data") }
+            let when = last.formatted(.relative(presentation: .named))
+            return stale ? (Color(nsColor: .systemOrange), "Last data " + when) : (UpOnlyTint.cashFlow, "Connected · updated " + when)
+        }()
+        return HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Circle().fill(color).frame(width: 7, height: 7).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(text).font(.system(size: 12)).foregroundStyle(savedOn ? .primary : .secondary).fixedSize(horizontal: false, vertical: true)
+                    if savedOn { Text(interval).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                }
+            }.accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
+            if savedOn, let refresh {
+                Button(action: refresh) { Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold)) }
+                    .buttonStyle(.bordered).controlSize(.small).disabled(refreshDisabled || busy)
+                    .help("Update now").accessibilityLabel("Update now")
+            }
+        }
+    }
+}
+
 struct UpOnlySources: View {
     @Binding var pendingChanges: Bool
     @Environment(UpOnlySession.self) private var session
@@ -236,6 +309,7 @@ struct UpOnlySources: View {
     @State private var metalKey = ""
     @State private var key = ""
     @State private var message: String?
+    @State private var loaded = false
     private var showsCrypto: Bool { session.document?.shows(.crypto) == true }
     private var showsFX: Bool { session.document?.shows(.banks) == true || session.document?.shows(.cashFlow) == true }
     private var hasChanges: Bool {
@@ -254,6 +328,9 @@ struct UpOnlySources: View {
                                symbol: "building.columns.fill", tint: UpOnlyTint.netWorth,
                                isOn: $wise,
                                controlDisabled: session.isBusy) {
+                UpOnlySourceStatus(kind: .wise, savedOn: session.document?.settings.automaticWise == true, interval: "Updates every 12 hours",
+                                   refresh: { Task { await session.refreshWise() } },
+                                   refreshDisabled: session.isBusy || session.document?.settings.automaticWise != true)
                 HStack(alignment: .top, spacing: 16) {
                     ForEach(session.wiseProfiles) { profile in
                         VStack(spacing: 7) {
@@ -262,15 +339,6 @@ struct UpOnlySources: View {
                         }.frame(maxWidth: .infinity)
                     }
                 }.padding(.vertical, 3)
-                if wise {
-                Divider().opacity(0.5)
-                UpOnlyFlow(spacing: 12) {
-                    Button { Task { await session.refreshWise() } } label: {
-                        Label("Sync now", systemImage: "arrow.clockwise")
-                    }.disabled(hasChanges || session.wiseRefreshing || session.isBusy || session.document?.settings.automaticWise != true)
-                    Text("Updates automatically every 12 hours").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                }
                 if let message = session.wiseMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 DisclosureGroup("About your Wise connection") {
                     Text("Balances come directly from Wise. Completed transactions are kept up to date, with transfers between your linked profiles excluded from cash flow. Review other transfers in Transactions.")
@@ -282,11 +350,19 @@ struct UpOnlySources: View {
                 UpOnlySettingsCard(title: "Crypto prices", subtitle: "Current USD prices for the coins you track.",
                                    symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, isOn: $prices,
                                    controlDisabled: session.isBusy) {
+                    UpOnlySourceStatus(kind: .crypto, savedOn: session.document?.settings.automaticPrices == true, interval: "Updates every hour",
+                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if prices {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("CoinGecko Demo API key").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder)
-                            Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { save() }
+                            UpOnlyFlow(spacing: 8) {
+                                if key != session.document?.settings.coinGeckoKey {
+                                    Button("Save key") { save() }.buttonStyle(.glassProminent).controlSize(.small)
+                                        .disabled(session.isBusy || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                                Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            }
                         }
                     }
                     DisclosureGroup("What CoinGecko receives") {
@@ -297,17 +373,21 @@ struct UpOnlySources: View {
             }
             if session.document?.shows(.metals) == true {
                 UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals, controlDisabled: session.isBusy) {
-                    Text("Current prices need no API key.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    UpOnlySourceStatus(kind: .metals, savedOn: session.document?.settings.automaticMetals == true, interval: "Updates every hour",
+                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if metals {
-                        DisclosureGroup("Price history") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                SecureField("Gold API history key", text: $metalKey).textFieldStyle(.roundedBorder)
-                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).buttonStyle(.bordered)
-                                Text("A key fills gaps after time offline. Your weights and storage locations stay private.")
-                                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }.padding(.top, 8)
-                        }.font(.system(size: 12))
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Gold API history key (optional)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder).onSubmit { save() }
+                            UpOnlyFlow(spacing: 8) {
+                                if metalKey != session.document?.settings.metalHistoryKey {
+                                    Button("Save key") { save() }.buttonStyle(.glassProminent).controlSize(.small).disabled(session.isBusy)
+                                }
+                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                            }
+                            Text("Live prices need no key and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
+                                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
             }
@@ -315,6 +395,17 @@ struct UpOnlySources: View {
                 UpOnlySettingsCard(title: "Exchange rates", subtitle: "Convert your balances and cash flow to USD.",
                                    symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.cashFlow, isOn: $fx,
                                    controlDisabled: session.isBusy) {
+                    UpOnlySourceStatus(kind: .fx, savedOn: session.document?.settings.automaticFX == true, interval: "Updates every 15 minutes",
+                                       refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
+                    if let doc = session.document, doc.settings.automaticFX {
+                        // Daily history is what lets past days be valued; show how much of it is here.
+                        let currencies = Set(doc.accounts.map(\.currency) + doc.entries.map(\.currency)).subtracting(["USD"]).sorted()
+                        ForEach(currencies, id: \.self) { currency in
+                            let days = Set(doc.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.map { UTCDay.start(of: $0.providerTime) })
+                            Text(currency + ": " + (days.isEmpty ? "no daily rates yet" : "\(days.count) daily rates since " + UpOnlyFormat.utcDay(days.min()!)))
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
                     DisclosureGroup("About exchange rates") {
                         Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Historical entries need a rate dated near the end of their month.")
                             .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
@@ -332,12 +423,25 @@ struct UpOnlySources: View {
         }.task(id: message) {
             if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
         }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
+        // Switches save themselves. Keys save on Return or with Save key, since a half-typed key must not be stored.
+        .onChange(of: wise) { if loaded { save() } }
+        .onChange(of: fx) { if loaded { save() } }
+        .onChange(of: metals) { if loaded { save() } }
+        .onChange(of: prices) { _, on in if loaded, !on || !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { save() } }
         .onAppear {
             if let settings = session.document?.settings {
                 #if UPONLY_PERSONAL
                 wise = settings.automaticWise
                 #endif
                 prices = settings.automaticPrices; fx = settings.automaticFX; key = settings.coinGeckoKey; metals = settings.automaticMetals; metalKey = settings.metalHistoryKey }
+            Task { @MainActor in loaded = true }
+        }
+    }
+    private func save() {
+        guard hasChanges, !(prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) else { return }
+        Task {
+            do { try await session.saveSources(prices: prices, fx: fx, key: key, metals: metals, metalKey: metalKey, wise: wise); message = "Changes saved." }
+            catch { message = error.localizedDescription }
         }
     }
     @ViewBuilder private var sourceActions: some View {
@@ -349,9 +453,6 @@ struct UpOnlySources: View {
                         catch { message = error.localizedDescription }
                     } }.buttonStyle(.glassProminent)
                         .disabled(session.isBusy || !hasChanges || (prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                    } else if session.document?.settings.automaticPrices == true || session.document?.settings.automaticFX == true || session.document?.settings.automaticMetals == true {
-                    Button(session.refreshing ? "Refreshing…" : "Refresh prices and rates") { Task { await session.refreshPrices() } }
-                        .disabled(hasChanges || session.refreshing || session.isBusy || (session.document?.settings.automaticPrices != true && session.document?.settings.automaticFX != true && session.document?.settings.automaticMetals != true))
                     }
                 }.padding(.top, 4)
             } else {

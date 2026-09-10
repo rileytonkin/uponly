@@ -62,8 +62,9 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
         let personal = scope == .all || scope == .personal
         let books = scope == .personal ? [] : document.businessAccounting ?? []
         let selectedBooks = books.filter { scope == .all || scope == .business($0.id) }
+        // Net worth is always today's value, so missing prices and balances are judged for today.
         return DataAttention.evaluate(document, months: months, includePersonal: personal,
-                                      books: selectedBooks, valuationAt: selectedInterval().end)
+                                      books: selectedBooks, valuationAt: nil)
     }
     var chartHistory: [(month: MonthKey, net: Decimal?, settled: Bool)] {
         switch period {
@@ -222,6 +223,8 @@ struct DataAttention {
     var balances: [Account] = []
     var quantities: [Holding] = []
     var pricesNeeded = false
+    /// What exactly cannot be valued today, e.g. "Bitcoin (price)" or "Monzo (GBP rate)".
+    var missingPriceLabels: [String] = []
     var accountingNames: [String] = []
     var count: Int {
         (spendingMonths.isEmpty ? 0 : 1) + (balances.isEmpty ? 0 : 1)
@@ -251,8 +254,11 @@ struct DataAttention {
         }
         let valuation = NetWorthCalculator.value(at: assetDate, scope: .allTracked, document: document, now: now)
         result.pricesNeeded = valuation.missing.contains { ["quote", "fx"].contains($0.reason) }
+        result.missingPriceLabels = valuation.components.filter { $0.missing == "quote" || $0.missing == "fx" }
+            .map { $0.label + ($0.missing == "fx" ? " (" + $0.currency + " rate)" : " (price)") }.sorted()
+        // The current month's accounting is naturally unfinished; only closed months count as incomplete.
         result.accountingNames = books.filter { book in
-            selected.contains { month in
+            selected.filter { $0 < .current() }.contains { month in
                 month.description >= book.firstMonth &&
                 (!book.months.contains { $0.month == month.description } || book.ownership(at: month.description) == nil)
             }

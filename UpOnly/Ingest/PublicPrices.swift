@@ -4,6 +4,8 @@ nonisolated struct CatalogCoin: Codable, Identifiable, Sendable, Hashable {
     var id: String
     var symbol: String
     var name: String
+    /// CoinGecko market-cap rank when known; lower is bigger.
+    var rank: Int?
 }
 nonisolated enum PriceError: LocalizedError {
     case unavailable, invalidResponse, credentials, metalCredentials, rateLimited
@@ -48,6 +50,17 @@ nonisolated enum PublicPrices {
             guard data.count < limit else { throw PriceError.invalidResponse }; data.append(byte)
         }
         return data
+    }
+    /// CoinGecko's search endpoint: a few hundred kilobytes at most, ranked by market cap, instead of the whole 16 MB coin list.
+    static func searchCoins(_ query: String, key: String) async throws -> [CatalogCoin] {
+        struct Hit: Decodable { var id: String; var name: String; var symbol: String; var market_cap_rank: Int? }
+        struct Response: Decodable { var coins: [Hit] }
+        let data = try await request(host: "api.coingecko.com", path: "/api/v3/search", query: [URLQueryItem(name: "query", value: query)], key: key)
+        let hits = try JSONDecoder().decode(Response.self, from: data).coins
+        var seen = Set<String>()
+        return hits.filter { hit in
+            (try? MoneyInput.canonicalAssetID(hit.id)) == hit.id && !hit.name.isEmpty && hit.name.count <= 150 && hit.symbol.count <= 30 && seen.insert(hit.id).inserted
+        }.map { CatalogCoin(id: $0.id, symbol: $0.symbol, name: $0.name, rank: $0.market_cap_rank) }
     }
     static func catalog(key: String) async throws -> [CatalogCoin] {
         let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/list", query: [], key: key, limit: 16 * 1024 * 1024)
@@ -139,6 +152,8 @@ nonisolated struct PriceUpdate: Codable, Sendable {
     var coverage: [PriceHistoryCoverage] = []
     var messages: [String] = []
     var fxIssues: [String: String] = [:]
+    /// Per-source problems from the last update, keyed "crypto", "metals" or "fx", for the Sources page.
+    var sourceIssues: [String: String] = [:]
 }
 nonisolated enum PriceHistory {
     static func requests(document: VaultDocument, now: Date, reconnected: Bool = false) -> [PriceHistoryRequest] {
@@ -163,22 +178,25 @@ nonisolated enum PriceHistory {
             }
         }
         var result: [PriceHistoryRequest] = []
+        let accountCurrencies = Set(document.accounts.map(\.currency))
         for (source, identifier, first) in targets {
             let key = (source == .fx ? "fx:" : "asset:") + identifier
             let coverage = (document.priceHistoryCoverage ?? []).filter { $0.key == key && ($0.complete || (!reconnected && now.timeIntervalSince($0.checkedAt) < 6 * 3600)) }.sorted { $0.start < $1.start }
-            var start = UTCDay.start(of: first)
-            for interval in coverage {
-                if interval.start <= start && interval.end > start { start = interval.end }
+            // Every uncovered stretch, split into 90-day chunks.
+            var cursor = UTCDay.start(of: first)
+            while cursor < end {
+                if let covering = coverage.first(where: { $0.start <= cursor && $0.end > cursor }) { cursor = covering.end; continue }
+                let gapEnd = min(end, coverage.first { $0.start > cursor }?.start ?? end, cursor.addingTimeInterval(90 * 86400))
+                result.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: cursor, end: gapEnd))
+                cursor = gapEnd
             }
-            guard start < end else { continue }
-            let nextCovered = coverage.first { $0.start > start }?.start ?? end
-            result.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: start, end: min(end, nextCovered, start.addingTimeInterval(90 * 86400))))
         }
-        // Old requests rotate behind untouched assets if an endpoint has persistent gaps.
+        // Recent days are what the chart shows first, so newest chunks go first. Currencies of real accounts
+        // come before ones that only appear in old entries.
         return result.sorted { a, b in
-            let aa = document.priceHistoryCoverage?.filter { $0.key == a.key }.map(\.checkedAt).max() ?? .distantPast
-            let bb = document.priceHistoryCoverage?.filter { $0.key == b.key }.map(\.checkedAt).max() ?? .distantPast
-            return aa == bb ? a.key < b.key : aa < bb
+            let ap = a.source != .fx || accountCurrencies.contains(a.identifier), bp = b.source != .fx || accountCurrencies.contains(b.identifier)
+            if ap != bp { return ap }
+            return a.end == b.end ? a.key < b.key : a.end > b.end
         }
     }
     static func pricePerGram(_ pricePerOunce: Decimal) throws -> Decimal {
@@ -280,9 +298,15 @@ extension PublicPrices {
         let crypto = active.filter { PreciousMetal.asset($0.assetID) == nil }.map { $0.assetID.rawValue }
         let metals = Set(active.compactMap { PreciousMetal.asset($0.assetID) })
         func message(_ error: Error) -> String { (error as? PriceError)?.localizedDescription ?? "A price source is unavailable. Missing history will be retried." }
+        if includeCurrent && document.settings.automaticPrices && crypto.isEmpty { result.sourceIssues["crypto"] = "No coins are tracked yet. Add a crypto holding under Manage." }
+        if includeCurrent && document.settings.automaticMetals && metals.isEmpty { result.sourceIssues["metals"] = "No gold or silver is tracked yet. Add a holding under Manage." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
-            do { result.quotes += try await quotes(ids: crypto, key: document.settings.coinGeckoKey) }
-            catch { try Task.checkCancellation(); result.messages.append(message(error)) }
+            do {
+                let quotes = try await quotes(ids: crypto, key: document.settings.coinGeckoKey)
+                result.quotes += quotes
+                let missing = Set(crypto).subtracting(quotes.map(\.assetID.rawValue)).sorted()
+                if !missing.isEmpty { result.sourceIssues["crypto"] = "CoinGecko has no price for " + missing.joined(separator: ", ") + ". Check the coin ID matches CoinGecko's." }
+            } catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["crypto"] = message(error) }
         }
         if includeCurrent && document.settings.automaticMetals {
             for metal in metals.sorted(by: { $0.rawValue < $1.rawValue }) {
@@ -290,7 +314,7 @@ extension PublicPrices {
                     try await Task.sleep(for: .seconds(1.1))
                     let data = try await request(host: "api.gold-api.com", path: "/price/" + metal.rawValue, query: [])
                     result.quotes.append(try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: now))
-                } catch { try Task.checkCancellation(); result.messages.append(message(error)) }
+                } catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["metals"] = message(error) }
             }
             if !metals.isEmpty && document.settings.metalHistoryKey.isEmpty { result.messages.append("Add a free Gold API key in Sources to recover metal price history after time offline.") }
         }
@@ -299,7 +323,7 @@ extension PublicPrices {
                 let update = try await fx(currencies: Set(document.accounts.map(\.currency) + document.entries.map(\.currency)))
                 result.rates += update.rates; result.messages += update.messages; result.fxIssues = update.fxIssues
             }
-            catch { try Task.checkCancellation(); result.messages.append(message(error)) }
+            catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["fx"] = message(error) }
         }
         // Monthly personal performance needs its dated FX immediately; do not
         // queue years of month-end rates behind unrelated asset history.
@@ -308,16 +332,23 @@ extension PublicPrices {
         result.messages += historicalFX.messages
         result.fxIssues.merge(historicalFX.fxIssues) { _, latest in latest }
         let pending = PriceHistory.requests(document: document, now: now, reconnected: reconnected)
-        var count = 0, metalCount = 0
-        for item in pending where count < 4 {
-            // At most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
-            if item.source == .metal {
-                if metalCount >= 4 { continue }
-                let last = (document.priceHistoryCoverage ?? []).filter { $0.key.hasPrefix("asset:metal-") }.map(\.checkedAt).max()
-                if let last, now.timeIntervalSince(last) < 3600 { continue }
-                metalCount += 1
+        var count = 0, metalCount = 0, fxCount = 0
+        for item in pending {
+            // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
+            // Prices stay at four calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
+            if item.source == .fx {
+                guard fxCount < 80 else { continue }
+                fxCount += 1
+            } else {
+                guard count < 8 else { continue }
+                if item.source == .metal {
+                    if metalCount >= 4 { continue }
+                    let last = (document.priceHistoryCoverage ?? []).filter { $0.key.hasPrefix("asset:metal-") }.map(\.checkedAt).max()
+                    if let last, now.timeIntervalSince(last) < 3600 { continue }
+                    metalCount += 1
+                }
+                count += 1
             }
-            count += 1
             do {
                 try Task.checkCancellation()
                 let observations: [Date]
@@ -349,7 +380,7 @@ extension PublicPrices {
                 result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false))
             }
         }
-        if pending.count > count { result.messages.append("More price history is queued for the next refresh.") }
+        if pending.count > count + fxCount { result.messages.append("More price history is queued for the next refresh.") }
         if document.settings.automaticPrices && document.holdings.contains(where: { PreciousMetal.asset($0.assetID) == nil && $0.createdAt < now.addingTimeInterval(-365 * 86400) }) {
             result.messages.append("CoinGecko Demo can recover the past 365 days. Previously saved older observations remain available.")
         }
@@ -391,6 +422,10 @@ nonisolated struct WiseBalance: Codable, Sendable {
     var id: Int64
     var currency: String
     var amount: WiseAmount
+    /// "STANDARD" for the main balance, "SAVINGS" for a jar. Optional so older fixtures decode.
+    var type: String?
+    /// A jar's name; the main balance has none.
+    var name: String?
 }
 nonisolated struct WiseActivity: Codable, Sendable {
     struct Resource: Codable, Sendable { var type: String; var id: String }
@@ -441,7 +476,8 @@ nonisolated enum WiseAPI {
         var profiles: [WiseProfileSnapshot] = []
         for profile in connection.profiles {
             try Task.checkCancellation()
-            let balanceData = try await request(path: "/v4/profiles/\(profile.id)/balances", query: [URLQueryItem(name: "types", value: "STANDARD")], token: connection.token)
+            // Jars (SAVINGS) hold money too; leaving them out understates the company's cash.
+            let balanceData = try await request(path: "/v4/profiles/\(profile.id)/balances", query: [URLQueryItem(name: "types", value: "STANDARD,SAVINGS")], token: connection.token)
             let balances = try JSONDecoder().decode([WiseBalance].self, from: balanceData)
             var activities: [WiseActivity] = [], cursor: String?, cursors = Set<String>(), complete = false
             for _ in 0..<200 {
@@ -494,7 +530,8 @@ nonisolated enum WiseAPI {
                 if let index = next.accounts.firstIndex(where: { $0.externalProfileID == profileID && $0.externalBalanceID == externalBalance }) {
                     accountID = next.accounts[index].id; next.accounts[index].profileImage = item.profile.image
                 } else {
-                    var account = Account(name: item.profile.name + " · " + currency, currency: currency)
+                    let jar = balance.type == "SAVINGS" ? (balance.name ?? "Jar") : nil
+                    var account = Account(name: item.profile.name + " · " + currency + (jar.map { " · " + $0 } ?? ""), currency: currency)
                     account.ownerBusinessID = next.accounts.first { $0.externalProfileID == profileID }?.ownerBusinessID
                     account.externalProfileID = profileID; account.externalBalanceID = externalBalance; account.profileImage = item.profile.image
                     next.accounts.append(account); accountID = account.id
@@ -534,13 +571,18 @@ nonisolated enum WiseAPI {
                     // Retain explicit user classification while refreshing provider amounts/status.
                     next.entries[index].amount = amount; next.entries[index].currency = recorded.currency
                     next.entries[index].month = month.description; next.entries[index].label = label
+                    next.entries[index].day = ImportDateFormat.today(date); next.entries[index].outflow = !income
                     if next.entries[index].kindIsUserEdited != true { next.entries[index].kind = kind }
                 } else {
-                    next.entries.append(Entry(month: month, bucket: item.profile.bucket, kind: kind, amount: amount, currency: recorded.currency, label: label.isEmpty ? "Wise transaction" : label, source: .wise, sourceRef: reference))
+                    var entry = Entry(month: month, bucket: item.profile.bucket, kind: kind, amount: amount, currency: recorded.currency, label: label.isEmpty ? "Wise transaction" : label, source: .wise, sourceRef: reference)
+                    entry.day = ImportDateFormat.today(date); entry.outflow = !income
+                    next.entries.append(entry)
                 }
             }
         }
         next.track(.banks); if next.entries.contains(where: { $0.source == .wise }) { next.track(.cashFlow) }
+        // Synced balances anchor a day-by-day history rebuilt from the activity list.
+        _ = BalanceReconstruction.apply(accountIDs: Set(next.accounts.filter { $0.externalProfileID != nil }.map(\.id)), to: &next, now: snapshot.fetchedAt)
         return next
     }
 }
