@@ -72,6 +72,7 @@ private struct UpOnlyManagementContent: View {
     @State private var entryMonth = ""
     @State private var entryProfile = ""
     @State private var entryAccount = ""
+    @State private var diagnosticsMessage: String?
     @State private var entryLimit = 100
     private var hasGuidedHeader: Bool {
         guard editor == nil, session.managementSection == "Add your info" else { return false }
@@ -83,7 +84,7 @@ private struct UpOnlyManagementContent: View {
         VStack(spacing: 0) {
             if !hasGuidedHeader {
             UpOnlyPageHeader(title: editor?.title ?? pageTitle,
-                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) || session.importReturnsHome ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage") {
+                backLabel: editor != nil ? "Cancel editing" : ["Manage", "Needs attention"].contains(session.managementSection) || session.importReturnsHome ? "Back to overview" : returnToReview ? "Back to review data" : "Back to manage", back: {
                 if discardSources { discardSources = false }
                 else if archive != nil { archive = nil }
                 else if entryToRemove != nil { entryToRemove = nil }
@@ -93,7 +94,7 @@ private struct UpOnlyManagementContent: View {
                 else if ["Manage", "Needs attention"].contains(session.managementSection) { session.managementInMenu = false }
                 else if returnToReview { session.managementSection = "Needs attention" }
                 else { session.managementSection = "Manage" }
-            }.padding(UpOnlyLayout.inset)
+            }, subtitle: editor == nil ? pageSubtitle : nil, trailing: editor == nil ? headerTrailing : nil).padding(UpOnlyLayout.inset)
             Divider()
             }
             if let portfolio = archive {
@@ -164,8 +165,36 @@ private struct UpOnlyManagementContent: View {
         .onChange(of: session.requestedRateCurrency) { _, currency in if currency != nil { editor = .exchangeRate } }
     }
     private func shows(_ kind: TrackedKind) -> Bool { session.document?.shows(kind) == true }
+    /// Months whose spending still needs confirming. When there are any, the attention page is titled by month.
+    private var reviewMonths: [MonthKey] {
+        guard session.managementSection == "Needs attention", let document = session.document else { return [] }
+        return session.monthModel?.attention(in: document, includePerformance: session.attentionIncludesPerformance || session.destination == 0).spendingMonths ?? []
+    }
+    private var reviewMonth: MonthKey? {
+        let months = reviewMonths
+        guard !months.isEmpty else { return nil }
+        return months.first { $0.description == session.entryMonthForManagement } ?? months.last
+    }
+    private var pageSubtitle: String? {
+        guard let month = reviewMonth else { return nil }
+        return month == .current() ? "Still in progress" : "Is this month complete?"
+    }
+    private var headerTrailing: AnyView? {
+        let months = reviewMonths
+        guard months.count > 1, let current = reviewMonth else { return nil }
+        return AnyView(Menu {
+            ForEach(months.reversed(), id: \.self) { item in
+                Button { session.entryMonthForManagement = item.description } label: {
+                    if item == current { Label(item.title, systemImage: "checkmark") } else { Text(item.title) }
+                }
+            }
+        } label: {
+            Label("Month", systemImage: "chevron.up.chevron.down").labelStyle(.iconOnly).font(.system(size: 10, weight: .semibold))
+        }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review"))
+    }
     private var pageTitle: String {
-        switch session.managementSection {
+        if let month = reviewMonth { return month.title }
+        return switch session.managementSection {
         case "Entries": "Transactions"
         case "Needs attention": "Needs attention"
         case "Portfolios": "Crypto"
@@ -213,50 +242,116 @@ private struct UpOnlyManagementContent: View {
         } }
     }
     private var accounts: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if session.document?.accounts.isEmpty == true {
+        let all = session.document?.accounts ?? []
+        // Synced Wise currencies fold into one card per profile; manual accounts keep their own card.
+        var order: [String] = [], groups: [String: [Account]] = [:]
+        for account in all {
+            let key = account.externalProfileID.map { "wise:" + $0 } ?? account.id.uuidString
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(account)
+        }
+        return VStack(alignment: .leading, spacing: 12) {
+            if all.isEmpty {
                 managementEmpty("No accounts yet", detail: "Add a balance or import a statement to begin.", symbol: "building.columns")
             }
-            ForEach(session.document?.accounts ?? []) { account in
-                HStack(alignment: .top, spacing: 14) {
-                    if account.profileImage != nil { UpOnlyProfileImage(data: account.profileImage, name: account.name, size: 30) }
-                    else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 30) }
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(account.name).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                        if let observation = session.document?.bankBalances.filter({ $0.accountID == account.id }).max(by: { $0.observedAt < $1.observedAt }) {
-                            UpOnlyPrivateText(UpOnlyFormat.currencyMoney(observation.amount.value, currency: account.currency))
-                                .font(.system(size: 18, weight: .medium).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
-                            Text(observation.observedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        } else { Text("Balance needed").font(.system(size: 12)).foregroundStyle(.secondary) }
-                        if let document = session.document, let owner = AssetOwnership.businessID(for: account, in: document) {
-                            Text("Owner: " + (document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable"))
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        if session.document?.isBankTracked(account.id, at: Date()) == false {
-                            Text("Outside net worth").font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    VStack(alignment: .trailing, spacing: 8) {
-                        Button("Update") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
-                            .controlSize(.small).accessibilityLabel("Update balance for " + account.name)
-                        Menu {
-                            Button("Rename…") { editor = .renameAccount(account) }
-                            Button("Import statement…") { session.startImport(.statements, accountID: account.id) }
-                            Menu("Owner") {
-                                Button("Personal") { setAccountOwner(account, owner: "") }
-                                ForEach(session.document?.businessAccounting ?? []) { book in
-                                    Button(book.name) { setAccountOwner(account, owner: book.id) }
-                                }
-                            }
-                            Toggle("Include in net worth", isOn: Binding(get: { session.document?.isBankTracked(account.id, at: Date()) ?? false }, set: { tracked in
-                                Task { await session.perform { $0.setBankTracked(account.id, tracked: tracked, at: Date()) } }
-                            }))
-                        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("More options for " + account.name)
-                    }
-                }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
+            ForEach(order, id: \.self) { key in
+                if let members = groups[key], let first = members.first {
+                    if members.count == 1 && first.externalProfileID == nil { accountCard(first) }
+                    else { profileCard(first, members: members) }
+                }
             }
         }
+    }
+    private func latestBalance(_ account: Account) -> BankBalanceObservation? {
+        session.document?.bankBalances.filter { $0.accountID == account.id }.max { $0.observedAt < $1.observedAt }
+    }
+    private func accountMenu(_ account: Account) -> some View {
+        Menu {
+            Button("Update balance…") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
+            Button("Rename…") { editor = .renameAccount(account) }
+            Button("Import statement…") { session.startImport(.statements, accountID: account.id) }
+            Menu("Owner") {
+                Button("Personal") { setAccountOwner(account, owner: "") }
+                ForEach(session.document?.businessAccounting ?? []) { book in
+                    Button(book.name) { setAccountOwner(account, owner: book.id) }
+                }
+            }
+            Toggle("Include in net worth", isOn: Binding(get: { session.document?.isBankTracked(account.id, at: Date()) ?? false }, set: { tracked in
+                Task { await session.perform { $0.setBankTracked(account.id, tracked: tracked, at: Date()) } }
+            }))
+        } label: { Image(systemName: "ellipsis") }.menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small).accessibilityLabel("More options for " + account.name)
+    }
+    private func ownerLine(_ account: Account) -> some View {
+        Group {
+            if let document = session.document, let owner = AssetOwnership.businessID(for: account, in: document) {
+                Text("Owner: " + (document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable")).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            if session.document?.isBankTracked(account.id, at: Date()) == false {
+                Text("Outside net worth").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        }
+    }
+    /// A manual bank account: one balance, one date.
+    private func accountCard(_ account: Account) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            UpOnlySymbolBadge(symbol: "building.columns.fill", size: 30)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(account.name).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                if let observation = latestBalance(account) {
+                    HStack(spacing: 6) {
+                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(observation.amount.value, currency: account.currency)).font(.system(size: 13, weight: .medium).monospacedDigit())
+                        Text(observation.observedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                } else { Text("Balance needed").font(.system(size: 12)).foregroundStyle(.secondary) }
+                ownerLine(account)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Button("Update") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
+                .controlSize(.small).accessibilityLabel("Update balance for " + account.name)
+            accountMenu(account)
+        }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
+    }
+    /// A synced profile: currencies with money listed, empty ones summarised in one line.
+    private func profileCard(_ first: Account, members: [Account]) -> some View {
+        let name = AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first)
+        // Jars merge into their currency: one figure per currency for the whole profile.
+        var byCurrency: [String: (Account, Decimal, Date?)] = [:]
+        for account in members {
+            let observation = latestBalance(account)
+            let amount = observation?.amount.value ?? 0
+            if let existing = byCurrency[account.currency] {
+                byCurrency[account.currency] = (existing.0, existing.1 + amount, [existing.2, observation?.observedAt].compactMap { $0 }.max())
+            } else { byCurrency[account.currency] = (account, amount, observation?.observedAt) }
+        }
+        let rows = byCurrency.values.map { ($0.0, $0.1) }
+        let funded = rows.filter { $0.1 != 0 }.sorted { $0.1 > $1.1 }
+        let empty = rows.filter { $0.1 == 0 }
+        let synced = byCurrency.values.compactMap { $0.2 }.max()
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                UpOnlyProfileImage(data: first.profileImage, name: name, size: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.system(size: 14, weight: .medium))
+                    Text(synced.map { "Synced " + $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) } ?? "Not synced yet").font(.system(size: 11)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                accountMenu(first)
+            }
+            ownerLine(first)
+            VStack(spacing: 0) {
+                ForEach(funded, id: \.0.currency) { account, amount in
+                    Divider().opacity(0.4)
+                    HStack(spacing: 8) {
+                        Text(account.currency).font(.system(size: 12, weight: .medium))
+                        Spacer(minLength: 8)
+                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(amount, currency: account.currency)).font(.system(size: 13, weight: .medium).monospacedDigit())
+                    }.padding(.vertical, 6)
+                }
+                if !empty.isEmpty {
+                    Divider().opacity(0.4)
+                    Text((funded.isEmpty ? "No money in " : "Empty: ") + empty.map(\.0.currency).sorted().joined(separator: ", "))
+                        .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
     }
     private func managementEmpty(_ title: String, detail: String, symbol: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -469,6 +564,7 @@ private struct UpOnlyManagementContent: View {
                     Text(entry.currency)
                     if entry.kind == .transfer { Text("· Transfer") }
                     if entry.kind == .refund { Text("· Refund") }
+                    if entry.bucket == .businessCost { Text("· Paid for " + businessName(entry.businessID)) } else if entry.bucket == .otherBusiness { Text("· Business") }
                     if importedEntryAccounts.count > 1, let account = session.document?.accounts.first(where: { $0.id == entry.accountID }) {
                         Text("·")
                         Text(account.name).lineLimit(1).help(account.name)
@@ -499,6 +595,20 @@ private struct UpOnlyManagementContent: View {
                 Text("Refund").tag(EntryKind.refund)
                 Text("Transfer").tag(EntryKind.transfer)
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transaction type")
+            if entry.kind == .expense, entry.bucket == .personal || entry.bucket == .businessCost {
+                Picker("Paid for", selection: Binding(get: { entry.bucket == .businessCost ? "business:" + (entry.businessID ?? "") : "me" }, set: { choice in
+                    if choice == "me" { reassign(entry, to: .personal, business: nil) }
+                    else { reassign(entry, to: .businessCost, business: String(choice.dropFirst("business:".count)).isEmpty ? nil : String(choice.dropFirst("business:".count))) }
+                })) {
+                    Text("Me").tag("me")
+                    let books = session.document?.businessAccounting ?? []
+                    if books.isEmpty { Text("The business").tag("business:") }
+                    ForEach(books) { Text($0.name).tag("business:" + $0.id) }
+                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Paid for")
+                if entry.bucket == .businessCost {
+                    Text("Left out of personal spending. The company's accounting is unchanged.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if entry.source != .manual, entry.bucket == .personal, let doc = session.document {
                 let always = OwnerPayments.isPersonalTransferCounterparty(entry.label, document: doc)
                 Toggle(isOn: Binding(get: { always }, set: { setTransferCounterparty(entry.label, enabled: $0) })) {
@@ -521,6 +631,16 @@ private struct UpOnlyManagementContent: View {
         Task { await session.perform { doc in
             if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].kind = kind; doc.entries[index].kindIsUserEdited = true }
         } }
+    }
+    /// Moves a transaction between your personal money and the business. A business cost paid from a personal
+    /// account leaves personal spending; it does not change the company's accounting.
+    private func reassign(_ entry: Entry, to bucket: Bucket, business: String?) {
+        Task { await session.perform { doc in
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket; doc.entries[index].businessID = business }
+        } }
+    }
+    private func businessName(_ id: String?) -> String {
+        session.document?.businessAccounting?.first { $0.id == id }?.name ?? "the business"
     }
     private var filteredEntries: [Entry] {
         (session.document?.entries ?? []).filter { entry in
@@ -550,6 +670,12 @@ private struct UpOnlyManagementContent: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button { Task { await session.exportBackup() } } label: { Label("Export encrypted backup…", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.glassProminent)
+            }
+            UpOnlySettingsCard(title: "Diagnostics", subtitle: "", symbol: "stethoscope") {
+                Text("Writes a plain-text summary of what the net worth chart can and cannot value, with no amounts, to the app's support folder.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Write diagnostics file") { diagnosticsMessage = session.writeDiagnostics() }.buttonStyle(.bordered)
+                if let diagnosticsMessage { Text(diagnosticsMessage).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled) }
             }
         }
     }
@@ -606,9 +732,8 @@ private struct UpOnlyDataAttention: View {
                     Label("You’re all caught up", systemImage: "checkmark.circle").font(.headline)
                 }
                 if !attention.spendingMonths.isEmpty {
-                    attentionCard("Is each month complete?", symbol: "checklist") {
-                        spendingReview
-                    }
+                    // The page header names the month; this card starts straight at the figures.
+                    spendingReview.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if !attention.balances.isEmpty {
                     attentionCard("Balances needed", symbol: "building.columns") {
@@ -631,8 +756,11 @@ private struct UpOnlyDataAttention: View {
                 }
                 if attention.pricesNeeded || !attention.accountingNames.isEmpty || hasPriceStatus {
                     attentionCard("Prices & rates", symbol: "arrow.triangle.2.circlepath") {
-                        if hasPriceStatus { note("A background source could not refresh. Your saved values are still available.") }
-                        if attention.pricesNeeded { note("Some prices or exchange rates are missing.") }
+                        if hasPriceStatus {
+                            let names = session.backgroundIssues.filter { $0 != "Bank balances" && $0 != "Accounting" && !$0.hasSuffix(" accounting") }
+                            note(names.joined(separator: ", ") + (names.count == 1 ? " could not refresh in the background." : " could not refresh in the background.") + " Saved values are still shown.")
+                        }
+                        if attention.pricesNeeded { note("Missing today: " + attention.missingPriceLabels.joined(separator: ", ") + ". Press refresh on that source.") }
                         if !attention.accountingNames.isEmpty { note(attention.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                         Button("Open Prices & rates") { session.managementSection = "Sources" }
                     }
@@ -646,24 +774,21 @@ private struct UpOnlyDataAttention: View {
                 }
             }
             .onChange(of: reviewMonth) { session.entryMonthForManagement = month.description }
+            .onChange(of: session.entryMonthForManagement) { _, next in
+                if next != reviewMonth, attention.spendingMonths.contains(where: { $0.description == next }) { reviewMonth = next }
+            }
     }
     private var spendingReview: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if report.spendingMonths.count > 1 {
-                Menu(month.title) {
-                    ForEach(report.spendingMonths.reversed(), id: \.self) { item in
-                        Button(item.title) { reviewMonth = item.description }
-                    }
-                }.modifier(UpOnlyPillMenu()).fixedSize().accessibilityLabel("Month to review")
-            } else { Text(month.title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary) }
             if let doc = session.document, let totals = MonthlyLedger.personal(month, document: doc).totals {
                 HStack(spacing: 16) {
                     reviewTotal("Income", value: totals.moneyIn)
                     reviewTotal("Spending", value: totals.moneyOut)
                 }
             }
+            if let doc = session.document { reviewEvidence(MonthEvidence.build(month, document: doc), document: doc) }
             HStack(spacing: 8) {
-                Button("Transactions") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
+                Button("Edit all") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
                 Menu("Add missing") {
                     Button("Import statements…") { session.startImport(.statements) }
                     Button("Add entry") { session.entryMonthForManagement = month.description; addEntry() }
@@ -705,6 +830,109 @@ private struct UpOnlyDataAttention: View {
                 }
             }
         }
+    }
+    /// Shows what the totals were built from: one USD line per source and the biggest movements, each editable in place.
+    private func reviewEvidence(_ evidence: MonthEvidence, document: VaultDocument) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !evidence.sources.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(evidence.sources) { source in
+                        HStack(alignment: .center, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(source.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Text("\(source.count) transaction\(source.count == 1 ? "" : "s")").font(.system(size: 10)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            VStack(alignment: .trailing, spacing: 2) {
+                                UpOnlyPrivateText("+" + (source.moneyIn.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                    .font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(UpOnlyTint.cashFlow)
+                                UpOnlyPrivateText("−" + (source.moneyOut.map { UpOnlyFormat.exactMoney($0) } ?? "rate needed"))
+                                    .font(.system(size: 12, weight: .medium).monospacedDigit())
+                            }
+                        }.padding(.vertical, 6).accessibilityElement(children: .combine)
+                        if source.id != evidence.sources.last?.id { Divider().opacity(0.4) }
+                    }
+                }
+            }
+            if !evidence.largest.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Transactions, biggest first").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                    // The scroll extends to the panel edge so its bar sits outside the rows.
+                    UpOnlyMenuScroll(maxHeight: 280) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(evidence.largest) { item in
+                                evidenceRow(item, document: document)
+                                if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
+                            }
+                        }.padding(.trailing, UpOnlyLayout.inset)
+                    }.padding(.trailing, -UpOnlyLayout.inset)
+                }
+            }
+            ForEach(month == .current() ? [] : evidence.silent, id: \.self) { name in
+                Label(name + ": nothing this month. Import its statement if you used it.", systemImage: "exclamationmark.circle")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    /// Full label with the type and source beneath, amount on the right. Clicking anywhere opens the type menu.
+    private func evidenceRow(_ item: MonthEvidence.Item, document: VaultDocument) -> some View {
+        let entry = item.entry
+        let sign = entry.kind == .expense ? "−" : entry.kind == .transfer ? "" : "+"
+        let amount = item.usd.map { UpOnlyFormat.exactMoney($0) } ?? UpOnlyFormat.currencyMoney(entry.amount, currency: entry.currency) + " " + entry.currency
+        let source = MonthEvidence.sourceName(for: entry, accounts: document.accounts).name
+        let alwaysTransfer = OwnerPayments.isPersonalTransferCounterparty(entry.label, document: document)
+        return Menu {
+            ForEach([EntryKind.income, .expense, .refund, .transfer], id: \.self) { kind in
+                Button { reclassify(entry, as: kind) } label: {
+                    if kind == entry.kind { Label(kindName(kind), systemImage: "checkmark") } else { Text(kindName(kind)) }
+                }
+            }
+            if entry.source != .manual, entry.bucket == .personal, !alwaysTransfer {
+                Divider()
+                Button("Always a transfer: " + entry.label) { setTransferCounterparty(entry.label, enabled: true) }
+            }
+            if entry.kind == .expense {
+                Divider()
+                let books = document.businessAccounting ?? []
+                if books.isEmpty { Button("Paid for the business, not me") { reassign(entry, to: .businessCost, business: nil) } }
+                else if books.count == 1, let book = books.first { Button("Paid for " + book.name + ", not me") { reassign(entry, to: .businessCost, business: book.id) } }
+                else {
+                    Menu("Paid for a business, not me") {
+                        ForEach(books) { book in Button(book.name) { reassign(entry, to: .businessCost, business: book.id) } }
+                    }
+                }
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.label).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(entry.kind == .transfer ? .secondary : .primary)
+                    Text(kindName(entry.kind) + (alwaysTransfer ? " (always)" : "") + " · " + source).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                UpOnlyPrivateText(sign + amount).font(.system(size: 12, weight: .medium).monospacedDigit()).lineLimit(1)
+                    .foregroundStyle(entry.kind == .income ? UpOnlyTint.cashFlow : entry.kind == .transfer ? .secondary : .primary)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }.padding(.vertical, 6).contentShape(Rectangle())
+        }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+            .help("Change the type of " + entry.label)
+            .accessibilityLabel(entry.label + ", " + kindName(entry.kind) + ", " + sign + amount)
+    }
+    private func kindName(_ kind: EntryKind) -> String {
+        switch kind { case .income: "Income"; case .expense: "Spending"; case .refund: "Refund"; case .transfer: "Transfer" }
+    }
+    private func setTransferCounterparty(_ label: String, enabled: Bool) {
+        Task { await session.perform { doc in OwnerPayments.setTransferCounterparty(label, enabled: enabled, in: &doc) } }
+    }
+    private func reclassify(_ entry: Entry, as kind: EntryKind) {
+        Task { await session.perform { doc in
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].kind = kind; doc.entries[index].kindIsUserEdited = true }
+        } }
+    }
+    private func reassign(_ entry: Entry, to bucket: Bucket, business: String?) {
+        Task { await session.perform { doc in
+            if let index = doc.entries.firstIndex(where: { $0.id == entry.id }) { doc.entries[index].bucket = bucket; doc.entries[index].businessID = business }
+        } }
     }
     private func reviewTotal(_ title: String, value: Decimal) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -915,7 +1143,9 @@ struct UpOnlyEditSheet: View {
             switch editor {
             case .portfolio:
                 let clean = try validName(name, title: "portfolio name")
-                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists. Choose another name.") }
+                // Names only need to be unique within an owner: a personal "Crypto" and Equinox's "Crypto" never share a page.
+                let owner = (ownerBusinessID ?? "").isEmpty ? nil : ownerBusinessID
+                guard session.document?.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID ?? "").nilIfEmpty == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists here. Choose another name.") }
                 try await session.addPortfolio(name: clean, ownerBusinessID: ownerBusinessID)
             case .account:
                 _ = try validName(name, title: "account name"); _ = try validCurrency(); _ = try validAmount(nonnegative: false)
@@ -952,7 +1182,8 @@ struct UpOnlyEditSheet: View {
                 }
             case .renamePortfolio(let portfolio):
                 let clean = try validName(name, title: "portfolio name")
-                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.id != portfolio.id && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists. Choose another name.") }
+                let owner = (portfolio.ownerBusinessID ?? "").nilIfEmpty
+                guard session.document?.portfolios.contains(where: { !$0.isArchived && $0.id != portfolio.id && ($0.ownerBusinessID ?? "").nilIfEmpty == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame }) != true else { throw ImportFailure("A portfolio with this name already exists here. Choose another name.") }
                 try await session.mutate { doc in
                     if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].name = clean }
                 }
@@ -1024,4 +1255,7 @@ struct UpOnlyOwnerPicker: View {
             }.pickerStyle(.menu).font(.system(size: 12)).accessibilityLabel("Asset owner")
         }
     }
+}
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

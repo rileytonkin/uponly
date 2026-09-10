@@ -529,11 +529,13 @@ nonisolated enum ImportCoins {
     static func suggestions(_ raw: String, coins: [CatalogCoin]) -> [CatalogCoin] {
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return [] }
-        func rank(_ coin: CatalogCoin) -> Int {
+        // Well-known coins come first, in market-cap order, so "btc" shows Bitcoin before the many lookalike tickers.
+        let prominence = Dictionary(uniqueKeysWithValues: common.enumerated().map { ($1.id, $0) })
+        func rank(_ coin: CatalogCoin) -> (Int, Int) {
             let fields = [coin.id, coin.symbol, coin.name].map { $0.lowercased() }
-            if fields.contains(query) { return 0 }
-            if fields.contains(where: { $0.hasPrefix(query) }) { return 1 }
-            return 2
+            let match = fields.contains(query) ? 0 : fields.contains(where: { $0.hasPrefix(query) }) ? 1 : 2
+            // Built-in majors first, then CoinGecko's market-cap rank, then everything else.
+            return (prominence[coin.id] ?? (coin.rank.map { 1000 + $0 } ?? Int.max), match)
         }
         return Array(coins.filter { coin in
             [coin.id, coin.symbol, coin.name].contains { $0.localizedCaseInsensitiveContains(query) }
@@ -573,6 +575,10 @@ nonisolated enum ImportRowState: Sendable, Equatable {
     var blocksSave: Bool { switch self { case .error, .needsReview: true; default: false } }
 }
 nonisolated struct ImportEvaluation: Sendable {
+    /// Earliest day whose derived balances changed, so saved history is rebuilt from there.
+    var historyStart: Date?
+    /// Already-saved rows that learned their transaction day from this import.
+    var learnedDays = 0
     var states: [UUID: ImportRowState] = [:]
     var sourceErrors: [UUID: String] = [:]
     var globalError: String?
@@ -595,6 +601,7 @@ nonisolated enum ImportBatchProcessor {
     }
     static func evaluate(_ batch: ImportBatchDraft, document: VaultDocument, now: Date = Date(), catalog: [CatalogCoin] = []) -> ImportEvaluation {
         var result = ImportEvaluation(), next = document
+        var touchedAccounts = Set<UUID>()
         do { try batch.checkLimits(); try Task.checkCancellation() }
         catch { result.globalError = error.localizedDescription; return result }
         guard !batch.rows.isEmpty else { result.globalError = "Add at least one row."; return result }
@@ -635,6 +642,7 @@ nonisolated enum ImportBatchProcessor {
             if !doc.bankTracking.contains(where: { $0.accountID == accountID }) && !doc.trackedBankAccountIDs.contains(accountID) { doc.setBankTracked(accountID, tracked: true, at: date) }
             doc.bankBalances.append(BankBalanceObservation(id: UUID(), accountID: accountID, amount: PreciseDecimal(amount), currency: account.currency, observedAt: date, source: "Import", sourceIdentity: accountID.uuidString))
             balanceKeys.insert(key); doc.track(.banks)
+            touchedAccounts.insert(accountID)
             return true
         }
         for row in batch.rows {
@@ -655,8 +663,18 @@ nonisolated enum ImportBatchProcessor {
                             || batch.sources.contains { other in importedSources.contains(other.id) && other.digest == source.digest && sourceAccounts[other.id] == accountID }
                         if duplicate { duplicateSources.insert(source.id) }
                     }
-                    if duplicateSources.contains(source.id) { result.states[row.id] = .duplicate; continue }
                     let date = try source.dateFormat.date(input.date)
+                    if duplicateSources.contains(source.id) {
+                        // The file was imported before its rows kept a day. Teach the saved rows now and move on.
+                        let external = input.transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !external.isEmpty, let index = next.entries.firstIndex(where: { $0.sourceRef == accountID.uuidString + ":" + external }), next.entries[index].day == nil || next.entries[index].outflow == nil {
+                            let signed = (try? source.numberFormat.decimal(input.amount)) ?? ((try? source.numberFormat.decimal(input.credit)) ?? 0) - ((try? source.numberFormat.decimal(input.debit)) ?? 0)
+                            next.entries[index].day = ImportDateFormat.today(date)
+                            if next.entries[index].outflow == nil { next.entries[index].outflow = input.originalType.isEmpty ? signed < 0 : input.kind == .expense }
+                            touchedAccounts.insert(accountID); result.learnedDays += 1
+                        }
+                        result.states[row.id] = .duplicate; continue
+                    }
                     guard date <= now else { throw ImportFailure("The transaction date cannot be in the future.") }
                     let currency = try MoneyInput.normalizeCurrency(input.currency)
                     let label = input.label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -685,6 +703,11 @@ nonisolated enum ImportBatchProcessor {
                     if let existing = seenReferences[reference] {
                         let same = existing.importFingerprint.map { $0 == fingerprint } ?? (existing.month == month.description && existing.amount == abs(signed) && existing.currency == currency && existing.label == label)
                         guard same else { throw ImportFailure("This transaction ID has different saved details. Correct it or exclude the row.") }
+                        // Re-importing an older statement teaches existing rows their day and direction.
+                        if existing.day == nil || existing.outflow == nil, let index = next.entries.firstIndex(where: { $0.id == existing.id }) {
+                            next.entries[index].day = ImportDateFormat.today(date); next.entries[index].outflow = signed < 0
+                            touchedAccounts.insert(accountID)
+                        }
                         result.states[row.id] = .duplicate; continue
                     }
                     let fingerprintKey = accountID.uuidString + ":" + fingerprint
@@ -696,6 +719,8 @@ nonisolated enum ImportBatchProcessor {
                     if !input.kindIsUserEdited && input.originalType.isEmpty { entry.kind = OwnerPayments.classify(entry.kind, label: label, month: month.description, document: next) }
                     entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
                     entry.importFingerprint = fingerprint
+                    entry.day = ImportDateFormat.today(date); entry.outflow = signed < 0
+                    touchedAccounts.insert(accountID)
                     next.entries.append(entry); next.track(.cashFlow)
                     seenReferences[reference] = entry; fingerprints.insert(fingerprintKey)
                     importedSources.insert(source.id); result.states[row.id] = .ready("New transaction"); result.added += 1
@@ -737,7 +762,9 @@ nonisolated enum ImportBatchProcessor {
                             portfolioID = id
                         }
                         else {
-                            guard !document.portfolios.contains(where: { !$0.isArchived && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { throw ImportFailure("This portfolio exists. Select it from the portfolio menu.") }
+                            // Unique within an owner: a personal "Crypto" and a company's "Crypto" are different portfolios.
+                            let owner = input.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
+                            guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { throw ImportFailure("This portfolio exists. Select it from the portfolio menu.") }
                             let portfolio = Portfolio(name: name, createdAt: now, kind: batch.mode.kind, ownerBusinessID: input.ownerBusinessID); next.portfolios.append(portfolio)
                             portfolioID = portfolio.id; createdPortfolios[key] = portfolio.id
                         }
@@ -782,7 +809,13 @@ nonisolated enum ImportBatchProcessor {
                 }
             }
         }
-        if !result.hasErrors { result.document = next }
+        if !result.hasErrors {
+            // Statements move the balance history of the accounts they touch.
+            if !touchedAccounts.isEmpty { result.historyStart = BalanceReconstruction.apply(accountIDs: touchedAccounts, to: &next, now: now) }
+            // Learned dates and a rebuilt history are worth saving even when no row is new.
+            if result.learnedDays > 0 || result.historyStart != nil { result.added += max(result.learnedDays, 1) }
+            result.document = next
+        }
         return result
     }
 }

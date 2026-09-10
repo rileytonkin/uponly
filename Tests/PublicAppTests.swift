@@ -72,6 +72,9 @@ struct PublicAppTests {
     func excessivePrecision() throws {
         #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact("1.1234567890123456789012345678901234567890123456789") }
         #expect(try MoneyInput.parseExact("0.00000001") == Decimal(string: "0.00000001"))
+        #expect(try MoneyInput.parseExact(".12") == Decimal(string: "0.12"))
+        #expect(try MoneyInput.parseExact("-.5") == Decimal(string: "-0.5"))
+        #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact(".") }
         #expect(try MoneyInput.parseExact("-0.0100") == Decimal(string: "-0.01"))
         #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact("123oops") }
     }
@@ -399,6 +402,44 @@ struct BulkInputTests {
         let typed = try batch("Date,Description,Amount,Currency,Type\n2026-07-01,Shop,20,USD,refund", mode: .statements)
         #expect(try #require(ImportBatchProcessor.evaluate(typed, document: doc).document).entries.first?.kind == .refund)
     }
+    @Test("Month evidence gives one USD line per source, the biggest movements of any kind, and accounts that went quiet")
+    func monthEvidence() {
+        var doc = empty()
+        let monzo = Account(name: "Monzo", currency: "GBP"), kast = Account(name: "Kast", currency: "USD")
+        var wise = Account(name: "Riley · GBP", currency: "GBP"); wise.externalProfileID = "7"
+        doc.accounts = [monzo, kast, wise]
+        let july = MonthKey("2026-07")!, august = MonthKey("2026-08")!
+        doc.fx = [FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(2), providerTime: Date(timeIntervalSince1970: 1_787_000_000), fetchedAt: Date(timeIntervalSince1970: 1_787_000_000), provider: "test")]
+        doc.entries = [
+            Entry(month: august, kind: .income, amount: 4000, currency: "GBP", label: "Equinox", source: .csv, sourceRef: monzo.id.uuidString + ":1"),
+            Entry(month: august, kind: .expense, amount: 1000, currency: "GBP", label: "Airbnb", source: .csv, sourceRef: monzo.id.uuidString + ":2"),
+            Entry(month: august, kind: .refund, amount: 10, currency: "GBP", label: "Airbnb refund", source: .csv, sourceRef: monzo.id.uuidString + ":3"),
+            Entry(month: august, kind: .transfer, amount: 2500, currency: "GBP", label: "Tonkin Apps", source: .csv, sourceRef: monzo.id.uuidString + ":4"),
+            Entry(month: august, kind: .expense, amount: 40, currency: "GBP", label: "Cafe", source: .wise, sourceRef: "wise:7:a"),
+            Entry(month: august, kind: .expense, amount: 5, currency: "USD", label: "Cash"),
+            Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: kast.id.uuidString + ":9")
+        ]
+        let evidence = MonthEvidence.build(august, document: doc, now: Date(timeIntervalSince1970: 1_787_000_000))
+        #expect(evidence.sources.map(\.name) == ["Monzo", "Wise · Riley", "Added by hand"])
+        #expect(MonthEvidence.sourceName(for: doc.entries[4], accounts: [Account(name: "Personal · GBP", currency: "GBP", externalProfileID: "7")]).name == "Wise")
+        #expect(evidence.sources[0].count == 3 && evidence.sources[0].moneyIn == 8000 && evidence.sources[0].moneyOut == 1980)
+        #expect(evidence.sources[2].moneyIn == 0 && evidence.sources[2].moneyOut == 5)
+        #expect(evidence.largest.map(\.entry.label) == ["Equinox", "Tonkin Apps", "Airbnb", "Cafe", "Airbnb refund", "Cash"])
+        #expect(evidence.largest[1].usd == 5000)
+        #expect(evidence.silent == ["Kast"])
+    }
+    @Test("A business cost paid personally leaves personal spending and month evidence")
+    func businessCostPaidPersonally() {
+        var doc = empty()
+        let bank = Account(name: "Monzo", currency: "USD"); doc.accounts = [bank]
+        let month = MonthKey("2026-08")!
+        var cost = Entry(month: month, kind: .expense, amount: 300, currency: "USD", label: "Laptop", source: .csv, sourceRef: bank.id.uuidString + ":1")
+        doc.entries = [cost, Entry(month: month, kind: .expense, amount: 20, currency: "USD", label: "Lunch")]
+        #expect(MonthlyLedger.personal(month, document: doc).totals?.personalSpend == 320)
+        cost.bucket = .businessCost; doc.entries[0] = cost
+        #expect(MonthlyLedger.personal(month, document: doc).totals?.personalSpend == 20)
+        #expect(MonthEvidence.build(month, document: doc).largest.map(\.entry.label) == ["Lunch"])
+    }
     @Test("Imported entries expose their bank account; manual and Wise entries do not")
     func entryAccountID() {
         let bank = Account(name: "Monzo", currency: "GBP")
@@ -614,12 +655,22 @@ struct WiseInputTests {
         let outgoing = WiseActivity(id: "out", type: "TRANSFER", resource: .init(type: "TRANSFER", id: "shared"), title: "Own transfer", primaryAmount: "50 USD", status: "COMPLETED", createdOn: "2026-01-03T12:00:00Z")
         let incoming = WiseActivity(id: "in", type: "TRANSFER", resource: .init(type: "TRANSFER", id: "shared"), title: "Own transfer", primaryAmount: "+ 50 USD", status: "COMPLETED", createdOn: "2026-01-03T12:00:00Z")
         var snapshot = WiseSnapshot(profiles: [
-            WiseProfileSnapshot(profile: first, balances: [WiseBalance(id: 11, currency: "USD", amount: WiseAmount(value: 100, currency: "USD"))], activities: [payment, outgoing]),
+            WiseProfileSnapshot(profile: first, balances: [WiseBalance(id: 11, currency: "USD", amount: WiseAmount(value: 100, currency: "USD")), WiseBalance(id: 12, currency: "USD", amount: WiseAmount(value: 40, currency: "USD"), type: "SAVINGS", name: "Tax")], activities: [payment, outgoing]),
             WiseProfileSnapshot(profile: second, balances: [WiseBalance(id: 22, currency: "USD", amount: WiseAmount(value: 50, currency: "USD"))], activities: [incoming])
         ], fetchedAt: date)
         let saved = try WiseAPI.apply(snapshot, to: empty())
         let repeated = try WiseAPI.apply(snapshot, to: saved)
         #expect(saved.entries.count == 3 && repeated.entries.count == 3)
+        // The synced balance anchors a rebuilt history: 100 today, so 100 at the end of Jan 3 and 150 at the end of Jan 2, before the 50 went out.
+        let personalUSD = try #require(saved.accounts.first { $0.externalProfileID == "1" && $0.currency == "USD" })
+        let derived = saved.bankBalances.filter { $0.accountID == personalUSD.id && $0.source == BalanceReconstruction.source }.sorted { $0.observedAt < $1.observedAt }
+        #expect(derived.map(\.amount.value) == [150, 100])
+        #expect(saved.isBankTracked(personalUSD.id, at: BalanceReconstruction.dayFormatter().date(from: "2026-01-02")!))
+        #expect(saved.entries.allSatisfy { $0.day != nil && $0.outflow != nil })
+        // A jar is its own account, named after the jar, valued from the sync alone: no activity is attributed to it.
+        let jar = try #require(saved.accounts.first { $0.externalBalanceID == "12" })
+        #expect(jar.name == "Personal · USD · Tax" && AssetOwnership.jarName(jar) == "Tax" && AssetOwnership.profileName(jar) == "Personal")
+        #expect(saved.bankBalances.filter { $0.accountID == jar.id }.count == 1)
         #expect(saved.entries.filter { $0.kind == .transfer }.count == 2)
         #expect(saved.entries.first { $0.kind == .expense }?.amount == Decimal(string: "10.05"))
         #expect(saved.accounts[0].profileImage == first.image)
@@ -1735,6 +1786,9 @@ struct CoinSuggestionTests {
         #expect(ImportCoins.suggestions("  ", coins: coins).isEmpty)
         #expect(ImportCoins.suggestions(" BItCoin ", coins: coins).first?.id == "bitcoin")
         #expect(ImportCoins.suggestions("BTC", coins: coins).prefix(2).map(\.id) == ["bitcoin", "wrapped-bitcoin"])
+        let lookalikes = coins + [CatalogCoin(id: "batcat", symbol: "btc", name: "batcat"), CatalogCoin(id: "big-tom-coin", symbol: "btc", name: "Big Tom Coin")]
+        #expect(ImportCoins.suggestions("btc", coins: lookalikes).first?.id == "bitcoin")
+        #expect(ImportCoins.suggestions("eth", coins: lookalikes + [CatalogCoin(id: "ethena-usde", symbol: "usde", name: "Ethena USDe")]).first?.id == "ethereum")
         #expect(ImportCoins.suggestions("bsv", coins: coins).first?.id == "bitcoin-cash-sv")
         #expect(Set(ImportCoins.common.map(\.id)).count == ImportCoins.common.count)
         #expect(ImportCoins.suggestions("no-such-coin", coins: coins).isEmpty)

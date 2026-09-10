@@ -1,6 +1,10 @@
 import Foundation
 import Security
 
+nonisolated struct PendingHistoryRebuild: Codable, Sendable, Equatable {
+    var from: Date
+    var cursor: Date
+}
 struct VaultDocument: Codable, Sendable, Equatable {
     var schema: Int
     var vaultID: UUID
@@ -34,6 +38,9 @@ struct VaultDocument: Codable, Sendable, Equatable {
     var purchases: [PurchaseLot]?
     /// Payees whose personal transactions are always transfers (money moved to your own company or accounts).
     var transferCounterparties: [String]?
+    /// A history rebuild still in progress: days from `from` up to `cursor` have yet to be recomputed.
+    /// Kept in the vault so a relaunch resumes instead of leaving old days valued without newer assets.
+    var pendingHistoryRebuild: PendingHistoryRebuild?
 
     static func empty(
         vaultID: UUID = UUID(),

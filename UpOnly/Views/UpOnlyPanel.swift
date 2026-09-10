@@ -215,7 +215,24 @@ private struct UpOnlyUnlockedPanel: View {
     @State private var scope: ValuationScope = .allTracked
     @State private var detail: String?
     @State private var companySelection: CompanySelection?
-    private var selectedInterval: DateInterval { model.selectedInterval() }
+    @State private var worthRange: WorthRange = .year
+    @State private var companyChart: CompanyChart = .balance
+    @State private var companyFocus: CompanyFocus = .all
+    enum CompanyChart { case balance, profit }
+    /// Net worth is always today's value; the range only sets how much history the chart shows.
+    /// Cash flow keeps the month, year or all-time selector.
+    private var isWorthPage: Bool { !(session.destination == 0 && shows(.cashFlow)) }
+    private var selectedInterval: DateInterval {
+        guard isWorthPage else { return model.selectedInterval() }
+        let now = Date()
+        if worthRange == .month {
+            var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
+            let current = MonthKey.current()
+            let start = calendar.date(from: DateComponents(year: current.year, month: current.month, day: 1)) ?? now
+            return DateInterval(start: min(start, now), end: now)
+        }
+        return DateInterval(start: now.addingTimeInterval(-worthRange.seconds), end: now)
+    }
 
     private func shows(_ kind: TrackedKind) -> Bool { session.document?.shows(kind) == true }
     private var showsNetWorth: Bool { session.document?.showsNetWorth == true }
@@ -414,8 +431,17 @@ private struct UpOnlyUnlockedPanel: View {
         HStack(alignment: .center, spacing: 8) {
             eyebrow
             Spacer(minLength: 8)
-            periodSelector
+            if isWorthPage { rangeSelector } else { periodSelector }
         }.frame(minHeight: 26)
+    }
+    private var rangeSelector: some View {
+        Menu {
+            ForEach(WorthRange.allCases, id: \.self) { range in
+                Toggle(range.title, isOn: Binding(get: { worthRange == range }, set: { _ in worthRange = range }))
+            }
+        } label: { Text(worthRange.title).font(.system(size: 12, weight: .medium)).lineLimit(1) }
+            .modifier(UpOnlyPillMenu()).fixedSize()
+            .accessibilityLabel("Chart range").accessibilityValue(worthRange.title)
     }
     private func eyebrow(_ title: String) -> some View {
         Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
@@ -428,7 +454,8 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var periodPhrase: String {
-        switch model.period {
+        if isWorthPage { return worthRange == .month ? "this month" : "over the " + worthRange.phrase }
+        return switch model.period {
         case .monthly: model.month == .current() ? "this month" : "in " + String(model.month.shortName.prefix(3)) + " " + String(model.month.year)
         case .annual: model.month.year == MonthKey.current().year ? "this year" : "in " + String(model.month.year)
         case .allTime: "all time"
@@ -591,6 +618,50 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     private var monthEntryCount: Int { session.document?.entries.filter { $0.month == model.month.description }.count ?? 0 }
+    private func companyFigure(_ title: String, _ value: Decimal?, tint: Color? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            UpOnlyPrivateText(value.map(UpOnlyFormat.exactMoney) ?? "—").font(.system(size: 14, weight: .medium).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.8)
+                .foregroundStyle(tint ?? .primary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    /// Revenue, expenses, profit and your share summed over the months in the selected range.
+    private func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String) {
+        let end = MonthKey.current()
+        var months: [MonthKey] = [end]
+        while months.count < worthRange.months { months.insert(months[0].previous, at: 0) }
+        let rows = months.compactMap { key in book.months.first { $0.month == key.description } }
+        guard !rows.isEmpty else { return (nil, nil, nil, nil, "No accounting for the " + worthRange.phrase + ".") }
+        let profit = rows.reduce(Decimal(0)) { $0 + $1.profitUSD }
+        let revenue = rows.allSatisfy { $0.revenueUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.revenueUSD ?? 0) } : nil
+        let expenses = rows.allSatisfy { $0.expensesUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.expensesUSD ?? 0) } : nil
+        let share = rows.reduce(Decimal?.some(0)) { sum, row in
+            guard let sum, let portion = book.ownership(at: row.month).flatMap({ try? $0.portion(row.profitUSD) }) else { return nil }
+            return sum + portion
+        }
+        let missing = months.count - rows.count
+        var caption = rows.count == 1 ? months.last!.title : (rows.first!.month) + " to " + (rows.last!.month)
+        if let first = MonthKey(rows.first!.month), let last = MonthKey(rows.last!.month) { caption = rows.count == 1 ? first.title : first.title + " to " + last.title }
+        if missing > 0 { caption += " · \(missing) month\(missing == 1 ? "" : "s") without accounting" }
+        if rows.contains(where: \.estimated) { caption += " · current month is provisional" }
+        return (revenue, expenses, profit, share, caption)
+    }
+    /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.
+    private var rangeMonthPoints: [UpOnlyChartPoint] {
+        let end = MonthKey.current()
+        var months: [MonthKey] = [end]
+        while months.count < worthRange.months { months.insert(months[0].previous, at: 0) }
+        let showYear = months.first?.year != end.year
+        let book = companySelection.flatMap { selection in model.books.first { $0.id == selection.group.businessID } }
+        return months.map { key in
+            let row = model.history.first { $0.month == key } ?? (key, nil, false)
+            // Say where the figure came from, so it can be checked against the sheet.
+            let sheet = book?.months.first { $0.month == key.description }
+            let parts = [sheet?.revenueUSD.map { "Net revenue " + UpOnlyFormat.money($0) }, sheet?.expensesUSD.map { "expenses " + UpOnlyFormat.money($0) }].compactMap { $0 }
+            let note = sheet.map { (parts.isEmpty ? "" : parts.joined(separator: " − ") + " · ") + $0.sourceRange + ($0.estimated ? " · provisional" : "") }
+            return UpOnlyChartPoint(id: key.description, label: String(key.shortName.prefix(3)) + (showYear ? " " + String(key.year).suffix(2) : ""), value: row.net, provisional: !row.settled, detailLabel: key.title, note: note)
+        }
+    }
     private var monthPoints: [UpOnlyChartPoint] {
         model.chartHistory.map {
             UpOnlyChartPoint(id: $0.month.description, label: String($0.month.shortName.prefix(3)) + (model.period != .allTime ? "" : " " + String($0.month.year).suffix(2)), value: $0.net, provisional: !$0.settled, detailLabel: $0.month.title)
@@ -748,7 +819,7 @@ private struct UpOnlyUnlockedPanel: View {
                 }.padding(.top, 16)
             }
             if points.contains(where: { $0.value != nil }) {
-                UpOnlyChart(points: points, tint: UpOnlyTint.netWorth).padding(.top, 20)
+                UpOnlyChart(points: points, tint: UpOnlyTint.netWorth, spansRange: true).padding(.top, 20)
             }
             VStack(spacing: 6) {
                 ForEach(bankGroups(valuation)) { group in
@@ -756,13 +827,15 @@ private struct UpOnlyUnlockedPanel: View {
                         HStack(spacing: 8) {
                             if let image = group.image { UpOnlyProfileImage(data: image, name: group.name, size: 24) }
                             else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 24) }
-                            UpOnlyValueRow(label: group.name, value: group.total.map(UpOnlyFormat.exactMoney) ?? "Needs update", chevron: true, primaryLabel: true)
+                            let total = groupTotal(group, valuation)
+                            UpOnlyValueRow(label: group.name, value: total.map(UpOnlyFormat.exactMoney) ?? "Needs update", chevron: true, primaryLabel: true)
                         }.padding(.vertical, 3).contentShape(Rectangle())
-                    }.buttonStyle(.bordered).accessibilityLabel(group.name + " bank balance")
-                        .accessibilityValue(session.privacyMode ? "Hidden value" : group.total.map(UpOnlyFormat.exactMoney) ?? "Needs update")
+                    }.buttonStyle(.bordered).accessibilityLabel(group.name + (group.businessID == nil ? " bank balance" : " assets"))
+                        .accessibilityValue(session.privacyMode ? "Hidden value" : groupTotal(group, valuation).map(UpOnlyFormat.exactMoney) ?? "Needs update")
                 }
                 if case .allTracked = scope {
-                    ForEach(session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) } ?? []) { portfolio in
+                    // A company's own portfolios live on the company page and in its row total.
+                    ForEach(session.document?.portfolios.filter { $0.isActive(at: selectedInterval.end) && $0.ownerBusinessID == nil } ?? []) { portfolio in
                         Button { scope = .portfolio(portfolio.id) } label: {
                             HStack(spacing: 10) {
                                 UpOnlySymbolBadge(symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol, tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 24)
@@ -800,25 +873,35 @@ private struct UpOnlyUnlockedPanel: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 UpOnlySymbolBadge(symbol: selectedPortfolio?.kind == .metals ? TrackedKind.metals.symbol : "chart.line.uptrend.xyaxis", tint: UpOnlyTint.netWorth, size: 30)
+                let hasLater = selectedInterval.end < Date() && session.document.map { AssetOwnership.personalValue(at: Date(), scope: scope, document: $0).total != nil } == true
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Nothing here yet").font(.system(size: 15, weight: .semibold))
-                    Text("No balances or holdings recorded for this period.")
+                    Text(hasLater ? "Nothing recorded yet for " + (model.period == .monthly ? model.month.title : "this period") : "Nothing here yet").font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                    Text(hasLater ? "Your records start later. Jump to the latest to see them." : "No balances or holdings recorded for this period.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            let hasLater = selectedInterval.end < Date() && session.document.map { AssetOwnership.personalValue(at: Date(), scope: scope, document: $0).total != nil } == true
             HStack(spacing: 8) {
-                Button(selectedPortfolio?.kind == .metals ? "Add gold or silver" : selectedPortfolio != nil ? "Add a coin" : "Add") {
+                if hasLater { Button("Show latest") { model.selectPeriod(.monthly); model.select(.current()) }.buttonStyle(.glassProminent) }
+                let add = Button(selectedPortfolio?.kind == .metals ? "Add gold or silver" : selectedPortfolio != nil ? "Add a coin" : "Add") {
                     if let portfolio = selectedPortfolio {
                         guard session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id) else { return }
                     }
                     session.addingInMenu = true
-                }.buttonStyle(.glassProminent)
-                if selectedInterval.end < Date(), let document = session.document,
-                   AssetOwnership.personalValue(at: Date(), scope: scope, document: document).total != nil {
-                    Button("Latest") { model.selectPeriod(.monthly); model.select(.current()) }.buttonStyle(.bordered)
                 }
+                if hasLater { add.buttonStyle(.bordered) } else { add.buttonStyle(.glassProminent) }
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(14).modifier(UpOnlyContentSurface())
+    }
+    /// Bank cash plus, for a company, the holdings in portfolios it owns.
+    private func groupTotal(_ group: BankBalanceGroup, _ valuation: ValuationResult?) -> Decimal? {
+        guard let businessID = group.businessID, let document = session.document else { return group.total }
+        let owned = Set(document.portfolios.filter { $0.ownerBusinessID == businessID }.map(\.id))
+        let holdings = (valuation?.components ?? []).filter { component in
+            component.kind == .holding && document.holdings.first { $0.id == component.id }.map { owned.contains($0.portfolioID) } == true
+        }
+        guard let cash = group.total, let assets = AssetOwnership.sum(holdings) else { return nil }
+        return try? MoneyInput.add(cash, assets)
     }
     private func bankGroups(_ valuation: ValuationResult?) -> [BankBalanceGroup] {
         guard let document = session.document else { return [] }
@@ -829,6 +912,7 @@ private struct UpOnlyUnlockedPanel: View {
         var previousScope: PerformanceScope
     }
     private func openCompany(_ group: BankBalanceGroup) {
+        companyFocus = .all
         companySelection = CompanySelection(group: group, previousScope: model.scope)
         model.selectScope(group.businessID.map(PerformanceScope.business) ?? .personal)
     }
@@ -844,51 +928,124 @@ private struct UpOnlyUnlockedPanel: View {
         // Personal portfolios already appear on the overview; only a company's own holdings belong here.
         let portfolios = companyID == nil ? [] : document?.portfolios.filter { $0.isActive(at: selectedInterval.end) && $0.ownerBusinessID == companyID } ?? []
         let book = model.books.first { $0.id == companyID }
-        let total = bankValues.isEmpty ? nil : AssetOwnership.sum(bankValues)
-        let share = document.flatMap { doc in bankValues.isEmpty ? nil : AssetOwnership.personalTotal(bankValues, at: selectedInterval.end, document: doc) }
-        let points = groupPoints(selection)
-        return VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                headline(eyebrow("Bank balance")).padding(.bottom, 4)
-                if let total { UpOnlyAmount(value: total) }
-                else { Text("Balance needed").font(.system(size: 18, weight: .semibold)) }
-                Text(total == nil ? "Add a balance to value this account." : "As of " + UpOnlyFormat.utcDay(selectedInterval.end))
-                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        let ownership = book?.ownership(at: AssetOwnership.month(at: selectedInterval.end).description)
+        let partOwner = ownership.map { $0.numerator != $0.denominator } ?? false
+        // Everything the company holds today: bank accounts plus the holdings in portfolios it owns.
+        let holdingValues = companyHoldings(raw?.components ?? [], companyID: companyID)
+        let allParts = bankValues + holdingValues
+        let focusParts = focusedParts(allParts, companyID: companyID)
+        let focusTotal = focusParts.isEmpty ? nil : AssetOwnership.sum(focusParts)
+        let share = document.flatMap { doc in allParts.isEmpty ? nil : AssetOwnership.personalTotal(allParts, at: selectedInterval.end, document: doc) }
+        let points = companyPoints(selection)
+        let focusOptions = companyFocusOptions(bankValues: bankValues, portfolios: portfolios)
+        return VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                headline(eyebrow(companyFocusTitle(focusOptions) ?? (companyID == nil ? "All bank accounts" : "Total assets"))).padding(.bottom, 2)
+                if let focusTotal { UpOnlyAmount(value: focusTotal) }
+                else if allParts.isEmpty {
+                    Text("Balance needed").font(.system(size: 18, weight: .semibold))
+                    Text("Add a balance to value this account.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else { Text("Needs a price or rate").font(.system(size: 18, weight: .semibold)) }
             }
-            if let share, let total, share != total {
-                UpOnlyValueRow(label: "Your share" + (book?.ownership(at: AssetOwnership.month(at: selectedInterval.end).description).map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
+            if partOwner, let share, companyFocus == .all, focusTotal != nil {
+                UpOnlyValueRow(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
             }
-            if let row = model.state.businesses.first(where: { $0.id == companyID }) {
-                VStack(spacing: 6) {
-                    UpOnlyValueRow(label: "Company profit / loss", value: row.observation.map { UpOnlyFormat.exactMoney($0.profitUSD) } ?? "Not reported")
-                    UpOnlyValueRow(label: "Your profit / loss", value: row.share.map(UpOnlyFormat.exactMoney) ?? "Not reported")
+            if let companyID, let book = model.books.first(where: { $0.id == companyID }) {
+                let totals = rangeTotals(book)
+                HStack(alignment: .top, spacing: 12) {
+                    companyFigure("Net revenue", totals.revenue)
+                    companyFigure("Expenses", totals.expenses.map { -$0 })
+                    companyFigure(partOwner ? "Your share" : "Profit / loss", partOwner ? totals.share : totals.profit, tint: (partOwner ? totals.share : totals.profit).map { $0 < 0 ? Color(nsColor: .systemRed) : UpOnlyTint.cashFlow })
                 }
             } else if companyID != nil { Text("Accounting unavailable for this period").font(.system(size: 12)).foregroundStyle(.secondary) }
-            if points.contains(where: { $0.value != nil }) { UpOnlyChart(points: points, tint: UpOnlyTint.netWorth) }
-            if companyID != nil {
-                UpOnlyChart(points: monthPoints, includesZero: true, showsAllMarkers: true,
-                            selected: model.period == .monthly ? model.month.description : nil, tint: UpOnlyTint.cashFlow,
-                            onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                Text(bankValues.count > 1 ? "Balances" : "Balance").font(.system(size: 12, weight: .semibold))
-                ForEach(bankValues, id: \.id) { component in
-                    Divider().opacity(0.5)
-                    Button {
-                        if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true }
-                    } label: {
-                        UpOnlyValueRow(label: bankValues.count > 1 ? component.currency : component.label,
-                                       value: component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "fx" ? "Rate needed" : "Add balance"),
-                                       chevron: true, primaryLabel: true)
-                    }.buttonStyle(.plain).help("Update this balance")
-                        .accessibilityLabel("Update " + component.label + " balance")
+            // One chart. Assets shows the selected account, portfolio or everything; Profit / loss shows the accounting months.
+            let hasAssetChart = points.contains(where: { $0.value != nil })
+            if hasAssetChart || companyID != nil {
+                let showProfit = companyChart == .profit && companyID != nil
+                HStack(alignment: .center, spacing: 8) {
+                    if companyID != nil {
+                        Picker("Chart", selection: $companyChart) {
+                            Text("Assets").tag(CompanyChart.balance)
+                            Text("Profit / loss").tag(CompanyChart.profit)
+                        }.pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize().accessibilityLabel("Company chart")
+                    } else { Text("Balance").font(.system(size: 12, weight: .semibold)) }
+                    Spacer(minLength: 0)
+                }.padding(.top, 6)
+                if !showProfit, focusOptions.count > 2 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(focusOptions, id: \.focus) { option in
+                                Button(option.label) { companyFocus = option.focus }
+                                    .buttonStyle(.plain).font(.system(size: 11, weight: companyFocus == option.focus ? .semibold : .regular))
+                                    .padding(.horizontal, 9).padding(.vertical, 4)
+                                    .background(companyFocus == option.focus ? UpOnlyTint.netWorth.opacity(0.22) : Color.primary.opacity(0.06), in: Capsule())
+                                    .foregroundStyle(companyFocus == option.focus ? .primary : .secondary)
+                                    .accessibilityAddTraits(companyFocus == option.focus ? [.isSelected] : [])
+                            }
+                        }
+                    }
                 }
-            }.padding(12).modifier(UpOnlyContentSurface())
-            ForEach(portfolios) { portfolio in
-                Button { companySelection = nil; model.selectScope(selection.previousScope); scope = .portfolio(portfolio.id) } label: {
-                    worthRowLabel(portfolio)
-                }.buttonStyle(.bordered)
+                if showProfit {
+                    UpOnlyChart(points: rangeMonthPoints, includesZero: true, showsAllMarkers: true,
+                                selected: nil, tint: UpOnlyTint.cashFlow,
+                                onSelect: { if let month = MonthKey($0) { model.drillInto(month) } })
+                } else if hasAssetChart {
+                    UpOnlyChart(points: points, tint: UpOnlyTint.netWorth, spansRange: true)
+                } else { Text("No history yet for this selection.").font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            // Breakdown: one USD line per bank. Tapping a row focuses the chart and headline on it; the pencil on a
+            // manual account updates its balance. Currency detail stays on Manage → Bank accounts.
+            let banks = document.map { BankBalanceGroup.banks(bankValues, document: $0) } ?? []
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Bank accounts").font(.system(size: 12, weight: .semibold)).padding(.bottom, 4)
+                ForEach(banks) { bank in
+                    let ids = Set(bank.components.map(\.id))
+                    let manual = bank.components.count == 1 && document?.accounts.first { $0.id == bank.components[0].id }?.externalProfileID == nil
+                    Divider().opacity(0.4)
+                    HStack(alignment: .center, spacing: 10) {
+                        if let image = bank.image { UpOnlyProfileImage(data: image, name: bank.name, size: 22) }
+                        else { UpOnlySymbolBadge(symbol: "building.columns.fill", size: 22) }
+                        Text(bank.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        if manual, let component = bank.components.first, component.currency != "USD", let native = component.nativeAmount {
+                            UpOnlyPrivateText(UpOnlyFormat.currencyMoney(native.value, currency: component.currency)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        UpOnlyPrivateText(bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"))
+                            .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+                        // Every row reserves the same trailing slot so the amounts line up.
+                        Group {
+                            if manual, let component = bank.components.first {
+                                Button { if session.startImport(.bankBalances, prefill: true, accountID: component.id) { session.addingInMenu = true } } label: { Image(systemName: "square.and.pencil").font(.system(size: 11)) }
+                                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Update this balance").accessibilityLabel("Update " + component.label + " balance")
+                            } else { Color.clear }
+                        }.frame(width: 16, height: 16)
+                    }.padding(.vertical, 9).contentShape(Rectangle())
+                        .background(companyFocus == .bank(ids) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .onTapGesture { companyFocus = companyFocus == .bank(ids) ? .all : .bank(ids) }
+                        .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton)
+                }
+                if !portfolios.isEmpty {
+                    Text("Portfolios").font(.system(size: 12, weight: .semibold)).padding(.top, 12).padding(.bottom, 4)
+                    ForEach(portfolios) { portfolio in
+                        let parts = holdingValues.filter { component in document?.holdings.first { $0.id == component.id }?.portfolioID == portfolio.id }
+                        Divider().opacity(0.4)
+                        HStack(alignment: .center, spacing: 10) {
+                            UpOnlySymbolBadge(symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol, tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 22)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(portfolio.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                if !parts.isEmpty { Text(parts.map(\.label).joined(separator: ", ")).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1) }
+                            }
+                            Spacer(minLength: 8)
+                            UpOnlyPrivateText(AssetOwnership.sum(parts).map(UpOnlyFormat.exactMoney) ?? (parts.isEmpty ? "No holdings" : "Price needed"))
+                                .font(.system(size: 13, weight: .medium).monospacedDigit()).lineLimit(1)
+                            Button { companySelection = nil; model.selectScope(selection.previousScope); scope = .portfolio(portfolio.id) } label: { Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)) }
+                                .buttonStyle(.plain).foregroundStyle(.secondary).frame(width: 16, height: 16).help("Open " + portfolio.name).accessibilityLabel("Open " + portfolio.name)
+                        }.padding(.vertical, 9).contentShape(Rectangle())
+                            .background(companyFocus == .portfolio(portfolio.id) ? UpOnlyTint.netWorth.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                            .onTapGesture { companyFocus = companyFocus == .portfolio(portfolio.id) ? .all : .portfolio(portfolio.id) }
+                    }
+                }
+            }.padding(.horizontal, 12).padding(.vertical, 10).modifier(UpOnlyContentSurface())
             if let book {
                 DisclosureGroup("Accounting details") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -902,18 +1059,53 @@ private struct UpOnlyUnlockedPanel: View {
         }
     }
     // Daily history of just this group's bank balances, from the saved valuations.
-    private func groupPoints(_ selection: CompanySelection) -> [UpOnlyChartPoint] {
+    /// `.bank` holds every account of one bank (a Wise profile's currencies together), valued as one USD figure.
+    enum CompanyFocus: Hashable { case all, bank(Set<UUID>), portfolio(UUID) }
+    /// Holdings in the portfolios a company owns, from a set of valuation components.
+    private func companyHoldings(_ components: [ValuationComponent], companyID: String?) -> [ValuationComponent] {
+        guard let companyID, let document = session.document else { return [] }
+        let owned = Set(document.portfolios.filter { $0.ownerBusinessID == companyID }.map(\.id))
+        return components.filter { component in
+            component.kind == .holding && document.holdings.first { $0.id == component.id }.map { owned.contains($0.portfolioID) } == true
+        }
+    }
+    private func focusedParts(_ parts: [ValuationComponent], companyID: String?) -> [ValuationComponent] {
+        switch companyFocus {
+        case .all: return parts
+        case .bank(let ids): return parts.filter { ids.contains($0.id) }
+        case .portfolio(let portfolioID): return parts.filter { component in session.document?.holdings.first { $0.id == component.id }?.portfolioID == portfolioID }
+        }
+    }
+    private func companyFocusOptions(bankValues: [ValuationComponent], portfolios: [Portfolio]) -> [(focus: CompanyFocus, label: String)] {
+        guard let document = session.document else { return [] }
+        var options: [(CompanyFocus, String)] = [(.all, "All")]
+        for bank in BankBalanceGroup.banks(bankValues, document: document) where (bank.total ?? 0) != 0 {
+            options.append((.bank(Set(bank.components.map(\.id))), bank.name))
+        }
+        for portfolio in portfolios { options.append((.portfolio(portfolio.id), portfolio.name)) }
+        return options.map { (focus: $0.0, label: $0.1) }
+    }
+    private func companyFocusTitle(_ options: [(focus: CompanyFocus, label: String)]) -> String? {
+        guard companyFocus != .all else { return nil }
+        return options.first { $0.focus == companyFocus }?.label
+    }
+    /// The selected account, portfolio or whole company over time. A day with an unpriced part is an estimate.
+    private func companyPoints(_ selection: CompanySelection) -> [UpOnlyChartPoint] {
         guard let document = session.document else { return [] }
         let ids = Set(selection.group.components.map(\.id))
         let companyID = selection.group.businessID
         return dailyPoints { sample in
-            let parts = sample.components.filter { component in
+            let banks = sample.components.filter { component in
                 guard component.kind == .bank else { return false }
                 if let companyID { return AssetOwnership.businessID(for: component, in: document) == companyID }
                 return ids.contains(component.id)
             }
-            guard !parts.isEmpty, parts.allSatisfy({ $0.usdValue != nil }) else { return nil }
-            return AssetOwnership.sum(parts)
+            let parts = focusedParts(banks + companyHoldings(sample.components, companyID: companyID), companyID: companyID)
+            guard !parts.isEmpty else { return nil }
+            let valued = parts.filter { $0.usdValue != nil && $0.missing == nil }
+            guard let total = AssetOwnership.sum(valued), !valued.isEmpty else { return nil }
+            if valued.count == parts.count { return (total, nil) }
+            return (total, "Excludes " + parts.filter { $0.usdValue == nil || $0.missing != nil }.map(\.label).joined(separator: ", ") + " (no price that day)")
         }
     }
     private func worthRowLabel(_ portfolio: Portfolio) -> some View {
@@ -961,21 +1153,37 @@ private struct UpOnlyUnlockedPanel: View {
     }
     private var worthPoints: [UpOnlyChartPoint] {
         dailyPoints { sample in
-            guard sample.isComplete, let document = session.document else { return nil }
-            return AssetOwnership.personalTotal(sample.components, at: sample.utcDay, document: document)
+            guard let document = session.document else { return nil }
+            if sample.isComplete {
+                return AssetOwnership.personalTotal(sample.components, at: sample.utcDay, document: document).map { ($0, nil) }
+            }
+            // A day with an unpriced holding still shows what could be valued, marked as an estimate.
+            let valued = sample.components.filter { $0.usdValue != nil && $0.missing == nil }
+            let unpriced = sample.components.filter { $0.usdValue == nil || $0.missing != nil }.map(\.label)
+            guard !valued.isEmpty, !unpriced.isEmpty, let total = AssetOwnership.personalTotal(valued, at: sample.utcDay, document: document) else { return nil }
+            return (total, "Excludes " + unpriced.joined(separator: ", ") + " (no price that day)")
         }
     }
-    private func dailyPoints(_ value: (DailyValuation) -> Decimal?) -> [UpOnlyChartPoint] {
+    /// One point per day between the first and last sample. `value` returns the day's figure and, when the
+    /// figure is an estimate, a note saying what it leaves out.
+    private func dailyPoints(_ value: (DailyValuation) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
         let samples = visibleSamples
         guard let first = samples.first, let last = samples.last else { return [] }
         var byDay: [Date: DailyValuation] = [:]
         for sample in samples { byDay[UTCDay.start(of: sample.utcDay)] = sample }
         var points: [UpOnlyChartPoint] = []
-        var day = UTCDay.start(of: first.utcDay)
         let end = UTCDay.start(of: last.utcDay)
-        while day <= end && points.count < 10000 {
-            points.append(UpOnlyChartPoint(id: String(day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(day), value: byDay[day].flatMap(value)))
-            day = day.addingTimeInterval(86400)
+        // Points run from the start of the selected range, not the first sample, so the line is placed by date.
+        let rangeStart = min(UTCDay.start(of: first.utcDay), UTCDay.start(of: selectedInterval.start))
+        // Longer ranges sample the daily series at a coarser step so the line reads as a trend: weekly for a
+        // year or two, monthly for five. The value is the actual figure on that day; the last point is today.
+        let stride = TimeInterval(worthRange.chartStepDays * 86400)
+        var day = worthRange.chartStepDays == 1 ? UTCDay.start(of: first.utcDay) : end
+        var stops: [Date] = []
+        while day >= rangeStart && stops.count < 10000 { stops.append(day); day = day.addingTimeInterval(-stride) }
+        for stop in stops.sorted() {
+            let figure = byDay[stop].flatMap(value)
+            points.append(UpOnlyChartPoint(id: String(stop.timeIntervalSince1970), label: UpOnlyFormat.utcDay(stop), value: figure?.0, partial: figure?.1 != nil, note: figure?.1))
         }
         return points
     }
@@ -1199,4 +1407,23 @@ struct UpOnlyPillMenu: ViewModifier {
 private struct PersonalAccountGroup: Identifiable, Hashable {
     var id: UUID?
     var name: String
+}
+/// How much net worth history the chart shows. The headline value is always today's.
+enum WorthRange: CaseIterable {
+    case month, quarter, year, twoYears, fiveYears
+    var title: String {
+        switch self { case .month: "This month"; case .quarter: "Last 3 months"; case .year: "Last 12 months"; case .twoYears: "Last 24 months"; case .fiveYears: "Last 5 years" }
+    }
+    var phrase: String { title.lowercased() }
+    /// Whole months shown on monthly charts, ending with the current month.
+    var months: Int {
+        switch self { case .month: 1; case .quarter: 3; case .year: 12; case .twoYears: 24; case .fiveYears: 60 }
+    }
+    var seconds: TimeInterval {
+        switch self { case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .twoYears: 730 * 86400; case .fiveYears: 1826 * 86400 }
+    }
+    /// Days between chart points: daily up to three months, weekly for a year or two, monthly for five.
+    var chartStepDays: Int {
+        switch self { case .month, .quarter: 1; case .year, .twoYears: 7; case .fiveYears: 30 }
+    }
 }

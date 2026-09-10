@@ -92,8 +92,9 @@ nonisolated enum NetWorthCalculator {
             }
             if hasComplete { return next }
         }
+        // A complete value supersedes earlier partial attempts for the day; partial ones only replace each other.
         next.dailyValuations.removeAll {
-            UTCDay.start(of: $0.utcDay) == day && $0.scope == result.scope && ($0.isComplete == incoming.isComplete)
+            UTCDay.start(of: $0.utcDay) == day && $0.scope == result.scope && (incoming.isComplete || !$0.isComplete)
         }
         next.dailyValuations.append(incoming)
         return next
@@ -495,13 +496,14 @@ nonisolated struct HoldingPerformance: Equatable {
 }
 
 nonisolated enum HoldingMutations {
-    /// Recompute stored daily values from a day in the past, after a backdated quantity.
-    static func rebuildHistory(from start: Date, document: VaultDocument, now: Date) -> VaultDocument {
+    /// Recompute stored daily values from a day in the past, after a backdated quantity or balance.
+    static func rebuildHistory(from start: Date, to end: Date? = nil, document: VaultDocument, now: Date) -> VaultDocument {
         var next = document
         let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
-        let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-1100 * 86400))
+        let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-2200 * 86400))
+        let last = min(UTCDay.start(of: now), end.map { UTCDay.start(of: $0) } ?? UTCDay.start(of: now))
         var day = first
-        while day < UTCDay.start(of: now) {
+        while day < last {
             // Old samples for the day no longer describe the holdings held then; drop them
             // so a day without saved prices shows as a gap rather than a wrong value.
             next.dailyValuations.removeAll { UTCDay.start(of: $0.utcDay) == day }
@@ -677,12 +679,16 @@ nonisolated enum AssetOwnership {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
         return MonthKey.current(now: date, calendar: calendar)
     }
+    /// The Wise profile's name: everything before " · currency" (and before a jar's name after that).
     static func profileName(_ account: Account) -> String {
-        var name = account.name
-        if account.externalProfileID != nil, name.hasSuffix(" · " + account.currency) {
-            name.removeLast(3 + account.currency.count)
-        }
-        return name
+        guard account.externalProfileID != nil, let range = account.name.range(of: " · " + account.currency) else { return account.name }
+        return String(account.name[..<range.lowerBound])
+    }
+    /// A Wise jar's name, when the account is a jar rather than the profile's main balance.
+    static func jarName(_ account: Account) -> String? {
+        guard account.externalProfileID != nil, let range = account.name.range(of: " · " + account.currency + " · ") else { return nil }
+        let jar = String(account.name[range.upperBound...])
+        return jar.isEmpty ? nil : jar
     }
     static func businessID(for account: Account, in document: VaultDocument) -> String? {
         if let explicit = account.ownerBusinessID { return explicit.isEmpty ? nil : explicit }
@@ -747,16 +753,107 @@ nonisolated struct BankBalanceGroup: Identifiable {
     var businessID: String?
     var components: [ValuationComponent]
     var total: Decimal? { AssetOwnership.sum(components) }
+    /// One row per company, plus a single "Bank balances" row holding every personal account.
     static func groups(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
         let accounts = Dictionary(uniqueKeysWithValues: document.accounts.map { ($0.id, $0) })
         return Dictionary(grouping: components.filter { $0.kind == .bank }) { component in
-            let account = accounts[component.id]
-            return (account?.externalProfileID ?? component.id.uuidString) + ":" + (account.flatMap { AssetOwnership.businessID(for: $0, in: document) } ?? "personal")
+            accounts[component.id].flatMap { AssetOwnership.businessID(for: $0, in: document) } ?? "personal"
         }.map { id, values in
             let sorted = values.sorted { $0.id.uuidString < $1.id.uuidString }
             let account = sorted.first.flatMap { accounts[$0.id] }
+            if id == "personal" { return BankBalanceGroup(id: id, name: "Bank balances", image: nil, businessID: nil, components: sorted) }
             return BankBalanceGroup(id: id, name: account.map(AssetOwnership.profileName) ?? "Bank account",
-                                    image: account?.profileImage, businessID: account.flatMap { AssetOwnership.businessID(for: $0, in: document) }, components: sorted)
-        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                                    image: account?.profileImage, businessID: id, components: sorted)
+        }.sorted {
+            if ($0.businessID == nil) != ($1.businessID == nil) { return $0.businessID == nil }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+    /// Bank-by-bank breakdown of a group: the Wise profile, Monzo, Kast, each with its currency balances.
+    static func banks(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
+        let accounts = Dictionary(uniqueKeysWithValues: document.accounts.map { ($0.id, $0) })
+        return Dictionary(grouping: components) { component in accounts[component.id]?.externalProfileID.map { "wise:" + $0 } ?? component.id.uuidString }
+            .map { id, values in
+                let sorted = values.sorted { ($0.usdValue?.value ?? -1) > ($1.usdValue?.value ?? -1) }
+                let account = sorted.first.flatMap { accounts[$0.id] }
+                // A Wise profile is just "Wise" here: the personal one is called Personal by Wise, and a company's
+                // profile carries the company's name, which the page already shows.
+                let name = account.map { $0.externalProfileID == nil ? $0.name : "Wise" } ?? "Bank account"
+                return BankBalanceGroup(id: id, name: name, image: account?.profileImage, businessID: nil, components: sorted)
+            }.sorted { ($0.total ?? -1) > ($1.total ?? -1) }
+    }
+}
+
+/// Rebuilds an account's balance history from its statements. One real balance (typed in or synced) anchors the
+/// series; every transaction with a known day moves it. Days before the earliest statement stay unknown.
+nonisolated enum BalanceReconstruction {
+    static let source = "Statements"
+    static func signed(_ entry: Entry) -> Decimal? {
+        if let outflow = entry.outflow { return outflow ? -entry.amount : entry.amount }
+        switch entry.kind { case .expense: return -entry.amount; case .income, .refund: return entry.amount; case .transfer: return nil }
+    }
+    static func dayFormatter() -> DateFormatter {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = UTCDay.timeZone; formatter.dateFormat = "yyyy-MM-dd"; return formatter
+    }
+    /// Derived end-of-day balances for one account, or nil when there is no anchor or no dated statements.
+    static func derive(accountID: UUID, document: VaultDocument, now: Date = Date()) -> [BankBalanceObservation]? {
+        guard let account = document.accounts.first(where: { $0.id == accountID }),
+              let anchor = document.bankBalances.filter({ $0.accountID == accountID && $0.source != source }).max(by: { $0.observedAt < $1.observedAt }) else { return nil }
+        let formatter = dayFormatter()
+        var byDay: [Date: Decimal] = [:]
+        // Statement rows name the account directly; Wise activity belongs to the profile's balance in its currency.
+        // Wise activity is money moving through the main balance; a jar's balance comes only from the sync.
+        let wisePrefix = AssetOwnership.jarName(account) == nil ? account.externalProfileID.map { "wise:" + $0 + ":" } : nil
+        for entry in document.entries where entry.accountID == accountID
+            || (wisePrefix != nil && entry.source == .wise && entry.currency == account.currency && entry.sourceRef?.hasPrefix(wisePrefix!) == true) {
+            guard let text = entry.day, let day = formatter.date(from: text), let amount = signed(entry) else { continue }
+            byDay[day, default: 0] += amount
+        }
+        guard !byDay.isEmpty else { return nil }
+        let anchorDay = UTCDay.start(of: anchor.observedAt)
+        var result: [BankBalanceObservation] = []
+        // Backwards: the balance at the end of day D is the anchor less everything that happened after D.
+        var running = anchor.amount.value, previousDay = anchorDay
+        for day in byDay.keys.filter({ $0 < anchorDay }).sorted(by: >) {
+            // Everything after `day` up to and including the anchor's own day has already happened by the anchor.
+            running -= byDay.filter { $0.key > day && $0.key <= previousDay }.values.reduce(Decimal(0), +)
+            previousDay = day
+            result.append(observation(account, amount: running, day: day, now: now))
+        }
+        // Forwards: statements newer than the anchor extend it.
+        var forward = anchor.amount.value
+        for day in byDay.keys.filter({ $0 > anchorDay }).sorted() {
+            forward += byDay[day] ?? 0
+            result.append(observation(account, amount: forward, day: day, now: now))
+        }
+        return result.sorted { $0.observedAt < $1.observedAt }
+    }
+    private static func observation(_ account: Account, amount: Decimal, day: Date, now: Date) -> BankBalanceObservation {
+        BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: account.currency,
+                               observedAt: min(day.addingTimeInterval(86400 - 1), now), source: source, sourceIdentity: account.id.uuidString + ":derived")
+    }
+    /// Replaces derived balances for the given accounts and returns the earliest day whose history changed.
+    static func apply(accountIDs: Set<UUID>, to document: inout VaultDocument, now: Date = Date()) -> Date? {
+        var earliest: Date?
+        for accountID in accountIDs {
+            let previous = document.bankBalances.filter { $0.accountID == accountID && $0.source == source }
+            let derived = derive(accountID: accountID, document: document, now: now) ?? []
+            let unchanged = previous.count == derived.count && zip(previous.sorted { $0.observedAt < $1.observedAt }, derived).allSatisfy { $0.observedAt == $1.observedAt && $0.amount.value == $1.amount.value }
+            if !unchanged {
+                document.bankBalances.removeAll { $0.accountID == accountID && $0.source == source }
+                document.bankBalances.append(contentsOf: derived)
+                if let first = (previous.map(\.observedAt) + derived.map(\.observedAt)).min() { earliest = min(earliest ?? first, first) }
+            }
+            // Net worth only counts an account from the day tracking began; the rebuilt history starts earlier.
+            // Checked even for an unchanged series, so a series saved before this rule gets its tracking fixed.
+            if let firstDerived = derived.map(\.observedAt).min(), document.isBankTracked(accountID, at: now),
+               !document.isBankTracked(accountID, at: firstDerived) {
+                document.bankTracking.removeAll { $0.accountID == accountID && $0.tracked && $0.effectiveAt > firstDerived }
+                document.setBankTracked(accountID, tracked: true, at: UTCDay.start(of: firstDerived))
+                earliest = min(earliest ?? firstDerived, firstDerived)
+            }
+        }
+        return earliest
     }
 }

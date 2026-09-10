@@ -301,8 +301,8 @@ private struct UpOnlyGuidedEntry: View {
         } else {
             entryField("Search coins", text: $search, symbol: "magnifyingglass")
                 .accessibilityLabel("Search coins").focused($searchFocused).onAppear { searchFocused = true }
-                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.catalog.isEmpty { await session.loadCatalog() }
+                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
                 }
             let suggestions = ImportCoins.suggestions(search, coins: coins)
             if !suggestions.isEmpty {
@@ -381,25 +381,45 @@ private struct UpOnlyGuidedEntry: View {
         }.task { amountFocused = true }
     }
     private var reviewAmount: some View {
-        VStack(spacing: 16) {
-            VStack(spacing: 5) {
-                UpOnlyPrivateText(quantity.wrappedValue).font(.system(size: 34, weight: .semibold).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
-                Text(mode == .bankBalances ? row.bank.account.currency : mode == .metals ? row.holding.unit + " pure metal weight" : coin?.symbol.uppercased() ?? "total quantity").font(.system(size: 12)).foregroundStyle(.secondary)
-            }.frame(maxWidth: .infinity).padding(.vertical, 6)
-            VStack(spacing: 12) {
-                if mode == .bankBalances { reviewLine("Account", row.bank.account.name + (row.bank.account.existingID == nil ? " (new)" : "")); reviewLine("As of", date.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))) }
-                else {
-                    reviewLine("Portfolio", row.holding.portfolioName)
-                    reviewLine("As of", holdingDate.wrappedValue.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
-                    if !row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { reviewLine("Paid", row.holding.paid + " " + row.holding.paidCurrency.uppercased()) }
+        let asOf = (mode == .bankBalances ? date.wrappedValue : holdingDate.wrappedValue).formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
+        let paid = row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(spacing: 16) {
+            Text("Does this look right?").font(.system(size: 22, weight: .semibold)).tracking(-0.4).frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 6) {
+                UpOnlyPrivateText(quantity.wrappedValue).font(.system(size: 40, weight: .semibold).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
+                Text(mode == .bankBalances ? row.bank.account.currency : mode == .metals ? row.holding.unit + " of " + row.holding.coin.lowercased() : coin?.symbol.uppercased() ?? "total quantity").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity).padding(.vertical, 10)
+            VStack(spacing: 0) {
+                if mode == .bankBalances {
+                    reviewLine("Account", row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil)
+                    Divider().opacity(0.4)
+                    reviewLine("As of", asOf)
+                } else {
+                    reviewLine("Portfolio", row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil)
+                    Divider().opacity(0.4)
+                    reviewLine("As of", asOf)
+                    Divider().opacity(0.4)
+                    reviewLine("Paid", paid.isEmpty ? "Not recorded" : paid + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty)
+                }
+            }.padding(.horizontal, 14).padding(.vertical, 4).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+            if mode != .bankBalances, !holdingNotes.isEmpty || review?.states[row.id] != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let state = review?.states[row.id] { Label(reviewSummary(state), systemImage: "checkmark.circle").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                     ForEach(holdingNotes, id: \.self) { note in
                         Label(note, systemImage: "info.circle").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    if let state = review?.states[row.id] { Text(state.displayText(privacy: session.privacyMode)).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                }
-            }.padding(14).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
             primary("Save") { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
         }
+    }
+    /// Turns the import engine's "previous → new Coin" state into a sentence.
+    private func reviewSummary(_ state: ImportRowState) -> String {
+        guard case .ready(let text) = state, let arrow = text.range(of: " → ") else { return state.displayText(privacy: session.privacyMode) }
+        let previous = String(text[..<arrow.lowerBound])
+        let name = coin?.name ?? (mode == .metals ? row.holding.coin : "holding")
+        if session.privacyMode { return previous == "New" ? "Adds a new " + name + " holding to " + row.holding.portfolioName + "." : "Replaces the current " + name + " total in " + row.holding.portfolioName + "." }
+        return previous == "New" ? "Adds a new " + name + " holding to " + row.holding.portfolioName + "." : "Replaces the current " + name + " total of " + previous + " in " + row.holding.portfolioName + "."
     }
     // Say out loud what a past date or a cost without an increase will do before it is saved.
     private var holdingNotes: [String] {
@@ -418,8 +438,13 @@ private struct UpOnlyGuidedEntry: View {
         }
         return notes
     }
-    private func reviewLine(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top) { Text(label).foregroundStyle(.secondary); Spacer(minLength: 8); Text(value).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true) }.font(.system(size: 12))
+    private func reviewLine(_ label: String, _ value: String, badge: String? = nil, muted: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            if let badge { Text(badge).font(.system(size: 10, weight: .semibold)).padding(.horizontal, 6).padding(.vertical, 2).background(UpOnlyTint.cashFlow.opacity(0.18), in: Capsule()).foregroundStyle(UpOnlyTint.cashFlow) }
+            Text(value).font(.system(size: 13, weight: .medium)).foregroundStyle(muted ? .tertiary : .primary).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
+        }.font(.system(size: 12)).padding(.vertical, 10)
     }
     private func entryField(_ placeholder: String, text: Binding<String>, size: CGFloat = 14, symbol: String? = nil) -> some View {
         HStack(spacing: 8) {
@@ -471,7 +496,12 @@ private struct UpOnlyGuidedEntry: View {
         let token = session.sessionToken
         do {
             try await session.commitImportBatch(batch)
-            if token == session.sessionToken { saved() }
+            if token == session.sessionToken {
+                // A record dated after the month on screen would otherwise look like it vanished.
+                let recorded = mode == .bankBalances ? date.wrappedValue : holdingDate.wrappedValue
+                if let model = session.monthModel, model.period == .monthly, recorded > model.selectedInterval().end { model.select(.current()) }
+                saved()
+            }
         } catch { if token == session.sessionToken { self.error = error.localizedDescription; working = false } }
     }
 }
@@ -609,6 +639,9 @@ struct UpOnlyImportView: View {
             if session.importDraft == nil { session.startImport(.statements) }
             prepareExternalInput(); Task { await session.readImportFiles(urls) }; return true
         } isTargeted: { dropTargeted = $0 }
+        .onAppear { session.dropZoneVisible = session.importDraft?.mode == .statements }
+        .onChange(of: session.importDraft?.mode) { _, mode in session.dropZoneVisible = mode == .statements }
+        .onDisappear { session.dropZoneVisible = false }
         .onChange(of: session.importRevision) { _, _ in invalidateReview(); clampPage() }
         .onChange(of: session.importLoading) { _, loading in if !loading, let batch = session.importDraft, usesSummary(batch) { beginReview() } }
         .onChange(of: session.document?.generation) { _, _ in if let batch = session.importDraft, usesSummary(batch) { beginReview() } }
@@ -652,6 +685,16 @@ struct UpOnlyImportView: View {
                                 .modifier(UpOnlyPillMenu()).accessibilityLabel("File options")
                         }.disabled(busy)
                         if batch.mode == .statements, !batch.rows.isEmpty { Text(source.filename).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(source.filename) }
+                        if batch.mode == .statements, !batch.rows.isEmpty, editingStatementAccount != source.id {
+                            // One real balance anchors the history rebuilt from these transactions.
+                            HStack(spacing: 8) {
+                                Text("Balance now").font(.system(size: 12)).foregroundStyle(.secondary)
+                                UpOnlyValueField("0.00", text: sourceBinding(source, \.balance)).textFieldStyle(.roundedBorder).frame(width: 110)
+                                    .accessibilityLabel("Current balance for " + (source.account.name.isEmpty ? source.filename : source.account.name))
+                                Text(source.account.currency).font(.system(size: 12)).foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
+                            }
+                        }
                         if editingStatementAccount == source.id {
                             UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
                             HStack(spacing: 8) {
@@ -676,6 +719,11 @@ struct UpOnlyImportView: View {
                         Button("Fix rows") {
                             problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
                         }.buttonStyle(.glassProminent)
+                    } else if review.learnedDays > 0 && review.readyRows == 0 {
+                        Text("Dates added for \(review.learnedDays.formatted()) saved transactions").font(.system(size: 14, weight: .medium))
+                        Text("Balance history will be rebuilt when you save.").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Button("Save and rebuild history") { Task { await save() } }
+                            .buttonStyle(.glassProminent).disabled(busy || editingStatementAccount != nil)
                     } else if review.added == 0 {
                         Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(.system(size: 14, weight: .medium))
                         Button("Done") { session.discardImport() }.buttonStyle(.glassProminent)
@@ -834,7 +882,14 @@ struct UpOnlyImportView: View {
             }
             if mode == .statements {
                 ImportAccountEditor(account: Binding(get: { source.account }, set: { setStatementAccount(source, $0) }), accounts: accounts)
-
+                // The balance anchors the history rebuilt from this statement's transactions.
+                ImportField(title: "Balance now · " + source.account.currency + " (optional)") {
+                    HStack(spacing: 8) {
+                        UpOnlyValueField("0.00", text: sourceBinding(source, \.balance)).textFieldStyle(.roundedBorder).frame(width: 140)
+                            .accessibilityLabel("Current balance for " + (source.account.name.isEmpty ? source.filename : source.account.name))
+                        Text("Lets Up Only work out the balance on every day these transactions cover.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             VStack(alignment: .leading, spacing: 8) {
                 if !mode.isHolding { Picker("Dates", selection: sourceBinding(source, \.dateFormat)) { ForEach(ImportDateFormat.allCases, id: \.self) { Text($0.rawValue).fixedSize(horizontal: false, vertical: true).tag($0) } } }
@@ -1206,8 +1261,8 @@ private struct ImportRowEditor: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Choose a coin").font(.system(size: 16, weight: .semibold))
             TextField("Search name, ticker or ID", text: $search).textFieldStyle(.roundedBorder).accessibilityLabel("Search coins")
-                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && session.catalog.isEmpty { await session.loadCatalog() }
+                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
+                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
                 }
             if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             ScrollView {
