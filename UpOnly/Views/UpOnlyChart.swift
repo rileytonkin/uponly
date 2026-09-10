@@ -110,13 +110,16 @@ struct UpOnlyChart: View {
     var selected: String?
     var tint: Color = .accentColor
     var onSelect: ((String) -> Void)?
+    /// Keep the leading empty points so the line sits at its true position across the whole range,
+    /// running to the right edge where the gridlines end. Off for monthly charts that trim to their data.
+    var spansRange = false
     @State private var hovered: Int?
     private let plotHeight: CGFloat = 112
     // Do not reserve empty leading/trailing history before the first actual observation.
     // Interior missing months remain explicit gaps in the line.
     private var visiblePoints: [UpOnlyChartPoint] {
         guard let first = points.firstIndex(where: { $0.value != nil }), let last = points.lastIndex(where: { $0.value != nil }) else { return points }
-        return Array(points[first...last])
+        return Array(points[(spansRange ? 0 : first)...last])
     }
     private var scale: UpOnlyChartScale { UpOnlyChartScale(values: visiblePoints.compactMap(\.value), includesZero: includesZero) }
     private var runs: [[Int]] {
@@ -174,7 +177,7 @@ struct UpOnlyChart: View {
         GeometryReader { geometry in
             let bounds = scale
             let axisWidth = (bounds.ticks.map { (UpOnlyChartScale.label($0) as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)]).width }.max() ?? 24) + 9
-            let plotWidth = max(1, geometry.size.width - axisWidth - 3)
+            let plotWidth = max(1, geometry.size.width - axisWidth)
             ZStack(alignment: .topLeading) {
                 Canvas { context, size in
                     for tick in bounds.ticks where !runs.isEmpty {

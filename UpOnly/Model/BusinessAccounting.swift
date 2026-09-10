@@ -370,8 +370,10 @@ nonisolated enum OwnerPayments {
             let entry = document.entries[index]
             guard entry.source != .manual, entry.bucket == .personal, entry.kindIsUserEdited != true else { continue }
             if isPersonalTransferCounterparty(entry.label, document: document) { document.entries[index].kind = .transfer }
-            else if entry.kind == .transfer, isCompanyCounterparty(entry.label, month: entry.month, document: document) {
-                // Money a connected company paid you is income in Personal. Earlier versions saved it as a transfer.
+            else if entry.kind == .transfer, entry.source == .csv, isCompanyCounterparty(entry.label, month: entry.month, document: document) {
+                // Money a connected company paid you is income in Personal. Earlier versions saved statement rows
+                // as transfers. Wise rows are left alone: the sync classifies them, and a transfer between your own
+                // profiles must stay a transfer or the two would flip each other on every refresh.
                 document.entries[index].kind = .income
             }
         }
