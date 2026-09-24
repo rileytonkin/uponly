@@ -186,7 +186,12 @@ nonisolated enum BackgroundRefresh {
         }
         if configuration.fxEnabled && !configuration.currencies.isEmpty {
             do {
-                let update = try await PublicPrices.fx(currencies: Set(configuration.currencies))
+                #if UPONLY_PERSONAL
+                let wiseToken = configuration.wiseEnabled ? (try? WiseConnection.load())?.token : nil
+                #else
+                let wiseToken: String? = nil
+                #endif
+                let update = try await PublicPrices.fx(currencies: Set(configuration.currencies)) { try await PublicPrices.rates($0, wiseToken: wiseToken) }
                 if !update.rates.isEmpty { try save(BackgroundPacket(source: "fx", fetchedAt: Date(), prices: update), configuration: configuration, root: root) }
                 if !update.fxIssues.isEmpty { errors.append("Some exchange rates") }
             } catch { errors.append("Exchange rates") }
@@ -196,8 +201,7 @@ nonisolated enum BackgroundRefresh {
                 var quotes: [QuoteObservation] = []
                 for metal in configuration.metals {
                     try Task.checkCancellation()
-                    let data = try await PublicPrices.request(host: "api.gold-api.com", path: "/price/" + metal.rawValue, query: [])
-                    quotes.append(try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: Date()))
+                    quotes.append(try await PublicPrices.metalSpot(metal, fetchedAt: Date()))
                     try await Task.sleep(for: .seconds(1.1))
                 }
                 return BackgroundPacket(source: "metals", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes))

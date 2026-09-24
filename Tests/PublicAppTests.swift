@@ -2121,3 +2121,50 @@ private final class DeferredUnlockAuthenticator: VaultAuthenticating, @unchecked
     nonisolated var keychainContext: AnyObject? { nil }
 }
 #endif
+
+struct DataSourceTests {
+    private let now = Date(timeIntervalSince1970: 1_790_256_000)
+    @Test("The market list gives prices only for coins asked about, and every listed coin's ticker")
+    func markets() throws {
+        let data = Data(#"[{"id":"bitcoin","symbol":"btc","current_price":60000.5,"last_updated":"2026-09-24T10:00:00.000Z"},{"id":"ethereum","symbol":"eth","current_price":2500,"last_updated":"2026-09-24T10:00:00Z"},{"id":"quiet","symbol":"q","current_price":null,"last_updated":null}]"#.utf8)
+        let listed = try PublicPrices.decodeMarkets(data, wanted: ["bitcoin", "quiet"], fetchedAt: now)
+        #expect(listed.quotes.map(\.assetID.rawValue) == ["bitcoin"] && listed.quotes.first?.priceUSD.value == Decimal(string: "60000.5"))
+        #expect(listed.symbols == ["bitcoin": "btc", "ethereum": "eth", "quiet": "q"])
+    }
+    @Test("Binance daily candles become each closed day's closing price")
+    func klines() throws {
+        let data = Data(#"[[1577836800000,"7195.24","7255.00","7175.15","7200.85","16792.3",1577923199999,"x",1,"x","x","0"],[1577923200000,"7200.77","7212.5","6924.74","6965.71","1",1578009599999,"x",1,"x","x","0"]]"#.utf8)
+        let start = Date(timeIntervalSince1970: 1_577_836_800), end = start.addingTimeInterval(86400)
+        let quotes = try PublicPrices.decodeKlines(data, asset: try CanonicalAssetID("bitcoin"), start: start, end: end, fetchedAt: now)
+        #expect(quotes.count == 1 && quotes[0].priceUSD.value == Decimal(string: "7200.85") && quotes[0].provider == "Binance · daily close")
+        #expect(PublicPrices.binancePair("btc") == "BTCUSDT" && PublicPrices.binancePair("usdt") == nil && PublicPrices.binancePair("a-b") == nil)
+        #expect(PublicPrices.knownSymbols["bitcoin"] == "btc" && PublicPrices.knownSymbols.count >= 200)
+    }
+    @Test("Wise rates are USD per unit, one a day for a range and dated to the UTC day")
+    func wiseRates() throws {
+        let daily = Data(#"[{"rate":1.1,"source":"EUR","target":"USD","time":"2026-09-01T00:00:00+0000"},{"rate":1.12,"source":"EUR","target":"USD","time":"2026-09-02T00:00:00+0000"}]"#.utf8)
+        let rates = try PublicPrices.decodeWiseRates(daily, currency: "EUR", fetchedAt: now, daily: true)
+        #expect(rates.map(\.rate.value) == [Decimal(string: "1.1"), Decimal(string: "1.12")] && rates.allSatisfy { $0.provider == "Wise" && UTCDay.start(of: $0.providerTime) == $0.providerTime })
+        let latest = Data(#"[{"rate":4125.5,"source":"COP","target":"USD","time":"2026-09-24T10:43:31+0000"}]"#.utf8)
+        #expect(throws: (any Error).self) { try PublicPrices.decodeWiseRates(latest, currency: "EUR", fetchedAt: now, daily: false) }
+        let cop = try PublicPrices.decodeWiseRates(latest, currency: "COP", fetchedAt: now, daily: false)
+        #expect(cop.count == 1 && cop[0].providerTime == Date(timeIntervalSince1970: 1_790_246_611))
+    }
+    @Test("Swissquote's gold quote is the tightest spread's mid-price, per gram")
+    func swissquote() throws {
+        let data = Data(#"[{"topo":{"platform":"AT","server":"AT"},"spreadProfilePrices":[{"spreadProfile":"standard","bidSpread":27.0,"askSpread":27.0,"bid":4276.345,"ask":4277.035},{"spreadProfile":"prime","bidSpread":24.25,"askSpread":24.25,"bid":4276.373,"ask":4277.008}],"ts":1790256132290}]"#.utf8)
+        let quote = try PublicPrices.decodeSwissquote(data, metal: .gold, fetchedAt: now.addingTimeInterval(200))
+        #expect(quote.assetID == PreciousMetal.gold.assetID && quote.provider == "Swissquote · spot")
+        #expect(quote.priceUSD.value == (try PriceHistory.pricePerGram(Decimal(string: "4276.6905")!)))
+    }
+    @Test("Crypto history is asked for from when a coin was first held, not only the past year")
+    func fullHistory() throws {
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+        doc.settings.automaticPrices = true
+        let held = now.addingTimeInterval(-700 * 86400)
+        let portfolio = Portfolio(name: "Ledger", createdAt: held.addingTimeInterval(-86400)); doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: held, document: doc)
+        let requests = PriceHistory.requests(document: doc, now: now).filter { $0.source == .crypto }
+        #expect(requests.map(\.start).min() == UTCDay.start(of: held))
+    }
+}

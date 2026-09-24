@@ -53,7 +53,7 @@ nonisolated enum PublicPrices {
         return [.cancelled, .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(error.code)
     }
     static func request(host: String, path: String, query: [URLQueryItem], key: String = "", limit: Int = 2 * 1024 * 1024) async throws -> Data {
-        guard ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com"].contains(host), key.utf8.count <= 512,
+        guard ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com", "api.binance.com", "forex-data-feed.swissquote.com"].contains(host), key.utf8.count <= 512,
               !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PriceError.invalidResponse }
         guard !pauses.isPaused(host) else { throw PriceError.rateLimited }
         var components = URLComponents(); components.scheme = "https"; components.host = host; components.path = path; components.queryItems = query.isEmpty ? nil : query
@@ -118,15 +118,42 @@ nonisolated enum PublicPrices {
             return QuoteObservation(assetID: try CanonicalAssetID(id), priceUSD: PreciseDecimal(value), providerTime: time, fetchedAt: fetchedAt, provider: "CoinGecko")
         }
     }
-    static func quotes(ids: [String], key: String) async throws -> [QuoteObservation] {
-        var result: [QuoteObservation] = []
-        let identifiers = Array(Set(try ids.map(MoneyInput.canonicalAssetID))).sorted()
-        for start in stride(from: 0, to: identifiers.count, by: 100) {
-            let batch = Array(identifiers[start..<min(start+100, identifiers.count)])
+    static func quotes(ids: [String], key: String) async throws -> [QuoteObservation] { try await marketQuotes(ids: ids, key: key).quotes }
+    /// Current prices without naming the coins you hold: the 250 largest by market cap in one request, then the next
+    /// 250 if a coin is still missing, and only a coin outside those is asked for by name. Also returns each listed
+    /// coin's ticker, for finding its long history on an exchange.
+    static func marketQuotes(ids: [String], key: String) async throws -> (quotes: [QuoteObservation], symbols: [String: String]) {
+        var wanted = Set(try ids.map(MoneyInput.canonicalAssetID))
+        var result: [QuoteObservation] = [], symbols: [String: String] = [:]
+        for page in 1...2 where !wanted.isEmpty {
+            let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/markets", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "order", value: "market_cap_desc"), URLQueryItem(name: "per_page", value: "250"), URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "precision", value: "full")], key: key, limit: 4 * 1024 * 1024)
+            let listed = try decodeMarkets(data, wanted: wanted, fetchedAt: Date())
+            result += listed.quotes; symbols.merge(listed.symbols) { first, _ in first }
+            wanted.subtract(listed.quotes.map(\.assetID.rawValue))
+        }
+        let rest = wanted.sorted()
+        for start in stride(from: 0, to: rest.count, by: 100) {
+            let batch = Array(rest[start..<min(start + 100, rest.count)])
             let data = try await request(host: "api.coingecko.com", path: "/api/v3/simple/price", query: [URLQueryItem(name: "ids", value: batch.joined(separator: ",")), URLQueryItem(name: "vs_currencies", value: "usd"), URLQueryItem(name: "include_last_updated_at", value: "true"), URLQueryItem(name: "precision", value: "full")], key: key)
             result += try decodeQuotes(data, requested: Set(batch), fetchedAt: Date())
         }
-        return result
+        return (result, symbols)
+    }
+    struct MarketRow: Decodable { var id: String; var symbol: String; var current_price: Decimal?; var last_updated: String? }
+    /// The market list's prices for the coins asked about, and every listed coin's ticker.
+    static func decodeMarkets(_ data: Data, wanted: Set<String>, fetchedAt: Date) throws -> (quotes: [QuoteObservation], symbols: [String: String]) {
+        let rows = try JSONDecoder().decode([MarketRow].self, from: data)
+        guard rows.count <= 500 else { throw PriceError.invalidResponse }
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        var quotes: [QuoteObservation] = [], symbols: [String: String] = [:]
+        for row in rows where (try? MoneyInput.canonicalAssetID(row.id)) == row.id {
+            if row.symbol.count <= 20 { symbols[row.id] = row.symbol.lowercased() }
+            guard wanted.contains(row.id), let price = row.current_price, MoneyInput.isFinite(price), price > 0, let text = row.last_updated,
+                  let time = fractional.date(from: text) ?? plain.date(from: text), time.timeIntervalSince1970 > 0, time <= fetchedAt.addingTimeInterval(300) else { continue }
+            quotes.append(QuoteObservation(assetID: try CanonicalAssetID(row.id), priceUSD: PreciseDecimal(price), providerTime: time, fetchedAt: fetchedAt, provider: "CoinGecko"))
+        }
+        return (quotes, symbols)
     }
     struct RateV2: Decodable { var date: String; var base: String; var quote: String; var rate: Decimal }
     static func decodeFX(_ data: Data, currency: String, fetchedAt: Date, start: Date? = nil, end: Date? = nil) throws -> [FXObservation] {
@@ -146,6 +173,45 @@ nonisolated enum PublicPrices {
         let code = try MoneyInput.normalizeCurrency(currency)
         let data = try await request(host: "api.frankfurter.dev", path: "/v2/rates", query: [URLQueryItem(name: "base", value: code), URLQueryItem(name: "quotes", value: "USD")])
         return try decodeFX(data, currency: code, fetchedAt: Date())
+    }
+    /// A currency's USD rates: the latest, or one a day over `start..<end`. Wise's first when its token is given (it
+    /// covers every currency it handles, weekends included); Frankfurter's otherwise, or when Wise can't answer.
+    static func rates(_ currency: String, start: Date? = nil, end: Date? = nil, wiseToken: String?) async throws -> [FXObservation] {
+        #if UPONLY_PERSONAL
+        if let wiseToken {
+            do {
+                let fromWise = try await WiseAPI.rates(currency, start: start, end: end, token: wiseToken)
+                if !fromWise.isEmpty { return fromWise }
+            } catch { if isOffline(error) { throw error } }
+        }
+        #endif
+        guard let start, let end else { return try await currencyRate(currency) }
+        let code = try MoneyInput.normalizeCurrency(currency)
+        let data = try await request(host: "api.frankfurter.dev", path: "/v2/rates", query: [URLQueryItem(name: "base", value: code), URLQueryItem(name: "quotes", value: "USD"), URLQueryItem(name: "from", value: ImportDateFormat.today(start)), URLQueryItem(name: "to", value: ImportDateFormat.today(end.addingTimeInterval(-1)))])
+        return try decodeFX(data, currency: code, fetchedAt: Date(), start: start, end: end)
+    }
+    struct WiseRate: Decodable { var rate: Decimal; var source: String; var target: String; var time: String }
+    /// Wise's rates as USD per unit of `currency`: the latest one, or (`daily`) one a day, dated to its UTC day as
+    /// Frankfurter's are.
+    static func decodeWiseRates(_ data: Data, currency: String, fetchedAt: Date, daily: Bool, start: Date? = nil, end: Date? = nil) throws -> [FXObservation] {
+        let rows = try JSONDecoder().decode([WiseRate].self, from: data)
+        guard !rows.isEmpty, rows.count <= 5000 else { throw PriceError.invalidResponse }
+        let offset = DateFormatter(); offset.locale = Locale(identifier: "en_US_POSIX"); offset.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+        let iso = ISO8601DateFormatter()
+        var byDay: [Date: FXObservation] = [:]
+        for row in rows {
+            guard row.source == currency, row.target == "USD", let time = offset.date(from: row.time) ?? iso.date(from: row.time),
+                  time.timeIntervalSince1970 > 0, time <= fetchedAt.addingTimeInterval(300) else { throw PriceError.invalidResponse }
+            try MoneyInput.requirePositiveFinite(row.rate)
+            let day = UTCDay.start(of: time)
+            if let start, day < UTCDay.start(of: start).addingTimeInterval(-7 * 86400) { continue }
+            if let end, day >= end { continue }
+            let observed = daily ? day : time
+            if let kept = byDay[day], kept.providerTime >= observed { continue }
+            byDay[day] = FXObservation(sourceCurrency: currency, targetCurrency: "USD", rate: PreciseDecimal(row.rate), providerTime: observed, fetchedAt: fetchedAt, provider: "Wise")
+        }
+        guard !byDay.isEmpty else { throw PriceError.invalidResponse }
+        return byDay.values.sorted { $0.providerTime < $1.providerTime }
     }
     static func fx(currencies: Set<String>, fetch: @Sendable (String) async throws -> [FXObservation] = currencyRate) async throws -> PriceUpdate {
         var result = PriceUpdate()
@@ -199,8 +265,8 @@ nonisolated enum PriceHistory {
             if isMetal && document.settings.automaticMetals && !document.settings.metalHistoryKey.isEmpty {
                 targets.append((.metal, group.key, first))
             } else if !isMetal && document.settings.automaticPrices {
-                // Demo API has a rolling 365-day window; already stored older data is retained.
-                targets.append((.crypto, group.key, max(first, end.addingTimeInterval(-364 * 86400))))
+                // CoinGecko's free plan covers the past 365 days; older days come from Binance's daily closes.
+                targets.append((.crypto, group.key, first))
             }
         }
         if document.settings.automaticFX {
@@ -375,6 +441,13 @@ nonisolated enum PriceHistory {
 extension PublicPrices {
     static func update(document: VaultDocument, now: Date = Date(), reconnected: Bool = false, includeCurrent: Bool = true) async throws -> PriceUpdate {
         var result = PriceUpdate()
+        // Wise's rates come first in the private build, when its connection is set up.
+        #if UPONLY_PERSONAL
+        let wiseToken = document.settings.automaticWise ? (try? WiseConnection.load())?.token : nil
+        #else
+        let wiseToken: String? = nil
+        #endif
+        var symbols = PublicPrices.knownSymbols
         let active = document.holdings.filter { $0.isActive(at: now) && document.portfolio(id: $0.portfolioID)?.isActive(at: now) == true }
         let crypto = active.filter { PreciousMetal.asset($0.assetID) == nil }.map { $0.assetID.rawValue }
         let metals = Set(active.compactMap { PreciousMetal.asset($0.assetID) })
@@ -389,7 +462,9 @@ extension PublicPrices {
         if includeCurrent && document.settings.automaticMetals && metals.isEmpty { result.sourceIssues["metals"] = "No gold or silver is tracked yet. Add a holding under Manage." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
             do {
-                let quotes = try await quotes(ids: crypto, key: document.settings.coinGeckoKey)
+                let listed = try await marketQuotes(ids: crypto, key: document.settings.coinGeckoKey)
+                let quotes = listed.quotes
+                symbols.merge(listed.symbols) { _, latest in latest }
                 result.quotes += quotes
                 let missing = Set(crypto).subtracting(quotes.map(\.assetID.rawValue)).sorted()
                 if !missing.isEmpty { result.sourceIssues["crypto"] = "CoinGecko has no price for " + missing.joined(separator: ", ") + ". Check the coin ID matches CoinGecko's." }
@@ -399,15 +474,14 @@ extension PublicPrices {
             for metal in metals.sorted(by: { $0.rawValue < $1.rawValue }) where !offline && !limited.contains(.metal) {
                 do {
                     try await Task.sleep(for: .seconds(1.1))
-                    let data = try await request(host: "api.gold-api.com", path: "/price/" + metal.rawValue, query: [])
-                    result.quotes.append(try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: now))
+                    result.quotes.append(try await metalSpot(metal, fetchedAt: now))
                 } catch { try Task.checkCancellation(); note(error, .metal); result.messages.append(message(error)); result.sourceIssues["metals"] = message(error) }
             }
             if !metals.isEmpty && document.settings.metalHistoryKey.isEmpty { result.messages.append("Add a free Gold API key in Sources to recover metal price history after time offline.") }
         }
         if includeCurrent && document.settings.automaticFX && !offline {
             do {
-                let update = try await fx(currencies: Set(document.accounts.map(\.currency) + document.entries.map(\.currency)))
+                let update = try await fx(currencies: Set(document.accounts.map(\.currency) + document.entries.map(\.currency))) { try await rates($0, wiseToken: wiseToken) }
                 result.rates += update.rates; result.messages += update.messages; result.fxIssues = update.fxIssues
             }
             catch { try Task.checkCancellation(); note(error, .fx); result.messages.append(message(error)); result.sourceIssues["fx"] = message(error) }
@@ -415,14 +489,48 @@ extension PublicPrices {
         // Monthly personal performance needs its dated FX immediately; do not
         // queue years of month-end rates behind unrelated asset history.
         if !offline {
-            let historicalFX = try await performanceFX(document: document, now: now, retry: reconnected)
+            let historicalFX = try await performanceFX(document: document, now: now, retry: reconnected) { request in
+                try await rates(request.identifier, start: request.start, end: request.end, wiseToken: wiseToken)
+            }
             result.rates += historicalFX.rates; result.coverage += historicalFX.coverage
             result.messages += historicalFX.messages
             result.fxIssues.merge(historicalFX.fxIssues) { _, latest in latest }
         }
         let pending = PriceHistory.requests(document: document, now: now, reconnected: reconnected)
-        var count = 0, metalCount = 0, fxCount = 0, queued = false
+        var count = 0, metalCount = 0, fxCount = 0, exchangeCount = 0, queued = false
+        // Older than CoinGecko's free year: Binance's daily closes, for a coin whose Binance pair checks out.
+        let coinGeckoStart = UTCDay.start(of: now).addingTimeInterval(-364 * 86400)
+        var matched: [String: Bool] = [:]
+        func reference(_ id: String) -> Decimal? {
+            (result.quotes + document.quotes).filter { $0.assetID.rawValue == id }.max { $0.providerTime < $1.providerTime }?.priceUSD.value
+        }
         for item in pending where !offline && !limited.contains(item.source) {
+            if item.source == .crypto, item.start < coinGeckoStart {
+                guard exchangeCount < 24 else { queued = true; continue }
+                exchangeCount += 1
+                do {
+                    try Task.checkCancellation()
+                    let asset = try CanonicalAssetID(item.identifier)
+                    guard let symbol = symbols[item.identifier], let pair = binancePair(symbol), let price = reference(item.identifier) else {
+                        // No exchange history to be had: record the stretch as checked so it isn't asked for again soon.
+                        result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue
+                    }
+                    if matched[pair] == nil { matched[pair] = await binanceMatches(pair: pair, reference: price, now: now) }
+                    guard matched[pair] == true else {
+                        result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue
+                    }
+                    try await Task.sleep(for: .milliseconds(250))
+                    let data = try await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(item.start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(item.end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1000")])
+                    let quotes = try decodeKlines(data, asset: asset, start: item.start, end: item.end, fetchedAt: now)
+                    result.quotes += quotes
+                    result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: PriceHistory.isComplete(item, observations: quotes.map(\.providerTime), now: now)))
+                } catch {
+                    try Task.checkCancellation(); note(error, item.source)
+                    if offline { continue }
+                    result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false))
+                }
+                continue
+            }
             // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
             // Prices stay at eight calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
             if item.source == .fx {
@@ -456,9 +564,8 @@ extension PublicPrices {
                     let quotes = try PriceHistory.decodeMetals(data, request: item, fetchedAt: now)
                     result.quotes += quotes; observations = quotes.map(\.providerTime)
                 case .fx:
-                    let data = try await request(host: "api.frankfurter.dev", path: "/v2/rates", query: [URLQueryItem(name: "base", value: item.identifier), URLQueryItem(name: "quotes", value: "USD"), URLQueryItem(name: "from", value: ImportDateFormat.today(item.start)), URLQueryItem(name: "to", value: ImportDateFormat.today(item.end.addingTimeInterval(-1)))])
-                    let rates = try decodeFX(data, currency: item.identifier, fetchedAt: now, start: item.start, end: item.end)
-                    result.rates += rates; observations = rates.map(\.providerTime)
+                    let fetched = try await rates(item.identifier, start: item.start, end: item.end, wiseToken: wiseToken)
+                    result.rates += fetched; observations = fetched.map(\.providerTime)
                 }
                 let complete = PriceHistory.isComplete(item, observations: observations, now: now)
                 result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: complete))
@@ -476,12 +583,128 @@ extension PublicPrices {
             }
         }
         if queued && !offline { result.messages.append("More price history is queued for the next refresh.") }
-        if document.settings.automaticPrices && document.holdings.contains(where: { PreciousMetal.asset($0.assetID) == nil && $0.createdAt < now.addingTimeInterval(-365 * 86400) }) {
-            result.messages.append("CoinGecko Demo can recover the past 365 days. Previously saved older observations remain available.")
-        }
         result.messages = Array(Set(result.messages)).sorted()
         return result
     }
+}
+
+extension PublicPrices {
+    struct SwissquoteQuote: Decodable {
+        struct Price: Decodable { var spreadProfile: String; var bid: Decimal; var ask: Decimal }
+        var spreadProfilePrices: [Price]
+        var ts: Double
+    }
+    /// Swissquote's live quote for a metal in USD an ounce: the newest platform's tightest spread, at mid-price.
+    static func decodeSwissquote(_ data: Data, metal: PreciousMetal, fetchedAt: Date) throws -> QuoteObservation {
+        let rows = try JSONDecoder().decode([SwissquoteQuote].self, from: data)
+        guard rows.count <= 50, let row = rows.max(by: { $0.ts < $1.ts }),
+              let price = row.spreadProfilePrices.first(where: { $0.spreadProfile == "prime" }) ?? row.spreadProfilePrices.first,
+              MoneyInput.isFinite(price.bid), MoneyInput.isFinite(price.ask), price.bid > 0, price.ask >= price.bid, row.ts.isFinite, row.ts > 0 else { throw PriceError.invalidResponse }
+        let time = Date(timeIntervalSince1970: row.ts / 1000)
+        guard time <= fetchedAt.addingTimeInterval(300) else { throw PriceError.invalidResponse }
+        return QuoteObservation(assetID: metal.assetID, priceUSD: PreciseDecimal(try PriceHistory.pricePerGram((price.bid + price.ask) / 2)), providerTime: time, fetchedAt: fetchedAt, provider: "Swissquote · spot")
+    }
+    /// A metal's spot price: Gold API's, or Swissquote's when Gold API can't answer (down, limited or changed).
+    static func metalSpot(_ metal: PreciousMetal, fetchedAt: Date) async throws -> QuoteObservation {
+        do {
+            let data = try await request(host: "api.gold-api.com", path: "/price/" + metal.rawValue, query: [])
+            return try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: fetchedAt)
+        } catch {
+            if isOffline(error) { throw error }
+            let data = try await request(host: "forex-data-feed.swissquote.com", path: "/public-quotes/bboquotes/instrument/" + metal.rawValue + "/USD", query: [])
+            return try decodeSwissquote(data, metal: metal, fetchedAt: fetchedAt)
+        }
+    }
+
+    /// Binance's pair against USDT for a ticker, or nil when it can't be one.
+    static func binancePair(_ symbol: String) -> String? {
+        let upper = symbol.uppercased()
+        guard (2...12).contains(upper.count), upper.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }), upper != "USDT" else { return nil }
+        return upper + "USDT"
+    }
+    /// Binance daily candles as each day's closing price, for days in `start..<end` that have closed.
+    static func decodeKlines(_ data: Data, asset: CanonicalAssetID, start: Date, end: Date, fetchedAt: Date) throws -> [QuoteObservation] {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[Any]], rows.count <= 1000 else { throw PriceError.invalidResponse }
+        var result: [QuoteObservation] = []
+        for row in rows {
+            guard row.count >= 7, let open = (row[0] as? NSNumber)?.doubleValue, let closeText = row[4] as? String, let closeTime = (row[6] as? NSNumber)?.doubleValue,
+                  let close = Decimal(string: closeText, locale: Locale(identifier: "en_US_POSIX")), MoneyInput.isFinite(close), close > 0 else { continue }
+            let opened = Date(timeIntervalSince1970: open / 1000), closed = Date(timeIntervalSince1970: closeTime / 1000)
+            guard opened >= start, opened < end, closed <= fetchedAt else { continue }
+            result.append(QuoteObservation(assetID: asset, priceUSD: PreciseDecimal(close), providerTime: closed, fetchedAt: fetchedAt, provider: "Binance · daily close"))
+        }
+        return result.sorted { $0.providerTime < $1.providerTime }
+    }
+    /// Whether a Binance pair is the same coin: its latest close within 15% of the price CoinGecko gives, since a
+    /// ticker alone can belong to two coins.
+    static func binanceMatches(pair: String, reference: Decimal, now: Date) async -> Bool {
+        guard reference > 0, let data = try? await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "limit", value: "2")]),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]], let last = rows.last, last.count >= 5,
+              let text = last[4] as? String, let close = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), close > 0 else { return false }
+        let ratio = NSDecimalNumber(decimal: close / reference).doubleValue
+        return ratio > 0.85 && ratio < 1.15
+    }
+    /// Tickers of the 250 largest coins (CoinGecko, September 2026), for finding long history when today's market
+    /// list hasn't been fetched in the same update.
+    static let knownSymbols: [String: String] = [
+        "bitcoin": "btc", "ethereum": "eth", "tether": "usdt", "binancecoin": "bnb", "ripple": "xrp",
+        "usd-coin": "usdc", "solana": "sol", "tron": "trx", "zcash": "zec", "hyperliquid": "hype",
+        "dogecoin": "doge", "monero": "xmr", "whitebit": "wbt", "usds": "usds", "chainlink": "link",
+        "cardano": "ada", "rain": "rain", "leo-token": "leo", "stellar": "xlm", "bitcoin-cash": "bch",
+        "near": "near", "uniswap": "uni", "litecoin": "ltc", "ethena-usde": "usde", "dai": "dai",
+        "avalanche-2": "avax", "usd1-wlfi": "usd1", "canton-network": "cc", "hedera-hashgraph": "hbar",
+        "the-open-network": "gram", "sui": "sui", "shiba-inu": "shib", "global-dollar": "usdg", "bittensor": "tao",
+        "crypto-com-chain": "cro", "bitway": "btw", "memecore": "m", "paypal-usd": "pyusd", "tether-gold": "xaut",
+        "okb": "okb", "hashnote-usyc": "usyc", "ripple-usd": "rlusd",
+        "blackrock-usd-institutional-digital-liquidity-fund": "buidl", "ondo-us-dollar-yield": "usdy",
+        "mantle": "mnt", "ondo-finance": "ondo", "aave": "aave", "ethena": "ena", "aster-2": "aster",
+        "polkadot": "dot", "morpho": "morpho", "pax-gold": "paxg", "pepe": "pepe", "pump-fun": "pump",
+        "world-liberty-financial": "wlfi", "internet-computer": "icp", "sky": "sky", "htx-dao": "htx",
+        "usdd": "usdd", "worldcoin-wld": "wld", "ethereum-classic": "etc", "united-stables": "u",
+        "spiko-amundi-overnight-swap-fund-eur": "eursafo", "arbitrum": "arb", "bitget-token": "bgb",
+        "usdgo": "usdgo", "venice-token": "vvv", "falcon-finance": "usdf", "bfusd": "bfusd", "lighter": "lit",
+        "gatechain-token": "gt", "quant-network": "qnt", "polygon-ecosystem-token": "pol", "kaspa": "kas",
+        "kucoin-shares": "kcs", "blockchain-capital": "bcap", "pi-network": "pi", "algorand": "algo",
+        "jupiter-exchange-solana": "jup", "render-token": "render", "akedo": "ake", "just": "jst", "cosmos": "atom",
+        "nexo": "nexo", "pancakeswap-token": "cake", "injective-protocol": "inj", "filecoin": "fil",
+        "vechain": "vet", "dash": "dash", "eutbl": "eutbl",
+        "superstate-short-duration-us-government-securities-fund-ustb": "ustb", "stable-2": "stable", "gho": "gho",
+        "aptos": "apt", "aerodrome-finance": "aero", "ether-fi": "ethfi", "pudgy-penguins": "pengu",
+        "flare-networks": "flr", "beldex": "bdx", "xdce-crowd-sale": "xdc",
+        "janus-henderson-anemoy-aaa-clo-fund": "jaaa", "blockstack": "stx", "official-trump": "trump",
+        "usual-usd": "usd0", "raydium": "ray", "curve-dao-token": "crv", "layerzero": "zro", "ylds": "ylds",
+        "pyth-network": "pyth", "true-usd": "tusd", "usdtb": "usdtb", "a7a5": "a7a5", "virtual-protocol": "virtual",
+        "euro-coin": "eurc", "fetch-ai": "fet", "celestia": "tia", "pieverse": "pieverse", "bitcoin-cash-sv": "bsv",
+        "derive": "drv", "pendle": "pendle", "pons": "pons", "falcon-finance-ff": "ff", "spx6900": "spx",
+        "sei-network": "sei", "midnight-3": "night", "hash-2": "hash", "bittorrent": "btt", "tezos": "xtz",
+        "unibase": "ub", "sun-token": "sun", "lido-dao": "ldo", "kinesis-gold": "kau",
+        "janus-henderson-anemoy-treasury-fund": "jtrsy", "first-digital-usd": "fdusd", "bedrock-token": "br",
+        "sofiusd": "sofid", "decred": "dcr", "ousg": "ousg", "apxusd": "apxusd", "kite-2": "kite", "bonk": "bonk",
+        "gnosis": "gno", "olympus": "ohm", "terra-luna": "lunc", "ethereum-name-service": "ens", "stonk-3": "stonk",
+        "grass": "grass", "re-protocol-reusd": "reusd", "optimism": "op", "arweave": "ar", "monad": "mon",
+        "starknet": "strk", "useless-3": "useless", "the-graph": "grt", "conflux-token": "cfx", "floki": "floki",
+        "ape-and-pepe": "apepe", "plasma": "xpl", "ribbita-by-virtuals": "tibbir", "jito-governance-token": "jto",
+        "apenft": "nft", "kinesis-silver": "kag", "bnb48-club-token": "koge", "syrup": "syrup", "dogwifcoin": "wif",
+        "compound-governance-token": "comp", "trust-wallet-token": "twt", "backpack": "bp", "artificial-inu-3": "ai",
+        "agora-dollar": "ausd", "zama": "zama", "crvusd": "crvusd", "eigenlayer": "eigen", "usx": "usx",
+        "frax": "frax", "jasmycoin": "jasmy", "iota": "iota", "theta-token": "theta", "safo": "safo",
+        "build-on": "b", "kaia": "kaia", "usdai": "usdai", "thorchain": "rune", "kamino": "kmno",
+        "zebec-network": "zbcn", "tradable-na-rent-financing-platform-sstn": "pc0000031", "akash-network": "akt",
+        "mina-protocol": "mina", "chain-2": "xcn", "edgex": "edge", "societe-generale-forge-eurcv": "eurcv",
+        "meteora": "met", "fartcoin": "fartcoin", "usa": "usat", "doublezero": "2z", "non-playable-coin": "npc",
+        "convex-finance": "cvx", "axie-infinity": "axs", "ecash": "xec", "neo": "neo", "swissborg": "borg",
+        "mx-token": "mx", "apyusd": "apyusd", "spiko-us-t-bills-money-market-fund": "ustbl", "vision-3": "vsn",
+        "shuffle-2": "shfl", "telcoin": "tel", "chiliz": "chz", "railgun": "rail", "btse-token": "btse",
+        "origintrail": "trac", "tradable-apac-diversified-finance-provider-sstn": "pc0000033", "coco-2": "coco",
+        "decentraland": "mana", "ultima": "ultima", "sonic-3": "s", "vaulta": "a", "dgrid-ai": "dgai",
+        "aioz-network": "aioz", "sentient": "sent", "collector-crypt": "cards", "gmt-token": "gomining",
+        "gusd": "gusd", "apecoin": "ape", "cash-cat": "cashcat", "safepal": "sfp", "seeker": "skr",
+        "strategy-pp-variable-xstock": "strcx", "meta-2-2": "meta", "1inch": "1inch", "havven": "snx",
+        "tradable-latam-fintech-sstn": "pc0000097", "jpycoin": "jpyc", "elrond-erd-2": "egld",
+        "basic-attention-token": "bat", "zencash": "zen", "rollbit-coin": "rlb", "immutable-x": "imx",
+        "cash-4": "cash", "humanity": "h", "jpysc": "jpysc", "ozone-chain": "ozo", "avant-usd": "avusd",
+        "grx-chain": "grx", "stp-network": "awe", "golem": "glm", "bc-token": "bc"
+    ]
 }
 
 #if UPONLY_PERSONAL
@@ -566,6 +789,17 @@ nonisolated enum WiseAPI {
             data.append(byte)
         }
         return data
+    }
+    /// Wise's USD rate for a currency: the latest, or one a day over `start..<end`.
+    static func rates(_ currency: String, start: Date?, end: Date?, token: String) async throws -> [FXObservation] {
+        let code = try MoneyInput.normalizeCurrency(currency)
+        var query = [URLQueryItem(name: "source", value: code), URLQueryItem(name: "target", value: "USD")]
+        if let start, let end {
+            query += [URLQueryItem(name: "from", value: ImportDateFormat.today(start) + "T00:00"), URLQueryItem(name: "to", value: ImportDateFormat.today(end) + "T00:00"),
+                      URLQueryItem(name: "group", value: "day")]
+        }
+        let data = try await request(path: "/v1/rates", query: query, token: token)
+        return try PublicPrices.decodeWiseRates(data, currency: code, fetchedAt: Date(), daily: start != nil, start: start, end: end)
     }
     static func fetch(_ connection: WiseConnection) async throws -> WiseSnapshot {
         var profiles: [WiseProfileSnapshot] = []
