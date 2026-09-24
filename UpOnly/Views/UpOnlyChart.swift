@@ -601,6 +601,8 @@ enum UpOnlyTint {
             : NSColor(srgbRed: 0.29, green: 0.39, blue: 0.67, alpha: 1)
     })
     static let crypto = Color(red: 0.82, green: 0.52, blue: 0.18)
+    /// Companies, apart from your own bank balances in the breakdown.
+    static let company = Color(red: 0.56, green: 0.42, blue: 0.86)
     /// Money up and money down, used for every signed figure (changes, cash flow, profit).
     static let gain = cashFlow
     static let loss = Color(nsColor: .systemRed)
