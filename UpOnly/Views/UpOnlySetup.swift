@@ -27,7 +27,6 @@ struct UpOnlyPageHeader: View {
     var backLabel = "Back"
     /// The visible button title: "Back", or "Cancel" or "Done" when the page is an editor.
     var backTitle = "Back"
-    var profileImage: Data?
     let back: () -> Void
     var subtitle: String?
     var trailing: AnyView?
@@ -35,7 +34,6 @@ struct UpOnlyPageHeader: View {
         HStack(spacing: 12) {
             Button(action: back) { Label(backTitle, systemImage: "chevron.left") }
                 .buttonStyle(.glass).accessibilityLabel(backLabel)
-            if let profileImage { UpOnlyProfileImage(data: profileImage, name: title, size: 24) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 14, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)

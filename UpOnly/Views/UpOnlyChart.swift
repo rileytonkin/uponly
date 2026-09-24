@@ -6,9 +6,10 @@ struct UpOnlyChartPoint: Identifiable, Equatable {
     var value: Decimal?
     var provisional = false
     var detailLabel: String?
-    /// The value counts only what could be priced that day. Drawn lighter and dashed, with `note` on hover.
-    var partial = false
+    /// Shown under the value on hover: what an estimate used, or where a month's figure came from.
     var note: String?
+    /// The day a daily history point's value is from.
+    var date: Date? = nil
     /// A date worth marking on the x-axis ("Oct", "2026", "Sep 7"). When any point has one, only those points are labelled.
     var axisLabel: String?
 }
@@ -104,7 +105,7 @@ nonisolated enum UpOnlyChartAxis {
         result.append(last)
         return result
     }
-    /// Labels only at the marked points (month starts, Mondays): every one of them when they fit, otherwise every
+    /// Labels only at the marked points (the range's first and last days): every one of them when they fit, otherwise every
     /// second, third… so the spacing stays even and no two labels collide. `widths` has one entry per point.
     static func ticks(labelled: [Int], widths: [CGFloat], plotWidth: CGFloat, gap: CGFloat = 10) -> [Tick] {
         let fitting = labelled.filter { widths.indices.contains($0) && widths[$0] <= plotWidth }
@@ -126,26 +127,27 @@ nonisolated enum UpOnlyChartAxis {
 /// What the chart derives from its points, worked out once when the points arrive rather than on every hover.
 nonisolated struct UpOnlyChartLayout {
     var visible: [UpOnlyChartPoint]
-    /// Stretches of consecutive points that have a value; gaps between them stay gaps.
+    /// Stretches of consecutive points that have a value. Monthly charts keep a missing month as a gap; daily history
+    /// draws one line across a day with no value, since what was held didn't vanish that day.
     var runs: [[Int]]
     var scale: UpOnlyChartScale
     var markers: Bool
     /// Points carrying an axis label, or nil to label from every point's `label`.
     var labelled: [Int]?
     var summary: String
-    init(points: [UpOnlyChartPoint], includesZero: Bool, showsAllMarkers: Bool = false, selected: String? = nil, spansRange: Bool = false) {
+    init(points: [UpOnlyChartPoint], includesZero: Bool, showsAllMarkers: Bool = false, selected: String? = nil, bridgesGaps: Bool = false) {
         // Don't reserve empty history before the first or after the last observation, but keep the selected
-        // point in range so its highlight never disappears. Interior missing points remain explicit gaps.
+        // point in range so its highlight never disappears.
         // Everything is worked out in locals first: a closure may not read `self` before every property is set.
         var visible = points
         if let first = points.firstIndex(where: { $0.value != nil }), let last = points.lastIndex(where: { $0.value != nil }) {
             let chosen = points.firstIndex { $0.id == selected }
-            visible = Array(points[(spansRange ? 0 : min(first, chosen ?? first))...max(last, chosen ?? last)])
+            visible = Array(points[min(first, chosen ?? first)...max(last, chosen ?? last)])
         }
         var runs: [[Int]] = [], run: [Int] = []
         for index in visible.indices {
             if visible[index].value != nil { run.append(index) }
-            else if !run.isEmpty { runs.append(run); run = [] }
+            else if !run.isEmpty, !bridgesGaps { runs.append(run); run = [] }
         }
         if !run.isEmpty { runs.append(run) }
         let values = visible.compactMap(\.value)
@@ -177,6 +179,8 @@ struct UpOnlyChart: View {
     @Environment(\.colorSchemeContrast) private var contrast
     let points: [UpOnlyChartPoint]
     var includesZero: Bool
+    /// Daily history: gaps are bridged, and the hover gives the change since the chart's first value.
+    private let bridgesGaps: Bool
     var selected: String?
     var tint: Color
     var onSelect: ((String) -> Void)?
@@ -185,15 +189,16 @@ struct UpOnlyChart: View {
     /// One x-axis label width per visible point (zero where a point has no label).
     private let labelWidths: [CGFloat]
     @State private var hovered: Int? = nil
-    private let plotHeight: CGFloat = 112
+    private let plotHeight: CGFloat = 120
     /// Room past the last point for the largest marker, so it isn't clipped at the right edge.
     private let edge: CGFloat = 6
-    /// `spansRange` keeps the leading empty points so the line sits at its true position across the whole range,
-    /// running to the right edge where the gridlines end. Off for monthly charts that trim to their data.
+    /// `bridgesGaps` is for daily history: the line runs across a day without a value. Off for monthly charts, which
+    /// keep a missing month as a gap.
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
-         tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, spansRange: Bool = false) {
+         tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false) {
         self.points = points; self.includesZero = includesZero; self.selected = selected; self.tint = tint; self.onSelect = onSelect
-        let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, spansRange: spansRange)
+        self.bridgesGaps = bridgesGaps
+        let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, bridgesGaps: bridgesGaps)
         self.layout = layout
         let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular), labelFont = NSFont.systemFont(ofSize: 10)
         axisWidth = (layout.scale.ticks.map { (UpOnlyChartScale.label($0) as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
@@ -249,6 +254,34 @@ struct UpOnlyChart: View {
             }
         }
     }
+    /// The hover card: the day, its value large, and on daily history the change since the chart's first value.
+    /// Privacy mode hides the amounts and keeps the percentage, as everywhere else.
+    private func hoverCard(_ point: UpOnlyChartPoint, index: Int) -> some View {
+        let first = layout.visible.firstIndex { $0.value != nil }
+        let change: Decimal? = {
+            guard bridgesGaps, let first, first < index, let start = layout.visible[first].value, start > 0, let value = point.value else { return nil }
+            return (value - start) / start
+        }()
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(point.detailLabel ?? point.label).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+            Text(session.privacyMode ? "••••" : point.value.map(UpOnlyFormat.exactMoney) ?? "No recorded value")
+                .font(.system(size: 15, weight: .semibold).monospacedDigit()).foregroundStyle(.primary).lineLimit(1).minimumScaleFactor(0.7)
+            if let change, let first {
+                HStack(spacing: 4) {
+                    Text(UpOnlyFormat.arrowPercent(change)).foregroundStyle(UpOnlyTint.signed(change))
+                    Text("since " + layout.visible[first].label).foregroundStyle(.secondary)
+                }.font(.system(size: 10, weight: .medium).monospacedDigit()).lineLimit(1)
+            }
+            // Notes can cite amounts (a company's revenue and expenses), so privacy mode hides them too.
+            if !session.privacyMode, let note = point.note {
+                Text(note).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+            }
+        }.padding(.horizontal, 11).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+    }
     private var historyChart: some View {
         GeometryReader { geometry in
             // The plot starts at the left edge and the value axis sits on the right, as in market apps.
@@ -262,94 +295,89 @@ struct UpOnlyChart: View {
                         // Gridlines at 4.5% (the admin's rgba(255,255,255,0.045)); the zero line a little firmer on cash-flow charts.
                         let zero = tick == 0 && includesZero
                         context.stroke(grid, with: .color(.primary.opacity(zero ? 0.2 : contrast == .increased ? 0.14 : 0.06)), lineWidth: 1)
-                        if !session.privacyMode {
-                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
-                                         at: CGPoint(x: plotWidth + edge + 5, y: yy), anchor: .leading)
-                        }
+                        // Privacy mode keeps the axis's shape with dots in place of the amounts, as market apps do.
+                        context.draw(Text(session.privacyMode ? "••••" : UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
+                                     at: CGPoint(x: plotWidth + edge + 5, y: yy), anchor: .leading)
                     }
                     let plot = context
                     let zeroY = includesZero ? y(0) : plotHeight - 6
                     let loss = UpOnlyTint.loss
-                    let solidStyle = StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
-                    let dashedStyle = StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round, dash: [4, 4])
-                    for wholeRun in layout.runs {
-                        guard let lone = wholeRun.first else { continue }
-                        if wholeRun.count == 1, let value = visible[lone].value {
+                    let solidStyle = StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                    let dashedStyle = StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [4, 4])
+                    for run in layout.runs {
+                        guard let lone = run.first else { continue }
+                        if run.count == 1, let value = visible[lone].value {
                             // A lone value is a point, not a bar; the hover shows its figure.
                             let dot = Path(ellipseIn: CGRect(x: x(lone, width: plotWidth) - 3, y: y(value) - 3, width: 6, height: 6))
                             plot.fill(dot, with: .color(includesZero && value < 0 ? loss : tint))
                             continue
                         }
-                        // Days that could only be partly valued are drawn dashed and lighter, without fill, so the
-                        // estimate is visible as an estimate. Each stretch shares its boundary point with its neighbour.
-                        var stretches: [(indices: [Int], partial: Bool)] = []
-                        for index in wholeRun {
-                            let partial = visible[index].partial
-                            if let lastStretch = stretches.last, lastStretch.partial == partial { stretches[stretches.count - 1].indices.append(index) }
-                            else {
-                                if let previous = stretches.last?.indices.last { stretches.append(([previous, index], partial)) } else { stretches.append(([index], partial)) }
+                        let first = run[0], last = run[run.count - 1]
+                        var area = line(run, width: plotWidth)
+                        area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: zeroY)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: zeroY)); area.closeSubpath()
+                        // Only a still-provisional last point (the open month) is dashed.
+                        let provisionalTail = last == visible.count - 1 && visible[last].provisional
+                        let solid = line(provisionalTail ? Array(run.dropLast()) : run, width: plotWidth)
+                        let tail = provisionalTail ? line(Array(run.suffix(2)), width: plotWidth) : nil
+                        if includesZero {
+                            // Above zero green, below red, so the answer is a colour before it is a number.
+                            var above = plot; above.clip(to: Path(CGRect(x: 0, y: 0, width: plotWidth, height: zeroY)))
+                            above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.19), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
+                            above.stroke(solid, with: .color(tint), style: solidStyle)
+                            if let tail { above.stroke(tail, with: .color(tint), style: dashedStyle) }
+                            var below = plot; below.clip(to: Path(CGRect(x: 0, y: zeroY, width: plotWidth, height: plotHeight - zeroY)))
+                            below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0), loss.opacity(0.19)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
+                            below.stroke(solid, with: .color(loss), style: solidStyle)
+                            if let tail { below.stroke(tail, with: .color(loss), style: dashedStyle) }
+                        } else {
+                            // The fill fades from under the line to nothing at the bottom, as market charts do. While
+                            // hovering, what comes after the cursor steps back, so the line up to that day stands out.
+                            let cut = hovered.map { x($0, width: plotWidth) } ?? plotWidth + edge * 2
+                            var upTo = plot; upTo.clip(to: Path(CGRect(x: -edge, y: -edge, width: cut + edge, height: plotHeight + edge * 2)))
+                            upTo.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                            upTo.stroke(solid, with: .color(tint), style: solidStyle)
+                            if let tail { upTo.stroke(tail, with: .color(tint), style: dashedStyle) }
+                            if hovered != nil {
+                                var after = plot; after.clip(to: Path(CGRect(x: cut, y: -edge, width: plotWidth + edge * 2 - cut, height: plotHeight + edge * 2)))
+                                after.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.07), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                                after.stroke(solid, with: .color(tint.opacity(0.3)), style: solidStyle)
+                                if let tail { after.stroke(tail, with: .color(tint.opacity(0.3)), style: dashedStyle) }
                             }
                         }
-                        for stretch in stretches where stretch.partial && stretch.indices.count > 1 {
-                            plot.stroke(line(stretch.indices, width: plotWidth), with: .color(tint.opacity(0.55)), style: dashedStyle)
-                        }
-                        for stretch in stretches where !stretch.partial && stretch.indices.count > 1 {
-                            let run = stretch.indices, first = run[0], last = run[run.count - 1]
-                            var area = line(run, width: plotWidth)
-                            area.addLine(to: CGPoint(x: x(last, width: plotWidth), y: zeroY)); area.addLine(to: CGPoint(x: x(first, width: plotWidth), y: zeroY)); area.closeSubpath()
-                            // Only a still-provisional last point (the open month) is dashed.
-                            let provisionalTail = last == visible.count - 1 && visible[last].provisional
-                            let solid = line(provisionalTail ? Array(run.dropLast()) : run, width: plotWidth)
-                            let tail = provisionalTail ? line(Array(run.suffix(2)), width: plotWidth) : nil
-                            if includesZero {
-                                // Above zero green, below red, so the answer is a colour before it is a number.
-                                var above = plot; above.clip(to: Path(CGRect(x: 0, y: 0, width: plotWidth, height: zeroY)))
-                                above.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.19), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: zeroY)))
-                                above.stroke(solid, with: .color(tint), style: solidStyle)
-                                if let tail { above.stroke(tail, with: .color(tint), style: dashedStyle) }
-                                var below = plot; below.clip(to: Path(CGRect(x: 0, y: zeroY, width: plotWidth, height: plotHeight - zeroY)))
-                                below.fill(area, with: .linearGradient(Gradient(colors: [loss.opacity(0), loss.opacity(0.19)]), startPoint: CGPoint(x: 0, y: zeroY), endPoint: CGPoint(x: 0, y: plotHeight)))
-                                below.stroke(solid, with: .color(loss), style: solidStyle)
-                                if let tail { below.stroke(tail, with: .color(loss), style: dashedStyle) }
-                            } else {
-                                plot.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.19), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
-                                plot.stroke(solid, with: .color(tint), style: solidStyle)
-                                if let tail { plot.stroke(tail, with: .color(tint), style: dashedStyle) }
-                            }
-                        }
-                        // Markers, plus the selection and the hover: a 5pt dot ringed in the background colour.
-                        for index in wholeRun where layout.markers || selected == visible[index].id || hovered == index {
+                        // Markers, plus the selection and the hover: a dot ringed in the background colour inside a soft halo.
+                        for index in run where layout.markers || selected == visible[index].id || hovered == index {
                             guard let value = visible[index].value else { continue }
                             let isActive = hovered == index || selected == visible[index].id
                             let colour = includesZero && value < 0 ? loss : tint
-                            let radius: CGFloat = isActive ? 5 : 2.5
+                            let radius: CGFloat = isActive ? 4.5 : 2.5
                             let centre = CGPoint(x: x(index, width: plotWidth), y: y(value))
+                            if isActive {
+                                plot.fill(Path(ellipseIn: CGRect(x: centre.x - 10, y: centre.y - 10, width: 20, height: 20)), with: .color(colour.opacity(0.18)))
+                            }
                             let dot = Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2))
                             plot.fill(dot, with: .color(colour))
                             if isActive { plot.stroke(dot, with: .color(Color(nsColor: .windowBackgroundColor)), lineWidth: 2) }
                         }
                     }
                     if let active = hovered ?? visible.firstIndex(where: { $0.id == selected }), visible.indices.contains(active) {
+                        // A hairline that fades out at both ends.
                         var crosshair = Path(); let xx = x(active, width: plotWidth)
-                        crosshair.move(to: CGPoint(x: xx, y: 4)); crosshair.addLine(to: CGPoint(x: xx, y: plotHeight - 4))
-                        plot.stroke(crosshair, with: .color(.primary.opacity(0.18)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        crosshair.move(to: CGPoint(x: xx, y: 0)); crosshair.addLine(to: CGPoint(x: xx, y: plotHeight))
+                        plot.stroke(crosshair, with: .linearGradient(Gradient(colors: [.primary.opacity(0), .primary.opacity(0.3), .primary.opacity(0.3), .primary.opacity(0)]),
+                                                                     startPoint: CGPoint(x: xx, y: 0), endPoint: CGPoint(x: xx, y: plotHeight)), lineWidth: 1)
                     }
                 }.frame(height: plotHeight).accessibilityHidden(true)
                 if let hovered, visible.indices.contains(hovered) {
                     let point = visible[hovered]
                     let anchor = x(hovered, width: plotWidth)
-                    // Beside the crosshair rather than over the point: to its right when there is room, else to its left.
-                    let left = anchor + 160 <= geometry.size.width ? anchor + 10 : max(0, anchor - 160)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(point.detailLabel ?? point.label).font(.system(size: 10, weight: .medium)).foregroundStyle(Color(red: 0.553, green: 0.553, blue: 0.592))
-                        Text(session.privacyMode ? "Value hidden" : point.value.map(UpOnlyFormat.exactMoney) ?? "No recorded value")
-                            .font(.system(size: 12, weight: .semibold).monospacedDigit()).foregroundStyle(Color(red: 0.957, green: 0.957, blue: 0.961))
-                        // Notes can cite amounts (a company's revenue and expenses), so privacy mode hides them too.
-                        if !session.privacyMode, let note = point.note { Text(note).font(.system(size: 10)).foregroundStyle(Color(red: 0.553, green: 0.553, blue: 0.592)).fixedSize(horizontal: false, vertical: true) }
-                    }.padding(11).frame(width: 150, alignment: .leading)
-                        .background(Color(red: 0.039, green: 0.039, blue: 0.051).opacity(0.94), in: RoundedRectangle(cornerRadius: 9))
-                        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.1)))
-                        .offset(x: left, y: -8)
+                    let width: CGFloat = point.note == nil || session.privacyMode ? 136 : 176
+                    // Beside the crosshair, to its right when there's room; level with the plot's emptier half so the
+                    // card never covers the point.
+                    let left = anchor + 14 + width <= geometry.size.width ? anchor + 14 : max(0, anchor - 14 - width)
+                    let low = point.value.map { y($0) > plotHeight / 2 } ?? true
+                    hoverCard(point, index: hovered).frame(width: width, alignment: .leading)
+                        .frame(width: width, height: plotHeight, alignment: low ? .top : .bottom)
+                        .offset(x: left)
                         .allowsHitTesting(false)
                 }
                 Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight)
@@ -453,14 +481,22 @@ enum UpOnlyFormat {
         let arrow = value > 0 ? "▲ " : value < 0 ? "▼ " : ""
         return text + "  " + arrow + (oneDecimal.string(from: NSDecimalNumber(decimal: abs(value))) ?? "0.0") + "%"
     }
-    /// The same move with the amount hidden, "−•••••  ▼ 3.9%": the percentage says how things moved, not how much you hold.
+    /// The same move with the amount hidden, "−••••  ▼ 3.9%": the percentage says how things moved, not how much you
+    /// hold. The sign follows the cents, as the shown amount's would.
     static func hiddenMovement(_ amount: Decimal, fraction: Decimal?) -> String {
-        (amount < 0 ? "−" : amount > 0 ? "+" : "") + "•••••" + (fraction.map { "  " + arrowPercent($0) } ?? "")
+        let cents = rounded(amount, scale: 2)
+        return (cents < 0 ? "−" : cents > 0 ? "+" : "") + "••••" + (fraction.map { "  " + arrowPercent($0) } ?? "")
     }
     /// "▲ 2.1%" for a price change: arrow, no sign, one decimal.
     static func arrowPercent(_ fraction: Decimal) -> String {
         let value = rounded(fraction * 100, scale: 1)
-        return (value > 0 ? "▲ " : value < 0 ? "▼ " : "") + (oneDecimal.string(from: NSDecimalNumber(decimal: abs(value))) ?? "0.0") + "%"
+        return (value > 0 ? "▲ " : value < 0 ? "▼ " : "") + magnitude(fraction)
+    }
+    /// The percentage as shown, to one decimal: 0.02149 is 2.1.
+    static func roundedPercent(_ fraction: Decimal) -> Decimal { rounded(fraction * 100, scale: 1) }
+    /// "2.1%": the size of a change, for a badge whose arrow gives the direction.
+    static func magnitude(_ fraction: Decimal) -> String {
+        (oneDecimal.string(from: NSDecimalNumber(decimal: abs(rounded(fraction * 100, scale: 1)))) ?? "0.0") + "%"
     }
     /// Metal is weighed in troy ounces from one ounce up, otherwise in grams. `quantity` is grams for metal.
     private static func measure(_ quantity: Decimal, metal: Bool) -> (amount: Decimal, unit: String?) {
@@ -473,12 +509,13 @@ enum UpOnlyFormat {
         let measured = measure(quantity, metal: metal)
         return ((metal ? metalWeight : coinAmount).string(from: NSDecimalNumber(decimal: measured.amount)) ?? quantity.description) + " " + (measured.unit ?? symbol)
     }
-    /// "$59,000.00", "$0.000012" (sub-dollar coins keep their significant digits), "$2,650.00/ozt" for metal.
+    /// "$59,000.00", "$0.000012" (sub-dollar coins keep their significant digits), "$2,650.00/ozt" for metal. Metal is
+    /// always priced per ounce, so the unit doesn't hint at how much is held.
     static func unitPrice(quantity: Decimal, valueUSD: Decimal, metal: Bool) -> String? {
-        let measured = measure(quantity, metal: metal)
-        guard measured.amount > 0 else { return nil }
-        let price = valueUSD / measured.amount
-        return (price < 1 ? usdSmall.string(from: NSDecimalNumber(decimal: price)) ?? "—" : exactMoney(price)) + (measured.unit.map { "/" + $0 } ?? "")
+        let units = metal ? quantity / PreciousMetal.gramsPerTroyOunce : quantity
+        guard units > 0 else { return nil }
+        let price = valueUSD / units
+        return (price < 1 ? usdSmall.string(from: NSDecimalNumber(decimal: price)) ?? "—" : exactMoney(price)) + (metal ? "/ozt" : "")
     }
     /// "0.1 BTC · $59,000.00" for a coin; "2 ozt · $2,650.00/ozt", "10 g · $100.00/g" for metal.
     static func holding(quantity: Decimal, valueUSD: Decimal?, symbol: String, metal: Bool) -> String {

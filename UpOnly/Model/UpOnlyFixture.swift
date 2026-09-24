@@ -7,6 +7,8 @@ enum UpOnlyFixture {
         doc.settings.setupComplete = true
         doc.settings.tracked = TrackedKind.normalized(tracked)
         let now = Date(), start = Date().addingTimeInterval(-90 * 86400)
+        // More coins, with gaps in their saved prices as real history has, for the chart's estimates.
+        let manyCoins = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_MANY_COINS"] == "1"
         var account: Account?
         var portfolio: Portfolio?
         if tracked.contains(.banks) {
@@ -18,6 +20,10 @@ enum UpOnlyFixture {
             let sample = Portfolio(name: "Sample portfolio", createdAt: start)
             doc.portfolios = [sample]
             doc = try HoldingMutations.addHolding(portfolioID: sample.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: Decimal(string: "0.1")!, at: start, document: doc)
+            if manyCoins {
+                doc = try HoldingMutations.addHolding(portfolioID: sample.id, assetID: CanonicalAssetID("ethereum"), assetName: "Ethereum", quantity: 2, at: start, document: doc)
+                doc = try HoldingMutations.addHolding(portfolioID: sample.id, assetID: CanonicalAssetID("solana"), assetName: "Solana", quantity: 30, at: start, document: doc)
+            }
             portfolio = sample
         }
         var metalPortfolio: Portfolio?
@@ -36,7 +42,14 @@ enum UpOnlyFixture {
                 doc.bankBalances.append(BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(Decimal(1000 + day * 10)), currency: "USD", observedAt: date, source: "Synthetic", sourceIdentity: account.id.uuidString))
             }
             if portfolio != nil {
-                doc.quotes.append(QuoteObservation(assetID: try CanonicalAssetID("bitcoin"), priceUSD: PreciseDecimal(Decimal(50000 + day * 100)), providerTime: date, fetchedAt: date, provider: "Synthetic"))
+                doc.quotes.append(QuoteObservation(assetID: try CanonicalAssetID("bitcoin"), priceUSD: PreciseDecimal(Decimal(50000 + day * 100 + (day % 7) * 350)), providerTime: date, fetchedAt: date, provider: "Synthetic"))
+                // Ethereum's price wasn't saved every fourth day; Solana's only for the last seven weeks.
+                if manyCoins, day % 4 != 0 {
+                    doc.quotes.append(QuoteObservation(assetID: try CanonicalAssetID("ethereum"), priceUSD: PreciseDecimal(Decimal(2600 - day * 3 + (day % 9) * 40)), providerTime: date, fetchedAt: date, provider: "Synthetic"))
+                }
+                if manyCoins, day >= 40 {
+                    doc.quotes.append(QuoteObservation(assetID: try CanonicalAssetID("solana"), priceUSD: PreciseDecimal(Decimal(140 + day + (day % 5) * 3)), providerTime: date, fetchedAt: date, provider: "Synthetic"))
+                }
             }
             if metalPortfolio != nil { doc.quotes.append(QuoteObservation(assetID: PreciousMetal.gold.assetID, priceUSD: PreciseDecimal(Decimal(100 + day)), providerTime: date, fetchedAt: date, provider: "Synthetic")) }
             for scope in scopes {

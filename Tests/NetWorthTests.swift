@@ -935,42 +935,60 @@ struct PurchaseLotTests {
     }
 }
 
-struct DayChangeTests {
+struct ChartPricesTests {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
-    private func component(_ id: UUID, kind: ValuationComponent.Kind, value: Decimal, quoteTime: Date?) -> ValuationComponent {
-        ValuationComponent(id: id, kind: kind, label: "Part", currency: "USD", nativeAmount: PreciseDecimal(1), usdValue: PreciseDecimal(value),
-                           quoteTime: quoteTime, fxTime: nil, isStale: false, missing: nil)
+    private func component(_ id: UUID, kind: ValuationComponent.Kind, value: Decimal?, quoteTime: Date? = nil, currency: String = "USD", amount: Decimal = 1, missing: String? = nil) -> ValuationComponent {
+        ValuationComponent(id: id, kind: kind, label: kind == .holding ? "Bitcoin" : "Savings", currency: currency, nativeAmount: PreciseDecimal(amount), usdValue: value.map(PreciseDecimal.init),
+                           quoteTime: quoteTime, fxTime: nil, isStale: false, missing: missing)
     }
-    private func valuation(at date: Date, total: Decimal, parts: [ValuationComponent], accounts: [UUID] = [], portfolios: [UUID] = []) -> ValuationResult {
-        ValuationResult(at: date, scope: .allTracked, components: parts, total: total, lastComplete: (total, date), missing: [], stale: [],
-                        includedAccountIDs: accounts, includedPortfolioIDs: portfolios, isUnavailable: false)
+    private func day(_ offset: Double) -> Date { UTCDay.start(of: now).addingTimeInterval(offset * 86400) }
+    @Test("The nearest observation within the window wins, the earlier one on a tie")
+    func nearest() {
+        let series: [(time: Date, value: Decimal)] = [(day(-10), 1), (day(-4), 2), (day(2), 3)]
+        #expect(ChartPrices.nearest(series, to: day(-5))?.value == 2)
+        #expect(ChartPrices.nearest(series, to: day(-1))?.value == 2)   // three days back against three days on
+        #expect(ChartPrices.nearest(series, to: day(1))?.value == 3)
+        #expect(ChartPrices.nearest(series, to: day(-45))?.value == nil)   // more than 30 days from anything
+        #expect(ChartPrices.nearest(series, to: day(40))?.value == nil)
+        #expect(ChartPrices.nearest([], to: now) == nil)
     }
-    @Test("24h compares like with like on fresh prices, and says nothing otherwise")
-    func dayTotal() {
-        let coin = UUID(), bank = UUID(), portfolio = UUID(), then = now.addingTimeInterval(-DayChange.window)
-        let current = valuation(at: now, total: 1100, parts: [component(coin, kind: .holding, value: 600, quoteTime: now.addingTimeInterval(-600)), component(bank, kind: .bank, value: 500, quoteTime: nil)],
-                                accounts: [bank], portfolios: [portfolio])
-        let earlier = valuation(at: then, total: 1000, parts: [component(coin, kind: .holding, value: 500, quoteTime: then.addingTimeInterval(-1800)), component(bank, kind: .bank, value: 500, quoteTime: nil)],
-                                accounts: [bank], portfolios: [portfolio])
-        let change = DayChange.total(now: current, then: earlier)
-        #expect(change?.amount == 100 && change?.fraction == Decimal(string: "0.1"))
-        // A portfolio added since then isn't a gain.
-        let added = valuation(at: now, total: 1100, parts: current.components, accounts: [bank], portfolios: [portfolio, UUID()])
-        #expect(DayChange.total(now: added, then: earlier) == nil)
-        // A price from long before 24 hours ago isn't a price for then.
-        let old = valuation(at: then, total: 1000, parts: [component(coin, kind: .holding, value: 500, quoteTime: then.addingTimeInterval(-5 * 3600))], accounts: [bank], portfolios: [portfolio])
-        #expect(DayChange.total(now: current, then: old) == nil)
+    @Test("A day without a saved price or rate takes the nearest one and says so; a missing balance can't be filled")
+    func filled() throws {
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+        let portfolio = Portfolio(name: "Ledger", createdAt: day(-400))
+        doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 2, at: day(-300), document: doc)
+        let coin = try #require(doc.holdings.first)
+        doc.quotes = [QuoteObservation(assetID: coin.assetID, priceUSD: PreciseDecimal(50000), providerTime: day(-3), fetchedAt: day(-3), provider: "CoinGecko")]
+        doc.fx = [FXObservation(sourceCurrency: "EUR", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: "1.1")!), providerTime: day(-2), fetchedAt: day(-2), provider: "ECB")]
+        let prices = ChartPrices(document: doc)
+        let bank = UUID()
+        let parts = [component(coin.id, kind: .holding, value: nil, amount: 2, missing: "quote"), component(bank, kind: .bank, value: nil, currency: "EUR", amount: 100, missing: "fx")]
+        let result = prices.filled(parts, day: day(-1))
+        #expect(result.complete)
+        #expect(result.components.map { $0.usdValue?.value } == [100000, 110])
+        #expect(result.components.allSatisfy { $0.missing == nil })
+        #expect(result.estimated.count == 2 && result.estimated[0].hasPrefix("Bitcoin at its ") && result.estimated[0].hasSuffix(" price"))
+        #expect(AssetOwnership.sum(result.components) == 100110)
+        // A part with its own value is left alone, and a missing balance leaves the day incomplete.
+        let balance = prices.filled([component(bank, kind: .bank, value: 5), component(UUID(), kind: .bank, value: nil, missing: "balance")], day: day(-1))
+        #expect(!balance.complete && balance.components[0].usdValue?.value == 5 && balance.estimated.isEmpty)
+        // Nothing within 30 days: still incomplete.
+        #expect(!prices.filled(parts, day: day(-60)).complete)
     }
-    @Test("A coin's 24h move uses the latest price at each moment, within three hours of it")
-    func dayPrice() throws {
+    @Test("A coin's move over the range compares its latest price with the one nearest the start")
+    func priceChange() throws {
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
         let bitcoin = try CanonicalAssetID("bitcoin")
-        func quote(_ hoursAgo: Double, _ price: Decimal) -> QuoteObservation {
-            QuoteObservation(assetID: bitcoin, priceUSD: PreciseDecimal(price), providerTime: now.addingTimeInterval(-hoursAgo * 3600), fetchedAt: now, provider: "CoinGecko")
+        func quote(_ offset: Double, _ price: Decimal) -> QuoteObservation {
+            QuoteObservation(assetID: bitcoin, priceUSD: PreciseDecimal(price), providerTime: day(offset), fetchedAt: day(offset), provider: "CoinGecko")
         }
-        let quotes = [quote(30, 90), quote(25, 100), quote(23, 999), quote(1, 110)]
-        #expect(DayChange.price(assetID: bitcoin, quotes: quotes, now: now) == Decimal(string: "0.1"))
-        // Nothing from around 24 hours ago: unknown, not guessed from an older price.
-        #expect(DayChange.price(assetID: bitcoin, quotes: [quote(30, 90), quote(1, 110)], now: now) == nil)
+        doc.quotes = [quote(-31, 80), quote(-29, 100), quote(-1, 110), quote(0, 120)]
+        let prices = ChartPrices(document: doc)
+        #expect(prices.priceChange(bitcoin, since: day(-30), now: now) == Decimal(string: "0.5"))   // -31 and -29 tie; the earlier wins
+        #expect(prices.priceChange(bitcoin, since: day(-28), now: now) == Decimal(string: "0.2"))
+        #expect(prices.priceChange(bitcoin, since: day(-200), now: now) == nil)
+        #expect(prices.priceChange(try CanonicalAssetID("ethereum"), since: day(-7), now: now) == nil)
     }
     @Test("All-time profit sums the holdings whose purchases cover what's held, and counts the rest")
     func allTimeProfit() throws {
@@ -989,23 +1007,21 @@ struct DayChangeTests {
     }
 }
 
-struct DayChangePartsTests {
-    private let now = Date(timeIntervalSince1970: 1_790_000_000)
-    private func part(_ id: UUID, _ value: Decimal, quoted: Date?, kind: ValuationComponent.Kind = .holding) -> ValuationComponent {
-        ValuationComponent(id: id, kind: kind, label: "Part", currency: "USD", nativeAmount: PreciseDecimal(1), usdValue: PreciseDecimal(value),
-                           quoteTime: quoted, fxTime: nil, isStale: false, missing: nil)
+struct PeriodChangeTests {
+    private func part(_ id: UUID, _ value: Decimal?) -> ValuationComponent {
+        ValuationComponent(id: id, kind: .bank, label: "Part", currency: "USD", nativeAmount: PreciseDecimal(1), usdValue: value.map(PreciseDecimal.init),
+                           quoteTime: nil, fxTime: nil, isStale: false, missing: value == nil ? "balance" : nil)
     }
-    @Test("A row's 24h move needs every part then, on fresh prices; the rest of the valuation doesn't matter")
-    func rowMove() {
-        let coin = UUID(), bank = UUID(), other = UUID(), then = now.addingTimeInterval(-DayChange.window)
-        let current = [part(coin, 550, quoted: now.addingTimeInterval(-60)), part(bank, 450, quoted: nil, kind: .bank)]
-        let earlier = [part(coin, 500, quoted: then.addingTimeInterval(-60)), part(bank, 500, quoted: nil, kind: .bank), part(other, 99, quoted: then)]
-        let move = DayChange.parts(current, earlier: earlier, now: now)
-        #expect(move?.amount == 0 && move?.fraction == 0)
-        // An account that didn't exist 24 hours ago makes the move unknown, not a gain.
-        #expect(DayChange.parts(current + [part(UUID(), 10, quoted: nil, kind: .bank)], earlier: earlier, now: now) == nil)
-        // A stale price now or then makes it unknown too.
-        #expect(DayChange.parts([part(coin, 550, quoted: now.addingTimeInterval(-4 * 3600))], earlier: earlier, now: now) == nil)
-        #expect(DayChange.parts([], earlier: earlier, now: now) == nil)
+    @Test("A change over the range is today's figure against the range's first, and new money counts")
+    func change() {
+        let change = PeriodChange(from: 4000, to: 5000)
+        #expect(change.amount == 1000 && change.fraction == Decimal(string: "0.25") && change.previous == 4000)
+        #expect(PeriodChange(from: 0, to: 50).fraction == nil)
+        let a = UUID(), b = UUID()
+        let parts = PeriodChange(parts: [part(a, 60), part(b, 40)], then: [part(a, 80)])
+        #expect(parts?.amount == 20 && parts?.fraction == Decimal(string: "0.25"))
+        // Nothing then, or a part that can't be valued, gives no change.
+        #expect(PeriodChange(parts: [part(a, 60)], then: []) == nil)
+        #expect(PeriodChange(parts: [part(a, nil)], then: [part(a, 80)]) == nil)
     }
 }

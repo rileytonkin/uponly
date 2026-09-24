@@ -121,7 +121,7 @@ struct DashboardTests {
         #expect(UpOnlyFormat.holding(quantity: 1_000_000, valueUSD: 12, symbol: "SHIB", metal: false) == "1,000,000 SHIB · $0.000012")
         #expect(UpOnlyFormat.holding(quantity: 2, valueUSD: nil, symbol: "Bitcoin", metal: false) == "2 Bitcoin")
         #expect(UpOnlyFormat.holding(quantity: PreciousMetal.gramsPerTroyOunce * 2, valueUSD: 5300, symbol: "", metal: true) == "2 ozt · $2,650.00/ozt")
-        #expect(UpOnlyFormat.holding(quantity: 10, valueUSD: 1000, symbol: "", metal: true) == "10 g · $100.00/g")
+        #expect(UpOnlyFormat.holding(quantity: 10, valueUSD: 1000, symbol: "", metal: true) == "10 g · $3,110.35/ozt")
         #expect(UpOnlyFormat.holding(quantity: 50000, valueUSD: nil, symbol: "", metal: true) == "1,607.5373 ozt")
     }
 
@@ -170,8 +170,8 @@ struct DashboardTests {
 struct PrivacyFormatTests {
     @Test("In privacy mode a move keeps its sign and percentage but not its amount")
     func hiddenMoves() {
-        #expect(UpOnlyFormat.hiddenMovement(Decimal(string: "-12.5")!, fraction: Decimal(string: "-0.0385")!) == "−•••••  ▼ 3.9%")
-        #expect(UpOnlyFormat.hiddenMovement(3, fraction: nil) == "+•••••")
-        #expect(UpOnlyFormat.hiddenMovement(0, fraction: 0) == "•••••  0.0%")
+        #expect(UpOnlyFormat.hiddenMovement(Decimal(string: "-12.5")!, fraction: Decimal(string: "-0.0385")!) == "−••••  ▼ 3.9%")
+        #expect(UpOnlyFormat.hiddenMovement(3, fraction: nil) == "+••••")
+        #expect(UpOnlyFormat.hiddenMovement(0, fraction: 0) == "••••  0.0%")
     }
 }

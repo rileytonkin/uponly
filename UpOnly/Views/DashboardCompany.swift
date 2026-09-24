@@ -2,18 +2,15 @@ import SwiftUI
 
 /// A bank group or company page: its assets, accounting figures, chart focus and accounts.
 extension UpOnlyUnlockedPanel {
-    struct CompanySelection {
-        var group: BankBalanceGroup
-    }
-    func companyContent(_ selection: CompanySelection) -> some View {
+    /// `groupID` is "personal" or a company's id.
+    func companyContent(_ groupID: String) -> some View {
         let document = session.document
         let interval = selectedInterval
         let raw = document.map { NetWorthCalculator.value(at: interval.end, scope: .allTracked, document: $0) }
-        let companyID = selection.group.businessID
+        let companyID = groupID == "personal" ? nil : groupID
         let bankValues = (raw?.components ?? []).filter { component in
             guard component.kind == .bank, let document else { return false }
-            if let companyID { return AssetOwnership.businessID(for: component, in: document) == companyID }
-            return selection.group.components.contains { $0.id == component.id }
+            return (AssetOwnership.businessID(for: component, in: document) ?? "personal") == groupID
         }
         // Personal portfolios already appear on the overview; only a company's own holdings belong here.
         let portfolios = companyID == nil ? [] : document?.portfolios.filter { $0.isActive(at: interval.end) && $0.ownerBusinessID == companyID } ?? []
@@ -26,12 +23,10 @@ extension UpOnlyUnlockedPanel {
         let focusParts = focusedParts(allParts)
         let focusTotal = focusParts.isEmpty ? nil : AssetOwnership.sum(focusParts)
         let share = document.flatMap { doc in allParts.isEmpty ? nil : AssetOwnership.personalTotal(allParts, at: interval.end, document: doc) }
-        let series = companySeries(selection, interval: interval)
+        let series = companySeries(groupID, interval: interval)
         let focusOptions = companyFocusOptions(bankValues: bankValues, portfolios: portfolios)
-        // The same 24-hour measure as the overview, over whatever the page is focused on.
-        let then = interval.end.addingTimeInterval(-DayChange.window)
-        let earlier = document.map { NetWorthCalculator.value(at: then, scope: .allTracked, document: $0, now: then).components } ?? []
-        let day = DayChange.parts(focusParts, earlier: earlier, now: interval.end)
+        // The same measure as the overview: today's figure against the chart's first, over whatever the page is focused on.
+        let change = periodChange(series, now: focusTotal)
         let hasAssetChart = series.contains { $0.value != nil }
         let showProfit = companyChart == .profit && companyID != nil
         return VStack(alignment: .leading, spacing: 14) {
@@ -41,12 +36,8 @@ extension UpOnlyUnlockedPanel {
                     eyebrow(title).frame(minHeight: 22, alignment: .leading)
                 }
                 if let focusTotal {
-                    HStack(alignment: .center, spacing: 4) {
-                        UpOnlyAmount(value: focusTotal, cents: true)
-                        UpOnlyPrivacyButton()
-                        Spacer(minLength: 0)
-                    }
-                    if let day { metricLine("24h", amount: day.amount, fraction: day.fraction, cents: true).padding(.top, 2) }
+                    UpOnlyAmount(value: focusTotal, cents: true)
+                    if let change { changeLine(change).padding(.top, 2) }
                 } else if allParts.isEmpty {
                     Text("Balance needed").font(UpOnlyType.title)
                     Text("Add a balance to value this account.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -94,7 +85,7 @@ extension UpOnlyUnlockedPanel {
                     if showProfit {
                         UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow)
                     } else if hasAssetChart {
-                        UpOnlyChart(points: series, tint: trendTint(series), spansRange: true)
+                        UpOnlyChart(points: series, tint: trendTint(series), bridgesGaps: true)
                     } else { Text("No history yet for this selection.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
                 }.padding(.top, 6)
             }
@@ -184,25 +175,22 @@ extension UpOnlyUnlockedPanel {
         guard companyFocus != .all else { return nil }
         return options.first { $0.focus == companyFocus }?.label
     }
-    /// The selected account, portfolio or whole company over time, from the saved daily values of everything tracked.
-    /// A day with an unpriced part is an estimate.
-    func companySeries(_ selection: CompanySelection, interval: DateInterval) -> [UpOnlyChartPoint] {
+    /// The selected account, portfolio or whole group over time, from the saved daily values of everything tracked.
+    /// Missing prices and rates take the nearest saved ones, as on the net worth chart.
+    func companySeries(_ groupID: String, interval: DateInterval) -> [UpOnlyChartPoint] {
         guard let document = session.document else { return [] }
-        let ids = Set(selection.group.components.map(\.id))
-        let companyID = selection.group.businessID
+        let companyID = groupID == "personal" ? nil : groupID
         let samples = DashboardPeriod.samples(in: interval, scope: .allTracked, document: document)
+        let prices = ChartPrices(document: document)
         return dailySeries(samples, interval: interval) { sample in
             let banks = sample.components.filter { component in
-                guard component.kind == .bank else { return false }
-                if let companyID { return AssetOwnership.businessID(for: component, in: document) == companyID }
-                return ids.contains(component.id)
+                component.kind == .bank && (AssetOwnership.businessID(for: component, in: document) ?? "personal") == groupID
             }
             let parts = focusedParts(banks + companyHoldings(sample.components, companyID: companyID))
             guard !parts.isEmpty else { return nil }
-            let valued = parts.filter { $0.usdValue != nil && $0.missing == nil }
-            guard let total = AssetOwnership.sum(valued), !valued.isEmpty else { return nil }
-            if valued.count == parts.count { return (total, nil) }
-            return (total, "Excludes " + parts.filter { $0.usdValue == nil || $0.missing != nil }.map(\.label).joined(separator: ", ") + " (no price that day)")
+            let day = prices.filled(parts, day: sample.utcDay)
+            guard day.complete, let total = AssetOwnership.sum(day.components) else { return nil }
+            return (total, day.estimated.isEmpty ? nil : "Estimated with " + day.estimated.joined(separator: ", "))
         }
     }
 }

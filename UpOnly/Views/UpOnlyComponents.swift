@@ -39,8 +39,26 @@ struct UpOnlyAmount: View {
     }
 }
 
-/// A coin, metal or bank at a glance, without fetching logos (that would tell a server what you hold): a coin shows
-/// its ticker's first letter (₿ for bitcoin) on a colour fixed by its id; metals use the bar icon in their own colour.
+/// A change as an outlined pill, "↑ 21.0%", green up and red down, as on the admin dashboard.
+struct UpOnlyChangeBadge: View {
+    var fraction: Decimal
+    var body: some View {
+        let rounded = UpOnlyFormat.roundedPercent(fraction)
+        let tint = UpOnlyTint.signed(rounded)
+        HStack(spacing: 2) {
+            if rounded != 0 { Image(systemName: rounded > 0 ? "arrow.up" : "arrow.down").font(.system(size: 10, weight: .bold)) }
+            Text(UpOnlyFormat.magnitude(fraction)).font(.system(size: 12, weight: .semibold).monospacedDigit())
+        }.foregroundStyle(tint).lineLimit(1).fixedSize()
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(tint.opacity(0.1), in: Capsule())
+            .overlay(Capsule().strokeBorder(tint.opacity(0.75), lineWidth: 1))
+            .accessibilityElement(children: .ignore).accessibilityLabel(UpOnlyFormat.percent(fraction))
+    }
+}
+
+/// A coin or metal at a glance. The top coins' logos ship with the app, so none is ever fetched (that would tell a
+/// server what you hold); any other coin shows its ticker's first letter on a colour fixed by its id, and metals use
+/// the bar icon in their own colour.
 struct UpOnlyAssetBadge: View {
     var assetID: String
     var symbol: String
@@ -65,6 +83,10 @@ struct UpOnlyAssetBadge: View {
     var body: some View {
         if let metal = PreciousMetal.asset(CanonicalAssetID(rawValue: assetID)) {
             UpOnlySymbolBadge(symbol: TrackedKind.metals.symbol, tint: Self.metalColour(metal), size: size)
+        } else if let logo = NSImage(named: "CoinLogos/" + assetID) {
+            Image(nsImage: logo).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size).clipShape(Circle())
+                .accessibilityHidden(true)
         } else {
             let tint = Self.palette[Self.colourIndex(assetID)]
             Text(assetID == "bitcoin" ? "₿" : String(symbol.prefix(1)).uppercased())
@@ -126,7 +148,8 @@ struct UpOnlyPrivacyButton: View {
             .accessibilityValue(session.privacyMode ? "Privacy mode on" : "Privacy mode off")
             .accessibilityIdentifier("PrivacyMode")
             .help(session.privacyMode ? "Show values (⇧⌘P)" : "Hide values (⇧⌘P)")
-            .keyboardShortcut("p", modifiers: [.command, .shift])
+            // One shortcut: the eye by the title is on every dashboard page, so the menu item doesn't register another.
+            .keyboardShortcut(inMenu ? nil : KeyboardShortcut("p", modifiers: [.command, .shift]))
     }
 }
 
@@ -200,13 +223,15 @@ nonisolated enum WorthRange: CaseIterable {
     var title: String {
         switch self { case .week: "1W"; case .month: "1M"; case .quarter: "3M"; case .year: "1Y"; case .all: "All" }
     }
-    /// How the chart caption names the range: "Past year  +$4,599 ▲ 50.5%".
+    /// "No saved values in the past year", and the range's spoken name.
     var phrase: String {
         switch self { case .week: "past week"; case .month: "past month"; case .quarter: "past 3 months"; case .year: "past year"; case .all: "all time" }
     }
     var spokenTitle: String { phrase.prefix(1).uppercased() + String(phrase.dropFirst()) }
     /// " in the past year", or nothing for All: "No saved values in the past year."
     var within: String { self == .all ? "" : " in the " + phrase }
+    /// What a change is measured against, as on the admin dashboard: "vs $4,304.28 prev 1M".
+    var previous: String { self == .all ? "at start" : "prev " + title }
     /// Whole months the company figures cover, ending with the current month. Nil for All: every reported month.
     var months: Int? {
         switch self { case .week, .month: 1; case .quarter: 3; case .year: 12; case .all: nil }
