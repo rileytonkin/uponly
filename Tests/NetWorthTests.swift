@@ -934,3 +934,57 @@ struct PurchaseLotTests {
         #expect(model.state.totals == nil && model.state.unavailable == .exchangeRates(["GBP"]))
     }
 }
+
+struct DayChangeTests {
+    private let now = Date(timeIntervalSince1970: 1_790_000_000)
+    private func component(_ id: UUID, kind: ValuationComponent.Kind, value: Decimal, quoteTime: Date?) -> ValuationComponent {
+        ValuationComponent(id: id, kind: kind, label: "Part", currency: "USD", nativeAmount: PreciseDecimal(1), usdValue: PreciseDecimal(value),
+                           quoteTime: quoteTime, fxTime: nil, isStale: false, missing: nil)
+    }
+    private func valuation(at date: Date, total: Decimal, parts: [ValuationComponent], accounts: [UUID] = [], portfolios: [UUID] = []) -> ValuationResult {
+        ValuationResult(at: date, scope: .allTracked, components: parts, total: total, lastComplete: (total, date), missing: [], stale: [],
+                        includedAccountIDs: accounts, includedPortfolioIDs: portfolios, isUnavailable: false)
+    }
+    @Test("24h compares like with like on fresh prices, and says nothing otherwise")
+    func dayTotal() {
+        let coin = UUID(), bank = UUID(), portfolio = UUID(), then = now.addingTimeInterval(-DayChange.window)
+        let current = valuation(at: now, total: 1100, parts: [component(coin, kind: .holding, value: 600, quoteTime: now.addingTimeInterval(-600)), component(bank, kind: .bank, value: 500, quoteTime: nil)],
+                                accounts: [bank], portfolios: [portfolio])
+        let earlier = valuation(at: then, total: 1000, parts: [component(coin, kind: .holding, value: 500, quoteTime: then.addingTimeInterval(-1800)), component(bank, kind: .bank, value: 500, quoteTime: nil)],
+                                accounts: [bank], portfolios: [portfolio])
+        let change = DayChange.total(now: current, then: earlier)
+        #expect(change?.amount == 100 && change?.fraction == Decimal(string: "0.1"))
+        // A portfolio added since then isn't a gain.
+        let added = valuation(at: now, total: 1100, parts: current.components, accounts: [bank], portfolios: [portfolio, UUID()])
+        #expect(DayChange.total(now: added, then: earlier) == nil)
+        // A price from long before 24 hours ago isn't a price for then.
+        let old = valuation(at: then, total: 1000, parts: [component(coin, kind: .holding, value: 500, quoteTime: then.addingTimeInterval(-5 * 3600))], accounts: [bank], portfolios: [portfolio])
+        #expect(DayChange.total(now: current, then: old) == nil)
+    }
+    @Test("A coin's 24h move uses the latest price at each moment, within three hours of it")
+    func dayPrice() throws {
+        let bitcoin = try CanonicalAssetID("bitcoin")
+        func quote(_ hoursAgo: Double, _ price: Decimal) -> QuoteObservation {
+            QuoteObservation(assetID: bitcoin, priceUSD: PreciseDecimal(price), providerTime: now.addingTimeInterval(-hoursAgo * 3600), fetchedAt: now, provider: "CoinGecko")
+        }
+        let quotes = [quote(30, 90), quote(25, 100), quote(23, 999), quote(1, 110)]
+        #expect(DayChange.price(assetID: bitcoin, quotes: quotes, now: now) == Decimal(string: "0.1"))
+        // Nothing from around 24 hours ago: unknown, not guessed from an older price.
+        #expect(DayChange.price(assetID: bitcoin, quotes: [quote(30, 90), quote(1, 110)], now: now) == nil)
+    }
+    @Test("All-time profit sums the holdings whose purchases cover what's held, and counts the rest")
+    func allTimeProfit() throws {
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+        let portfolio = Portfolio(name: "Ledger", createdAt: now.addingTimeInterval(-400 * 86400))
+        doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: now.addingTimeInterval(-300 * 86400), document: doc)
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("ethereum"), assetName: "Ethereum", quantity: 2, at: now.addingTimeInterval(-300 * 86400), document: doc)
+        let bitcoin = try #require(doc.holdings.first { $0.assetID.rawValue == "bitcoin" }), ether = try #require(doc.holdings.first { $0.assetID.rawValue == "ethereum" })
+        doc.purchases = [PurchaseLot(holdingID: bitcoin.id, quantity: PreciseDecimal(1), paid: PreciseDecimal(40000), currency: "USD", at: now.addingTimeInterval(-300 * 86400))]
+        let parts = [component(bitcoin.id, kind: .holding, value: 60000, quoteTime: now), component(ether.id, kind: .holding, value: 6000, quoteTime: now)]
+        let result = try #require(HoldingPerformance.scope(parts, document: doc, at: now))
+        #expect(result.gain == 20000 && result.cost == 40000 && result.covered == 1 && result.total == 2)
+        doc.purchases = []
+        #expect(HoldingPerformance.scope(parts, document: doc, at: now) == nil)
+    }
+}

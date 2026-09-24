@@ -853,3 +853,51 @@ nonisolated enum BalanceReconstruction {
         return earliest
     }
 }
+
+/// What moved in the last 24 hours, measured only against prices that were current then. Nothing is estimated:
+/// without a fresh enough observation the change is unknown.
+nonisolated enum DayChange {
+    static let window: TimeInterval = 24 * 3600
+    /// A price counts for a moment when it was observed within this long before it.
+    static let tolerance: TimeInterval = 3 * 3600
+    /// Today's total against the total 24 hours ago, for the same accounts and portfolios, with every holding
+    /// priced within `tolerance` of each moment. `then` is the valuation made as of 24 hours ago.
+    static func total(now current: ValuationResult, then earlier: ValuationResult) -> (amount: Decimal, fraction: Decimal?)? {
+        guard let today = current.total, let before = earlier.total,
+              Set(current.includedAccountIDs) == Set(earlier.includedAccountIDs),
+              Set(current.includedPortfolioIDs) == Set(earlier.includedPortfolioIDs),
+              pricesFresh(current), pricesFresh(earlier) else { return nil }
+        let amount = today - before
+        return (amount, before > 0 ? amount / before : nil)
+    }
+    static func pricesFresh(_ valuation: ValuationResult) -> Bool {
+        valuation.components.allSatisfy { component in
+            component.kind != .holding || component.quoteTime.map { valuation.at.timeIntervalSince($0) <= tolerance } == true
+        }
+    }
+    /// One asset's price now against its price 24 hours ago, as a fraction. Each side is the latest quote at or
+    /// before its moment, and must be within `tolerance` of it.
+    static func price(assetID: CanonicalAssetID, quotes: [QuoteObservation], now: Date) -> Decimal? {
+        func quote(at moment: Date) -> QuoteObservation? {
+            quotes.lazy.filter { $0.assetID == assetID && $0.providerTime <= moment && moment.timeIntervalSince($0.providerTime) <= tolerance }
+                .latest { $0.providerTime < $1.providerTime }
+        }
+        guard let latest = quote(at: now), let earlier = quote(at: now.addingTimeInterval(-window)), earlier.priceUSD.value > 0 else { return nil }
+        return (latest.priceUSD.value - earlier.priceUSD.value) / earlier.priceUSD.value
+    }
+}
+
+extension HoldingPerformance {
+    /// Profit against what was paid, over the holdings whose purchases cover what's held now. `covered` of `total`
+    /// holdings count; nil when none has a recorded cost. Only holdings valued in USD today are considered.
+    static func scope(_ components: [ValuationComponent], document: VaultDocument, at date: Date) -> (gain: Decimal, cost: Decimal, covered: Int, total: Int)? {
+        let holdings = components.filter { $0.kind == .holding && $0.usdValue != nil }
+        var gain = Decimal(0), cost = Decimal(0), covered = 0
+        for component in holdings {
+            let summary = summary(holdingID: component.id, valueUSD: component.usdValue?.value, document: document, at: date)
+            guard let paid = summary.costUSD, let profit = summary.gainUSD else { continue }
+            gain += profit; cost += paid; covered += 1
+        }
+        return covered > 0 ? (gain, cost, covered, holdings.count) : nil
+    }
+}
