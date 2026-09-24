@@ -50,6 +50,8 @@ struct ImportRowEditor: View {
     var selected: Bool
     var manual: Bool
     var selectable: Bool = true
+    /// Updating an existing account's balance: one line in a list, not a card of fields.
+    var compact = false
     var select: () -> Void
     var remove: () -> Void
     @State private var search = ""
@@ -61,6 +63,33 @@ struct ImportRowEditor: View {
         return PreciousMetal.allCases.filter { PreciousMetal.selectable.contains($0) || $0 == current }
     }
     var body: some View {
+        if compact { compactBankRow } else { card }
+    }
+    /// An existing account's new balance, as a home-style row: logo, name and date, and the balance to type.
+    private var compactBankRow: some View {
+        let account = accounts.first { $0.id == row.bank.account.existingID }
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                UpOnlyBankBadge(name: row.bank.account.name, synced: account?.externalProfileID != nil, image: account?.profileImage, size: 28)
+                // The date is shared, above the list; each row is its name, currency and new balance.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(row.bank.account.name).font(UpOnlyType.row.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                    Text(row.bank.account.currency).font(UpOnlyType.caption).foregroundStyle(.secondary)
+                }.frame(minWidth: 80, alignment: .leading)
+                Spacer(minLength: 8)
+                UpOnlyValueField("0.00", text: $row.bank.balance).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                    .font(UpOnlyType.row.monospacedDigit()).frame(width: 92)
+                    .padding(.horizontal, 8).padding(.vertical, 5).background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                    .accessibilityLabel("Balance for " + row.bank.account.name)
+            }
+            if let state {
+                Label(state.displayText(privacy: session.privacyMode), systemImage: state.blocksSave ? "exclamationmark.circle" : "checkmark.circle")
+                    .font(UpOnlyType.caption).foregroundStyle(state.blocksSave ? Color.orange : UpOnlyTint.cashFlow).padding(.leading, 38)
+            }
+        }.padding(.vertical, 8).opacity(row.included ? 1 : 0.5)
+            .contextMenu { Button("Leave out of this update", role: .destructive, action: remove) }
+    }
+    private var card: some View {
         VStack(alignment: .leading, spacing: mode == .statements ? 10 : 18) {
             HStack {
                 if selectable && (mode == .statements || !manual) {

@@ -114,10 +114,10 @@ extension UpOnlyUnlockedPanel {
     }
     /// Revenue, expenses, profit and your share summed over the months in the selected range, with a caption saying
     /// which months that covers.
-    func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String) {
+    func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String?) {
         let months = rangeMonths(book)
         let rows = months.compactMap { key in book.months.first { $0.month == key.description } }
-        guard let firstRow = rows.first, let lastRow = rows.last else { return (nil, nil, nil, nil, "No accounting" + worthRange.within + ".") }
+        guard !rows.isEmpty else { return (nil, nil, nil, nil, "No accounting" + worthRange.within + ".") }
         let profit = rows.reduce(Decimal(0)) { $0 + $1.profitUSD }
         let revenue = rows.allSatisfy { $0.revenueUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.revenueUSD ?? 0) } : nil
         let expenses = rows.allSatisfy { $0.expensesUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.expensesUSD ?? 0) } : nil
@@ -125,12 +125,9 @@ extension UpOnlyUnlockedPanel {
             guard let sum, let portion = book.ownership(at: row.month).flatMap({ try? $0.portion(row.profitUSD) }) else { return nil }
             return sum + portion
         }
+        // Only a gap needs saying: the chart shows the months, and marks the open one.
         let missing = months.count - rows.count
-        let first = MonthKey(firstRow.month)?.title ?? firstRow.month, last = MonthKey(lastRow.month)?.title ?? lastRow.month
-        var caption = rows.count == 1 ? first : first + " to " + last
-        if missing > 0 { caption += " · \(missing) month\(missing == 1 ? "" : "s") without accounting" }
-        if rows.contains(where: \.estimated) { caption += " · current month is provisional" }
-        return (revenue, expenses, profit, share, caption)
+        return (revenue, expenses, profit, share, missing > 0 ? "\(missing) month\(missing == 1 ? "" : "s") not reported" : nil)
     }
     /// The whole months the net worth range covers, ending with the current one. All reaches back to the company's
     /// first reported accounting month (at most ten years).

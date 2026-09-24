@@ -119,8 +119,9 @@ struct UpOnlyGuidedEntry: View {
                             ManageRow(title: item.name, caption: item.currency, divided: index > 0, chevron: true, action: {
                                 row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
                             }) {
+                                // A synced account shows its profile (whose Wise it is); a typed-in one its bank's logo.
                                 if let image = item.profileImage { UpOnlyProfileImage(data: image, name: item.name, size: 28) }
-                                else { UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: 28) }
+                                else { UpOnlyBankBadge(name: item.name, size: 28) }
                             } menu: { EmptyView() }
                         }
                     }

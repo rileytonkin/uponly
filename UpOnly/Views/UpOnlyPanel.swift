@@ -317,8 +317,10 @@ struct UpOnlyUnlockedPanel: View {
     /// The + adds to what's showing: a coin or metal on a portfolio's page, otherwise anything.
     var addButton: some View {
         let portfolio = selectedPortfolio
+        let onBanks = selectedGroupID != nil
         return Button {
             if let portfolio { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id)) }
+            else if onBanks { showImport(session.startImport(.bankBalances)) }
             else { session.addingInMenu = true }
         } label: {
             Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
@@ -326,7 +328,7 @@ struct UpOnlyUnlockedPanel: View {
         }
         .buttonStyle(.plain).glassEffect(.regular, in: .circle)
         .accessibilityLabel(portfolio.map { "Add to " + $0.name } ?? "Add").accessibilityIdentifier("AddInfo")
-        .help(portfolio.map { ($0.kind == .metals ? "Add gold or silver to " : "Add a coin to ") + $0.name } ?? "Add a balance, holding, transaction or statement")
+        .help(portfolio.map { ($0.kind == .metals ? "Add gold or silver to " : "Add a coin to ") + $0.name } ?? (onBanks ? "Add or update a bank balance" : "Add a balance, holding, transaction or statement"))
     }
     var dashboardActions: some View {
         Menu {
@@ -660,7 +662,7 @@ struct UpOnlyUnlockedPanel: View {
 
     /// One bank, company or portfolio row. Every list on the dashboard uses it, so they all look and read the same.
     struct AssetRow: Identifiable {
-        enum Trailing { case chevron, space, check(Bool), button(symbol: String, label: String, action: () -> Void) }
+        enum Trailing { case chevron, space, none, check(Bool), button(symbol: String, label: String, action: () -> Void) }
         var id: String
         var name: String
         var detail: String? = nil
@@ -672,10 +674,15 @@ struct UpOnlyUnlockedPanel: View {
         var image: Data? = nil
         /// A coin or metal's asset ID: its logo, rather than the symbol.
         var logo: String? = nil
+        /// A bank's name, for its logo when the app knows it.
+        var bank: String? = nil
+        var synced = false
         var symbol: String
         var tint: Color
         var selected = false
         var trailing = Trailing.chevron
+        /// Right-click options, such as updating a balance.
+        var options: [(title: String, action: () -> Void)] = []
         var action: () -> Void
         /// Highlighted (a company page's focus) or checked (the switcher's current page).
         var isChosen: Bool {
@@ -695,7 +702,8 @@ struct UpOnlyUnlockedPanel: View {
         HStack(spacing: 6) {
             Button(action: row.action) {
                 HStack(spacing: 10) {
-                    if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 24) }
+                    if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 24) }
+                    else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 24) }
                     else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 24) }
                     else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 24) }
                     VStack(alignment: .leading, spacing: 1) {
@@ -725,10 +733,11 @@ struct UpOnlyUnlockedPanel: View {
                     }
                 }.padding(.vertical, 8).contentShape(Rectangle())
             }.buttonStyle(UpOnlyRowButtonStyle(selected: row.selected))
+                .contextMenu { ForEach(Array(row.options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
                 .accessibilityLabel(row.name).accessibilityValue(spokenValue(row))
                 .accessibilityAddTraits(row.isChosen ? .isSelected : [])
             switch row.trailing {
-            case .chevron, .check: EmptyView()
+            case .chevron, .check, .none: EmptyView()
             case .space: Color.clear.frame(width: 24, height: 24)
             case .button(let symbol, let label, let action):
                 Button(action: action) {

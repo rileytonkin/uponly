@@ -52,7 +52,7 @@ extension UpOnlyManagement {
         ManageRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt),
                   value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) } ?? "Add balance", divided: divided,
                   action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
-            UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: 24)
+            UpOnlyBankBadge(name: account.name, size: 24)
         } menu: {
             ManageRowMenu(label: "More options for " + account.name) {
                 Button("Update balance…") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
@@ -78,7 +78,9 @@ extension UpOnlyManagement {
         let funded = byCurrency.values.filter { $0.1 != 0 }.sorted { $0.1 > $1.1 }
         let empty = byCurrency.values.filter { $0.1 == 0 }.map(\.0.currency).sorted()
         ManageRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true), divided: divided) {
-            UpOnlyProfileImage(data: first.profileImage, name: name, size: 24)
+            // Your own profile is "Wise", with Wise's logo; a company's profile keeps its own.
+            if name == "Wise" { UpOnlyBankBadge(name: name, synced: true, size: 24) }
+            else { UpOnlyProfileImage(data: first.profileImage, name: name, size: 24) }
         } menu: {
             ManageRowMenu(label: "More options for " + name) {
                 ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }) { setAccountOwner(first, owner: $0) }

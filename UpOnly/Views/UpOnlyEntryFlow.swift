@@ -94,8 +94,15 @@ struct UpOnlyEntryFlow: View {
                             UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28)
                         } menu: { EmptyView() }
                     }
-                    Button(session.importDraft == nil ? "Import several at once from a spreadsheet…" : "Continue your unfinished import…", action: showBulk)
-                        .buttonStyle(.plain).font(UpOnlyType.body).foregroundStyle(.secondary).accessibilityIdentifier("BulkImport")
+                    // Many at once is its own row, not a line of grey text.
+                    ManageCard {
+                        ManageRow(title: session.importDraft == nil ? "Several at once" : "Continue your import",
+                                  caption: session.importDraft == nil ? "Paste a spreadsheet, or update everything you track" : "Your unfinished import is still here",
+                                  chevron: true, action: showBulk) {
+                            UpOnlySymbolBadge(symbol: "tablecells", tint: UpOnlyTint.netWorth, size: 28)
+                        } menu: { EmptyView() }
+                        .accessibilityIdentifier("BulkImport")
+                    }
                 }
             }
         }.frame(maxWidth: compact ? .infinity : 400)
