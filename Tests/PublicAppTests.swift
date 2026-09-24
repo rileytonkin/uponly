@@ -2168,3 +2168,38 @@ struct DataSourceTests {
         #expect(requests.map(\.start).min() == UTCDay.start(of: held))
     }
 }
+
+struct IntradayTests {
+    private let now = Date(timeIntervalSince1970: 1_790_256_000)
+    @Test("Binance candles give each candle's open at its start and the latest close now")
+    func candles() throws {
+        let data = Data(#"[[1790254200000,"100.0","101","99","100.5","1",1790255099999,"x",1,"x","x","0"],[1790255100000,"100.5","102","100","101.5","1",1790255999999,"x",1,"x","x","0"]]"#.utf8)
+        let series = try PublicPrices.decodeCandles(data, now: now)
+        #expect(series.map(\.value) == [100, Decimal(string: "100.5")!, Decimal(string: "101.5")!])
+        #expect(series.last?.time == now && series.first?.time == Date(timeIntervalSince1970: 1_790_254_200))
+    }
+    @Test("CoinGecko's chart points come back oldest first, bad points skipped")
+    func chartPrices() throws {
+        let data = Data(#"{"prices":[[1790255000000,61000.5],[1790254000000,60900],[1790254500000,null]]}"#.utf8)
+        let series = try PublicPrices.decodeChartPrices(data, now: now)
+        #expect(series.map(\.value) == [60900, Decimal(string: "61000.5")!])
+    }
+    @Test("A step takes the latest price at or before it, or the first before them all")
+    func latest() {
+        let series: ChartEstimates.Series = [(now.addingTimeInterval(-900), 1), (now, 2)]
+        #expect(ChartEstimates.latest(series, at: now.addingTimeInterval(-60)) == 1)
+        #expect(ChartEstimates.latest(series, at: now.addingTimeInterval(-3600)) == 1)
+        #expect(ChartEstimates.latest(series, at: now.addingTimeInterval(60)) == 2)
+        #expect(ChartEstimates.latest([], at: now) == nil)
+    }
+    @Test("Finer charts mark midnights over 7 days and Mondays over 30, on the Mac's clock")
+    func marks() {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = Date(timeIntervalSince1970: 1_789_603_200) // Thu Sep 17, 2026, 00:00 UTC
+        let hourly = (0..<(7 * 24)).map { start.addingTimeInterval(TimeInterval($0) * 3600) }
+        #expect(DashboardChart.localMarks(hourly, range: .week, calendar: calendar).compactMap { $0 } == ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"])
+        let fourHourly = (0..<(30 * 6)).map { start.addingTimeInterval(TimeInterval($0) * 4 * 3600) }
+        #expect(DashboardChart.localMarks(fourHourly, range: .month, calendar: calendar).compactMap { $0 } == ["Sep 21", "Sep 28", "Oct 5", "Oct 12"])
+        #expect(WorthRange.day.intradayStep == 900 && WorthRange.week.candleInterval == "1h" && WorthRange.year.intradayStep == nil)
+    }
+}

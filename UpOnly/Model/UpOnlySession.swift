@@ -16,8 +16,12 @@ final class UpOnlySession {
     private(set) var document: VaultDocument?
     /// Counts document replacements, so work derived from the document can be reused until it changes.
     @ObservationIgnored private(set) var documentRevision = 0
-    /// The 24-hour charts' hourly values, by page, document revision and hour: each is two dozen valuations.
-    @ObservationIgnored var hourlyCache: [String: [UpOnlyChartPoint]] = [:]
+    /// The 24-hour charts' hourly valuations, by page, document revision and hour: each is two dozen valuations.
+    @ObservationIgnored var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] = [:]
+    /// Intraday prices for the 24-hour, 7-day and 30-day charts, by "range|asset", fetched while one of those
+    /// ranges is showing. Kept in memory only; the vault keeps its own hourly and daily prices.
+    private(set) var intraday: [String: ChartEstimates.Series] = [:]
+    @ObservationIgnored private var intradayFetchedAt: [String: Date] = [:]
     private(set) var monthModel: PopoverModel?
     /// True while unlocking, creating, restoring or saving a change the user made; forms disable while it's set.
     private(set) var isBusy = false
@@ -365,7 +369,7 @@ final class UpOnlySession {
         fxIssues = [:]
         if lockingVault { vault.lock() }
         sessionToken = UUID()
-        document = nil; documentRevision += 1; hourlyCache = [:]
+        document = nil; documentRevision += 1; hourlyCache = [:]; intraday = [:]; intradayFetchedAt = [:]
         monthModel = nil
         dashboardSelection = .all
         showingSwitcher = false; dashboardHeight = nil; cashFlowScope = nil
@@ -397,6 +401,51 @@ final class UpOnlySession {
 
     /// Waits until no other write is running, then claims the writer. Background work also waits for queued user edits.
     /// User edits go in the order they were made, so two quick toggles save in that order.
+    /// Fetches intraday prices for every coin (and gold) held, for a 24-hour, 7-day or 30-day chart. Each is reused for
+    /// a few minutes over 24 hours and longer over the other ranges; a failure leaves the chart on saved prices.
+    func loadIntraday(_ range: WorthRange) async {
+        guard state == .unlocked, let document, range.intradayStep != nil else { return }
+        let token = sessionToken, now = Date()
+        let reuse: TimeInterval = range == .day ? 5 * 60 : range == .week ? 30 * 60 : 2 * 3600
+        let assets = Set(document.holdings.filter { $0.isActive(at: now) && document.portfolio(id: $0.portfolioID)?.isActive(at: now) == true }.map(\.assetID))
+            .filter { PreciousMetal.asset($0) == nil ? document.settings.automaticPrices || isFixture : (document.settings.automaticMetals || isFixture) && PreciousMetal.asset($0) == .gold }
+        for asset in assets.sorted(by: { $0.rawValue < $1.rawValue }) {
+            let key = range.title + "|" + asset.rawValue
+            if let fetched = intradayFetchedAt[key], now.timeIntervalSince(fetched) < reuse { continue }
+            let reference = document.quotes.filter { $0.assetID == asset }.max { $0.providerTime < $1.providerTime }?.priceUSD.value
+            let symbol = PublicPrices.knownSymbols[asset.rawValue] ?? catalog.first { $0.id == asset.rawValue }?.symbol.lowercased()
+            let series: ChartEstimates.Series
+            #if UPONLY_FIXTURE
+            if isFixture {
+                let saved = document.quotes.filter { $0.assetID == asset }.map { (time: $0.providerTime, value: $0.priceUSD.value) }.sorted { $0.time < $1.time }
+                series = Self.syntheticIntraday(asset, saved: saved, range: range, now: now)
+            }
+            else { series = (try? await PublicPrices.intraday(asset, symbol: symbol, reference: reference, range: range, now: now, coinGeckoKey: document.settings.coinGeckoKey)) ?? [] }
+            #else
+            series = (try? await PublicPrices.intraday(asset, symbol: symbol, reference: reference, range: range, now: now, coinGeckoKey: document.settings.coinGeckoKey)) ?? []
+            #endif
+            guard token == sessionToken, state == .unlocked else { return }
+            intradayFetchedAt[key] = now
+            if !series.isEmpty { intraday[key] = series }
+        }
+    }
+    #if UPONLY_FIXTURE
+    /// Saved prices drawn between, with a little noise at each step, so the finer charts can be looked at without
+    /// the network and still agree with the saved days.
+    static func syntheticIntraday(_ asset: CanonicalAssetID, saved: ChartEstimates.Series, range: WorthRange, now: Date) -> ChartEstimates.Series {
+        guard let seconds = range.seconds, let step = range.intradayStep, let last = saved.last else { return [] }
+        var seed = asset.rawValue.unicodeScalars.reduce(UInt64(7)) { $0 &* 31 &+ UInt64($1.value) }
+        var points: ChartEstimates.Series = []
+        var time = now.addingTimeInterval(-seconds - step)
+        while time < now {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            let noise = 1 + (Double(seed >> 33) / Double(1 << 31) - 0.5) * 0.008
+            if let price = ChartEstimates.estimate(saved, at: time)?.value { points.append((time, price * Decimal(noise))) }
+            time = time.addingTimeInterval(step)
+        }
+        return points + [(now, last.value)]
+    }
+    #endif
     static func selectionExists(_ selection: DashboardSelection, in document: VaultDocument, at date: Date = Date()) -> Bool {
         switch selection {
         case .all, .cashFlow: return true

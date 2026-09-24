@@ -31,9 +31,12 @@ extension UpOnlyUnlockedPanel {
         func figure(_ result: (total: Decimal, estimated: [String])?) -> (Decimal, String?)? {
             result.map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
         }
-        let points = worthRange.hourly
-            ? hourlySeries(scope: scope, interval: interval, key: "worth \(scope)", live: valuation.total) { figure(estimates.personalTotal($0.components, day: $0.at, at: $0.at)) }
-            : dailySeries(samples, interval: interval, live: valuation.total) { figure(estimates.personalTotal($0.components, day: $0.utcDay)) }
+        let yourShare = { (components: [ValuationComponent], moment: Date) in figure(estimates.personalTotal(components, day: moment, at: moment)) }
+        // Finest first: intraday prices once fetched, then the saved hours of the past day, then saved days.
+        let points = intradaySeries(scope: scope, interval: interval, samples: samples, liveComponents: valuation.components, live: valuation.total, yourShare)
+            ?? (worthRange.hourly
+                ? hourlySeries(scope: scope, interval: interval, live: valuation.total, yourShare)
+                : dailySeries(samples, interval: interval, live: valuation.total) { figure(estimates.personalTotal($0.components, day: $0.utcDay)) })
         // A company's holdings count at your share in the total, so profit on cost is only summed for personal portfolios.
         let personal = Set(document.portfolios.filter { ($0.ownerBusinessID ?? "").isEmpty }.map(\.id))
         let portfolioOf = Dictionary(document.holdings.map { ($0.id, $0.portfolioID) }, uniquingKeysWith: { first, _ in first })

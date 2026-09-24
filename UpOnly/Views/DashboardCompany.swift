@@ -23,7 +23,7 @@ extension UpOnlyUnlockedPanel {
         let focusParts = focusedParts(allParts)
         let focusTotal = focusParts.isEmpty ? nil : AssetOwnership.sum(focusParts)
         let share = document.flatMap { doc in allParts.isEmpty ? nil : AssetOwnership.personalTotal(allParts, at: interval.end, document: doc) }
-        let series = companySeries(groupID, interval: interval, live: focusTotal)
+        let series = companySeries(groupID, interval: interval, live: focusTotal, liveComponents: raw?.components ?? [])
         let focusOptions = companyFocusOptions(bankValues: bankValues, portfolios: portfolios)
         // The same measure as the overview: today's figure against the chart's first, over whatever the page is focused on.
         let change = periodChange(series, now: focusTotal)
@@ -177,7 +177,7 @@ extension UpOnlyUnlockedPanel {
     }
     /// The selected account, portfolio or whole group over time, from the saved daily values of everything tracked.
     /// Missing prices, rates and balances are estimated as on the net worth chart; the line ends at `live`.
-    func companySeries(_ groupID: String, interval: DateInterval, live: Decimal?) -> [UpOnlyChartPoint] {
+    func companySeries(_ groupID: String, interval: DateInterval, live: Decimal?, liveComponents: [ValuationComponent]) -> [UpOnlyChartPoint] {
         guard let document = session.document else { return [] }
         let companyID = groupID == "personal" ? nil : groupID
         let samples = DashboardPeriod.samples(in: interval, scope: .allTracked, document: document)
@@ -190,9 +190,10 @@ extension UpOnlyUnlockedPanel {
             guard !parts.isEmpty else { return nil }
             return estimates.total(parts, day: day, at: moment).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
         }
-        if worthRange.hourly {
-            return hourlySeries(scope: .allTracked, interval: interval, key: "group \(groupID) \(companyFocus)", live: live) { figure($0.components, day: $0.at, at: $0.at) }
+        if let fine = intradaySeries(scope: .allTracked, interval: interval, samples: samples, liveComponents: liveComponents, live: live, { figure($0, day: $1, at: $1) }) {
+            return fine
         }
+        if worthRange.hourly { return hourlySeries(scope: .allTracked, interval: interval, live: live) { figure($0, day: $1, at: $1) } }
         return dailySeries(samples, interval: interval, live: live) { figure($0.components, day: $0.utcDay, at: nil) }
     }
 }
