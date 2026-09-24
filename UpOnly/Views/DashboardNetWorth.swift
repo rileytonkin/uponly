@@ -244,8 +244,14 @@ extension UpOnlyUnlockedPanel {
                         ForEach(HoldingSort.allCases, id: \.self) { sort in
                             Toggle(sort.title, isOn: Binding(get: { holdingSort == sort }, set: { _ in holdingSort = sort }))
                         }
-                    } label: { Text(holdingSort == .value ? "Value ⌄" : holdingSort.title + " ⌄") }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().frame(width: 96, alignment: .trailing)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(holdingSort == .value ? "Value" : holdingSort.title)
+                            Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                        }.font(UpOnlyType.caption).foregroundStyle(.secondary)
+                    }
+                        // A plain menu keeps the column head's size and colour; the chevron says it can be changed.
+                        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().frame(width: 96, alignment: .trailing)
                         .accessibilityLabel("Sort holdings").accessibilityValue(holdingSort.title)
                 }.font(UpOnlyType.caption).foregroundStyle(.secondary).padding(.top, 2)
             }

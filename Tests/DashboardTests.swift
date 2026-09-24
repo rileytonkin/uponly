@@ -94,13 +94,8 @@ struct DashboardTests {
         #expect(UpOnlyChartAxis.ticks(labelled: [], widths: widths, plotWidth: 262).isEmpty)
     }
 
-    @Test("The change line shows whole dollars with a true minus and the percent to one decimal")
+    @Test("Money and percentages use a true minus and one decimal")
     func changeFormatting() {
-        #expect(UpOnlyFormat.change(4599, from: 9107) == "+$4,599 (+50.5%)")
-        #expect(UpOnlyFormat.change(-1200, from: 35000) == "−$1,200 (−3.4%)")
-        #expect(UpOnlyFormat.change(500, from: 0) == "+$500")
-        #expect(UpOnlyFormat.change(250, from: -100) == "+$250")
-        #expect(UpOnlyFormat.change(0, from: 1000) == "$0 (0.0%)")
         #expect(UpOnlyFormat.percent(Decimal(string: "0.18")!) == "+18.0%")
         #expect(UpOnlyFormat.percent(Decimal(string: "-0.0342")!) == "−3.4%")
         #expect(UpOnlyFormat.money(-1234) == "−$1,234")

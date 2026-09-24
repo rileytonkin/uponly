@@ -107,16 +107,18 @@ extension UpOnlyUnlockedPanel {
             HStack(spacing: 10) {
                 if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 28) }
                 else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 28) }
-                Text(row.name).font(UpOnlyType.row.weight(chosen ? .semibold : .medium)).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                // The name gives way before the figures do.
+                Text(row.name).font(UpOnlyType.row.weight(chosen ? .semibold : .medium)).lineLimit(1).truncationMode(.middle)
+                    .frame(minWidth: 90, alignment: .leading)  // a huge amount shrinks before the name disappears
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 1) {
                     UpOnlyPrivateText(row.valueText).font(UpOnlyType.row.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
                     if let move, let day = row.day {
                         Text(move).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(day.amount)).lineLimit(1).minimumScaleFactor(0.8)
                     } else if let detail = row.detail { Text(detail).font(UpOnlyType.caption).foregroundStyle(.secondary) }
-                }
+                }.layoutPriority(1)
                 if let share = row.share, !session.privacyMode {
-                    Text(share == 0 ? "<1%" : "\(share)%").font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 30, alignment: .trailing)
+                    Text(share == 0 ? "<1%" : "\(share)%").font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).fixedSize().frame(minWidth: 30, alignment: .trailing)
                 }
                 Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.tint).opacity(chosen ? 1 : 0).frame(width: 12)
             }.padding(.vertical, 7).contentShape(Rectangle())
