@@ -17,10 +17,9 @@ extension UpOnlyUnlockedPanel {
         var value: Decimal?
         var valueText: String
         var change: PeriodChange? = nil
-        /// Your part of the value: a company's at your ownership share. Shares of the whole are worked out from it.
+        /// Your part of the value: a company's at your ownership share. The breakdown is worked out from it.
         var personal: Decimal? = nil
-        var share: Int? = nil
-        /// A second line when there's no change to show ("this month").
+        /// A second line: a part-owned company's share ("You own 50%"), or income & spending's "This month".
         var detail: String? = nil
     }
     /// What a group without a total is waiting for: a rate, a balance or a price.
@@ -40,10 +39,13 @@ extension UpOnlyUnlockedPanel {
             let then = (groupsBefore[group.id] ?? []) + (group.businessID.map { companyHoldings(before, companyID: $0) } ?? [])
             let total = AssetOwnership.sum(parts)
             let name = group.businessID.map(companyName) ?? group.name
+            // A company's row shows the whole company; say when only part of it is yours, as All assets counts.
+            let owned = group.businessID.flatMap { id in document.businessAccounting?.first { $0.id == id }?.ownership(at: AssetOwnership.month(at: date).description) }
+                .flatMap { $0.numerator < $0.denominator ? "You own " + $0.label : nil }
             return SelectionRow(id: group.id, selection: .bankGroup(group.id), section: group.businessID == nil ? "Accounts" : "Companies", name: name,
                                 image: group.businessID == nil ? session.personalImage : group.image, symbol: group.businessID == nil ? "building.columns.fill" : "building.2.fill", tint: group.businessID == nil ? UpOnlyTint.netWorth : UpOnlyTint.company,
                                 value: total, valueText: total.map(UpOnlyFormat.exactMoney) ?? Self.needed(parts), change: PeriodChange(parts: parts, then: then),
-                                personal: AssetOwnership.personalTotal(parts, at: date, document: document))
+                                personal: AssetOwnership.personalTotal(parts, at: date, document: document), detail: owned)
         }
         let companies = Set(groups.compactMap(\.businessID))
         let portfolioOf = Dictionary(document.holdings.map { ($0.id, $0.portfolioID) }, uniquingKeysWith: { first, _ in first })
@@ -55,17 +57,12 @@ extension UpOnlyUnlockedPanel {
             let total = parts.isEmpty ? nil : AssetOwnership.sum(parts)
             let company = owner.flatMap { id in model.books.first { $0.id == id }?.name }
             let largest = parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document.holdings.first { $0.id == part.id }?.assetID.rawValue }
-            rows.append(SelectionRow(id: portfolio.id.uuidString, selection: .portfolio(portfolio.id), section: portfolio.kind == .metals ? "Gold & silver" : "Crypto",
+            rows.append(SelectionRow(id: portfolio.id.uuidString, selection: .portfolio(portfolio.id), section: portfolio.kind == .metals ? "Metals" : "Crypto",
                                      name: portfolio.name + (company.map { " · " + $0 } ?? ""), logo: largest,
                                      symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                      tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto,
                                      value: total, valueText: parts.isEmpty ? "No holdings" : total.map(UpOnlyFormat.exactMoney) ?? "Price needed",
                                      change: PeriodChange(parts: parts, then: then), personal: parts.isEmpty ? nil : AssetOwnership.personalTotal(parts, at: date, document: document)))
-        }
-        // Shares of your total, once there's more than one row to share it: a half-owned company counts at half.
-        if rows.count > 1 {
-            let shares = DashboardChart.percentages(rows.map { $0.personal ?? 0 })
-            for index in rows.indices where (rows[index].personal ?? 0) > 0 { rows[index].share = shares[index] }
         }
         return rows
     }
@@ -84,35 +81,39 @@ extension UpOnlyUnlockedPanel {
         let all = SelectionRow(id: "all", selection: .all, section: "", name: "All assets", symbol: "square.grid.2x2.fill", tint: UpOnlyTint.netWorth,
                                value: personal?.total, valueText: personal?.total.map(UpOnlyFormat.exactMoney) ?? "—", change: allChange)
         let cashFlow = SelectionRow(id: "cashflow", selection: .cashFlow, section: "Cash flow", name: "Income & spending", symbol: "arrow.up.arrow.down",
-                                    tint: UpOnlyTint.cashFlow, value: month, valueText: month.map { ($0 > 0 ? "+" : "") + UpOnlyFormat.money($0) } ?? "—", detail: "this month")
+                                    tint: UpOnlyTint.cashFlow, value: month, valueText: month.map { ($0 > 0 ? "+" : "") + UpOnlyFormat.money($0) } ?? "Nothing yet", detail: "This month")
         // One card of rows, the same rows as the home list: everything, then each group, then income & spending.
         // The chosen one has a check; adding and managing stay with the + and … by the title.
-        let list = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Gold & silver", "Companies"].flatMap { section in rows.filter { $0.section == section } }
+        let list = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Metals", "Companies"].flatMap { section in rows.filter { $0.section == section } }
             + (shows(.cashFlow) ? [cashFlow] : [])
         let slices = allocation(rows)
+        // The switcher opens at the home page's height; the breakdown takes whatever the list leaves, so there's no
+        // empty space under the list (and with a long list it stays at its smallest and the page scrolls).
+        let room = (session.dashboardHeight ?? 0) - headerHeight - 16 - switcherListHeight - 10
         return VStack(spacing: 10) {
-            // What your total is made of, first.
-            if slices.count > 1, !session.privacyMode || session.standInFactor != nil { UpOnlyBreakdown(slices: slices) }
+            // What your total is made of, first. Its shares are the legend's, so the rows don't repeat them.
+            if slices.count > 1, !session.privacyMode || session.standInFactor != nil {
+                UpOnlyBreakdown(slices: slices, diameter: min(112, max(78, room - 32)), height: room > 110 ? min(room, 180) : nil)
+            }
             assetList(list.map(switcherRow))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { switcherListHeight = $0 }
         }
     }
     /// One slice of the breakdown: a kind of asset and your part of it.
     struct Slice: Identifiable { var id: String; var name: String; var value: Decimal; var tint: Color }
-    /// Your total by kind: bank balances, crypto, gold & silver and companies (at your share).
+    /// Your total by kind: bank balances, crypto, metals and companies (at your share).
     func allocation(_ rows: [SelectionRow]) -> [Slice] {
         [("Accounts", "Bank balances", UpOnlyTint.netWorth), ("Crypto", "Crypto", UpOnlyTint.crypto),
-         ("Gold & silver", "Gold & silver", UpOnlyTint.metals), ("Companies", "Companies", UpOnlyTint.company)].compactMap { section, name, tint in
+         ("Metals", "Metals", UpOnlyTint.metals), ("Companies", "Companies", UpOnlyTint.company)].compactMap { section, name, tint in
             let value = rows.filter { $0.section == section }.compactMap(\.personal).reduce(Decimal(0), +)
             return value > 0 ? Slice(id: section, name: name, value: value, tint: tint) : nil
         }
     }
-    /// A switcher row is a home row: icon, name with its share of your total (or "this month") underneath, and value
-    /// over its change over the range. The chosen one has a check where the home rows have a chevron.
+    /// A switcher row is a home row: icon, name (with a part-owned company's share, or "This month"), and value over
+    /// its change over the range. The chosen one has a check where the home rows have a chevron.
     func switcherRow(_ row: SelectionRow) -> AssetRow {
         let chosen = row.selection == session.dashboardSelection
-        // Stand-in figures keep proportions, so shares show in privacy mode too; only without them are they hidden.
-        let share = session.privacyMode && session.standInFactor == nil ? nil : row.share.map { $0 == 0 ? "<1% of total" : "\($0)% of total" }
-        return AssetRow(id: row.id, name: row.name, detail: share ?? row.detail, value: row.valueText, change: row.change?.fraction,
+        return AssetRow(id: row.id, name: row.name, detail: row.detail, value: row.valueText, change: row.change?.fraction,
                         image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint, trailing: .check(chosen)) { select(row.selection) }
     }
 }
@@ -121,6 +122,9 @@ extension UpOnlyUnlockedPanel {
 /// with each kind's share beside it, in one card like the list below.
 struct UpOnlyBreakdown: View {
     let slices: [UpOnlyUnlockedPanel.Slice]
+    /// The donut's size, and the card's height when it fills the room the list leaves.
+    var diameter: CGFloat = 78
+    var height: CGFloat? = nil
     @State private var shown = false
     var body: some View {
         let percents = DashboardChart.percentages(slices.map(\.value))
@@ -130,21 +134,22 @@ struct UpOnlyBreakdown: View {
         let largest = percents.indices.max { percents[$0] < percents[$1] } ?? 0
         // Square-ended segments with a hairline gap: round ends would reach past their own slice into the next.
         let gap = slices.count > 1 ? 0.012 : 0
+        let line = diameter > 90 ? 12.0 : 10.0
         return HStack(spacing: 20) {
             ZStack {
-                Circle().stroke(Color.primary.opacity(0.06), lineWidth: 10)
+                Circle().stroke(Color.primary.opacity(0.06), lineWidth: line)
                 ForEach(slices.indices, id: \.self) { index in
                     let start = (index == 0 ? 0 : ends[index - 1]) + gap / 2, end = max(start, ends[index] - gap / 2)
                     Circle().trim(from: start, to: shown ? end : start)
                         .stroke(LinearGradient(colors: [slices[index].tint, slices[index].tint.opacity(0.78)], startPoint: .top, endPoint: .bottom),
-                                style: StrokeStyle(lineWidth: 10, lineCap: .butt))
+                                style: StrokeStyle(lineWidth: line, lineCap: .butt))
                 }
                 VStack(spacing: 0) {
-                    Text(percents[largest] == 0 ? "<1%" : "\(percents[largest])%").font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    Text(slices[largest].name).font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
-                }.frame(width: 50).rotationEffect(.degrees(90))
-            }.rotationEffect(.degrees(-90)).frame(width: 78, height: 78).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 7) {
+                    Text(percents[largest] == 0 ? "<1%" : "\(percents[largest])%").font(.system(size: diameter > 90 ? 19 : 15, weight: .semibold).monospacedDigit())
+                    Text(slices[largest].name).font(.system(size: diameter > 90 ? 10 : 9, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+                }.frame(width: diameter - 2 * line - 6).rotationEffect(.degrees(90))
+            }.rotationEffect(.degrees(-90)).frame(width: diameter, height: diameter).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: diameter > 90 ? 10 : 7) {
                 ForEach(slices.indices, id: \.self) { index in
                     HStack(spacing: 8) {
                         RoundedRectangle(cornerRadius: 2.5).fill(slices[index].tint).frame(width: 10, height: 10)
@@ -156,7 +161,7 @@ struct UpOnlyBreakdown: View {
                 }
             }
         }.padding(.horizontal, 16).padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .leading).modifier(UpOnlyContentSurface())
+            .frame(maxWidth: .infinity, minHeight: height, alignment: .leading).modifier(UpOnlyContentSurface())
             .accessibilityElement(children: .contain).accessibilityLabel("Breakdown")
             .onAppear { withAnimation(.spring(response: 0.7, dampingFraction: 0.9)) { shown = true } }
     }

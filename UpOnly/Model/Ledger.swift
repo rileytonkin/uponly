@@ -34,7 +34,8 @@ nonisolated struct Entry: Codable, Identifiable, Sendable, Equatable {
     var kindIsUserEdited: Bool?
     /// The connected company a business cost was paid for, when one has been chosen.
     var businessID: String?
-    /// UTC day of the transaction (yyyy-MM-dd) when the source provides one; manual entries only know their month.
+    /// UTC day of the transaction (yyyy-MM-dd) when known: from the source, or picked in the form. Older manual
+    /// entries, and ones added for a past month without picking a day, only know their month.
     var day: String?
     /// True when the statement showed money leaving the account. Kept separately from `kind`, which the user may change.
     var outflow: Bool?

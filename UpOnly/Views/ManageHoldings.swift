@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// Manage → Crypto and Gold & silver: portfolios, holdings, owners and archived portfolios.
+/// Manage → Crypto and Metals: portfolios, holdings, owners and archived portfolios.
 extension UpOnlyManagement {
     func setPortfolioOwner(_ portfolio: Portfolio, owner: String?) {
         Task { await session.perform { doc in
             if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].ownerBusinessID = owner }
         } }
     }
-    /// Crypto and Gold & silver share one layout: a card per portfolio, a row per holding.
+    /// Crypto and Metals share one layout: a card per portfolio, a row per holding.
     func holdings(_ kind: TrackedKind) -> some View {
         let metals = kind == .metals
         let mode: ImportMode = metals ? .metals : .holdings

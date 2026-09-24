@@ -27,7 +27,8 @@ struct UpOnlyGuidedEntry: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var amountFocused: Bool
     private var accounts: [Account] { session.document?.accounts ?? [] }
-    private var activeAccounts: [Account] { accounts.filter(\.isActive) }
+    /// Accounts whose balance you type in; synced ones (a Wise profile's currencies) update themselves.
+    private var activeAccounts: [Account] { accounts.filter { $0.isActive && $0.externalProfileID == nil } }
     private var portfolios: [Portfolio] { session.document?.portfolios.filter { !$0.isArchived && $0.kind == mode.kind } ?? [] }
     private var coins: [CatalogCoin] { ImportCoinList.coins(document: session.document, catalog: session.catalog) }
     private var coin: CatalogCoin? { coins.first { $0.id == row.holding.resolvedCoinID } }
@@ -39,24 +40,25 @@ struct UpOnlyGuidedEntry: View {
     private var numberFormat: ImportNumberFormat { session.importDraft?.sources.first(where: { $0.id == row.sourceID })?.numberFormat ?? .point }
     /// The amount as the app reads it, which is what gets saved.
     private var entered: Decimal? { try? numberFormat.decimal(quantity.wrappedValue, typed: true) }
+    /// Choosing asks the question; after that the page is named after what's being entered.
+    private var headerTitle: String {
+        if step > 0, !title.isEmpty { return title }
+        switch mode {
+        case .bankBalances: return newAccount ? "New account" : "Which account?"
+        case .metals: return "Which metal?"
+        default: return exactCoin ? "Another coin" : "Which coin?"
+        }
+    }
     var body: some View {
         Group {
         if discard {
             UpOnlyConfirmation(title: mode == .bankBalances ? "Discard this balance?" : "Discard this holding?", confirmTitle: "Discard", confirm: back, cancel: { discard = false })
         } else {
         VStack(alignment: .leading, spacing: 16) {
-            UpOnlyPageHeader(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver", back: goBack).disabled(working)
+            UpOnlyPageHeader(title: headerTitle, back: goBack).disabled(working)
             if step == 0 { chooseAsset }
-            else {
-                HStack(spacing: 12) {
-                    UpOnlyEntryBadge(mode: mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "", assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil,
-                                     image: mode == .bankBalances ? account?.profileImage : nil, size: 36)
-                    Text(title).font(UpOnlyType.title).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                if step == 1 { enterAmount }
-                else { reviewAmount }
-            }
+            else if step == 1 { enterAmount }
+            else { reviewAmount }
             if unchanged {
                 Text(mode == .bankBalances ? "This balance is already saved." : "This quantity is already saved.")
                     .font(UpOnlyType.body).foregroundStyle(.secondary)
@@ -92,171 +94,235 @@ struct UpOnlyGuidedEntry: View {
             #endif
         }
     }
+
+    // MARK: Choosing
+
+    /// Accounts, coins and metals are all chosen from a list of rows with their logos; something new is the last row.
     @ViewBuilder private var chooseAsset: some View {
-        Text(mode == .bankBalances ? (newAccount ? "Name your account" : "Which account?") : mode == .holdings ? "Which coin?" : "Which metal?")
-            .font(UpOnlyType.title)
         if mode == .bankBalances {
-            if newAccount {
-                VStack(alignment: .leading, spacing: 16) {
-                    entryField("Everyday account", text: $row.bank.account.name, size: 22).accessibilityLabel("Account name")
-                    UpOnlyOwnerPicker(owner: $row.bank.account.ownerBusinessID)
-                    ImportField(title: "Currency") {
-                        HStack(spacing: 8) {
-                            ForEach(["USD", "GBP", "EUR"], id: \.self) { code in
-                                currencyButton(code, selected: !customCurrency && row.bank.account.currency == code) { customCurrency = false; row.bank.account.currency = code }
-                            }
-                            currencyButton("Other", selected: customCurrency) { customCurrency = true; row.bank.account.currency = "" }
-                        }
-                        if customCurrency { entryField("Currency code, e.g. CHF", text: $row.bank.account.currency).accessibilityLabel("Account currency") }
-                    }
-                }
-                primary("Continue") { step = 1 }.disabled(row.bank.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.bank.account.currency.trimmingCharacters(in: .whitespacesAndNewlines).count != 3)
-            } else {
+            if newAccount { newAccountForm }
+            else {
+                let shown = activeAccounts.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
                 if activeAccounts.count > 4 { entryField("Find an account", text: $search, symbol: "magnifyingglass") }
-                ScrollView {
-                    ManageCard {
-                        ForEach(Array(activeAccounts.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }.enumerated()), id: \.element.id) { index, item in
-                            ManageRow(title: item.name, caption: item.currency, divided: index > 0, chevron: true, action: {
-                                row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
-                            }) {
-                                // A synced account shows its profile (whose Wise it is); a typed-in one its bank's logo.
-                                if let image = item.profileImage { UpOnlyProfileImage(data: image, name: item.name, size: 28) }
-                                else { UpOnlyBankBadge(name: item.name, size: 28) }
-                            } menu: { EmptyView() }
-                        }
+                ManageCard {
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
+                        // Each with its bank's logo, its latest balance and when that was.
+                        let latest = session.document?.bankBalances.filter { $0.accountID == item.id }.max { $0.observedAt < $1.observedAt }
+                        ManageRow(title: item.name, caption: latest.map { "Updated " + UpOnlyManagement.when($0.observedAt) } ?? item.currency,
+                                  value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: item.currency) }, divided: index > 0, chevron: true, action: {
+                            row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
+                        }) {
+                            UpOnlyBankBadge(name: item.name, size: 28)
+                        } menu: { EmptyView() }
                     }
-                }.frame(maxHeight: activeAccounts.count > 4 ? 236 : CGFloat(activeAccounts.count) * 52 + 4)
-                Button {
-                    if row.bank.account.existingID != nil { row.bank.account.existingID = nil; row.bank.account.name = "" }
-                    customCurrency = !["USD", "GBP", "EUR"].contains(row.bank.account.currency); newAccount = true
-                } label: { Label("New account", systemImage: "plus") }
-                    .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.large)
+                    ManageRow(title: "New account", caption: "Name it and pick its currency", divided: !shown.isEmpty, chevron: true, action: {
+                        if row.bank.account.existingID != nil { row.bank.account.existingID = nil; row.bank.account.name = "" }
+                        customCurrency = !["USD", "GBP", "EUR"].contains(row.bank.account.currency); newAccount = true
+                    }) { addBadge } menu: { EmptyView() }
+                }
             }
         } else if mode == .metals {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                ForEach(PreciousMetal.selectable, id: \.self) { metal in
-                    Button {
+            ManageCard {
+                ForEach(Array(PreciousMetal.selectable.enumerated()), id: \.element) { index, metal in
+                    ManageRow(title: metal.name, caption: metal.rawValue, divided: index > 0, chevron: true, action: {
                         row.holding.coin = metal.rawValue; row.holding.assetName = metal.name; step = 1
-                    } label: {
-                        VStack(spacing: 10) {
-                            UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 44)
-                            Text(metal.name).font(UpOnlyType.row.weight(.medium))
-                        }.frame(maxWidth: .infinity).padding(.vertical, 18)
-                            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-                    }.buttonStyle(UpOnlyCardButtonStyle(radius: UpOnlyLayout.radius))
+                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) } menu: { EmptyView() }
                 }
             }
         } else if exactCoin {
-            ImportField(title: "CoinGecko ID") { entryField("e.g. bitcoin", text: $row.holding.resolvedCoinID) }
-            ImportField(title: "Display name") { entryField("e.g. Bitcoin", text: $row.holding.assetName) }
-            primary("Continue") { row.holding.coin = row.holding.resolvedCoinID; step = 1 }.disabled(row.holding.resolvedCoinID.isEmpty)
+            VStack(spacing: 16) {
+                ManageCard {
+                    UpOnlyFormRow(label: "CoinGecko ID") { formField("e.g. bitcoin", text: $row.holding.resolvedCoinID).accessibilityLabel("CoinGecko ID") }
+                    UpOnlyFormRow(label: "Name", divided: true) { formField("e.g. Bitcoin", text: $row.holding.assetName).accessibilityLabel("Display name") }
+                }
+                primary("Continue") { row.holding.coin = row.holding.resolvedCoinID; step = 1 }.disabled(row.holding.resolvedCoinID.isEmpty)
+            }
         } else {
+            let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
             entryField("Search coins", text: $search, symbol: "magnifyingglass")
                 .accessibilityLabel("Search coins").focused($searchFocused).onAppear { searchFocused = true }
-                .task(id: search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) {
-                    if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
+                .task(id: query.lowercased()) {
+                    if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
                 }
             // Before typing, offer the best-known coins rather than an empty list.
-            let suggestions = search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Array(ImportCoins.common.prefix(6)) : ImportCoins.suggestions(search, coins: coins)
-            if !suggestions.isEmpty {
-                // A list in the home style, each coin with its logo.
-                ManageCard {
-                    ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, coin in
-                        ManageRow(title: coin.name, caption: coin.symbol.uppercased(), divided: index > 0, chevron: true, action: {
-                            row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; step = 1
-                        }) {
-                            UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
-                        } menu: { EmptyView() }
-                        .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
-                    }
+            let suggestions = query.isEmpty ? Array(ImportCoins.common.prefix(6)) : ImportCoins.suggestions(search, coins: coins)
+            ManageCard {
+                ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, coin in
+                    ManageRow(title: coin.name, caption: coin.symbol.uppercased(), divided: index > 0, chevron: true, action: {
+                        row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; step = 1
+                    }) {
+                        UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
+                    } menu: { EmptyView() }
+                    .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
                 }
-            } else if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("No matching coins").font(UpOnlyType.body).foregroundStyle(.secondary)
-            }
-            if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button("Enter an exact coin ID") {
-                    row.holding.resolvedCoinID = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: " ", with: "-"); exactCoin = true
-                }.buttonStyle(.bordered).font(UpOnlyType.body).foregroundStyle(.secondary)
+                // A coin the list doesn't know is found by its CoinGecko ID.
+                if !query.isEmpty {
+                    ManageRow(title: "Another coin", caption: suggestions.isEmpty ? "No match here, so enter its CoinGecko ID" : "Enter its CoinGecko ID",
+                              divided: !suggestions.isEmpty, chevron: true, action: {
+                        row.holding.resolvedCoinID = query.lowercased().replacingOccurrences(of: " ", with: "-"); exactCoin = true
+                    }) { addBadge } menu: { EmptyView() }
+                }
             }
         }
     }
+    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
+    /// A new account: its bank's logo appears as the name is typed; the currency and owner are choices below it.
+    private var newAccountForm: some View {
+        VStack(spacing: 16) {
+            UpOnlyBankBadge(name: row.bank.account.name, size: 44).frame(maxWidth: .infinity)
+            ManageCard {
+                UpOnlyFormRow(label: "Name") {
+                    formField("Everyday account", text: $row.bank.account.name).focused($searchFocused).accessibilityLabel("Account name")
+                }
+                UpOnlyFormRow(label: "Currency", divided: true) {
+                    UpOnlyFormMenu(value: customCurrency ? "Other" : row.bank.account.currency, label: "Currency") {
+                        ForEach(["USD", "GBP", "EUR"], id: \.self) { code in Button(code) { customCurrency = false; row.bank.account.currency = code } }
+                        Divider()
+                        Button("Other…") { customCurrency = true; row.bank.account.currency = "" }
+                    }
+                }
+                if customCurrency {
+                    UpOnlyFormRow(label: "Code", divided: true) { formField("e.g. CHF", text: $row.bank.account.currency).accessibilityLabel("Account currency") }
+                }
+                ownerRow($row.bank.account.ownerBusinessID)
+            }
+            primary("Continue") { step = 1 }.disabled(row.bank.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.bank.account.currency.trimmingCharacters(in: .whitespacesAndNewlines).count != 3)
+        }.onAppear { searchFocused = true }
+    }
+
+    // MARK: The amount
+
+    /// The same page for a balance, a coin or a metal: the amount large under the logo, the details in one card.
     private var enterAmount: some View {
         VStack(spacing: 16) {
-            VStack(spacing: 5) {
-                Text(mode == .bankBalances ? "Balance · " + row.bank.account.currency : mode == .metals ? "Pure metal weight" : "Total quantity")
-                    .font(UpOnlyType.caption).foregroundStyle(.secondary)
-                // No placeholder: a centered one sits under the insertion point.
-                UpOnlyValueField("", text: quantity)
-                    .font(.system(size: 38, weight: .medium).monospacedDigit()).textFieldStyle(.plain).multilineTextAlignment(.center)
-                    .focused($amountFocused).accessibilityLabel(mode == .bankBalances ? "Bank balance" : "Total quantity")
-            }.padding(.vertical, 8).frame(maxWidth: .infinity)
-            if mode == .metals {
-                Picker("Weight unit", selection: $row.holding.unit) { Text("Grams").tag("g"); Text("Kilograms").tag("kg"); Text("Troy oz").tag("ozt") }.pickerStyle(.segmented).labelsHidden()
-            }
-            if mode == .bankBalances {
-                HStack { Text("As of").font(UpOnlyType.body).foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: date) }
-                    .padding(UpOnlyLayout.cardInset).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-            } else {
-                // When it was held, and optionally what it cost, so the app can show gain since purchase.
-                VStack(spacing: 10) {
-                    HStack { Text("As of").font(UpOnlyType.body).foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: holdingDate) }
-                    Divider().opacity(0.5)
-                    HStack(spacing: 8) {
-                        Text("Paid").font(UpOnlyType.body).foregroundStyle(.secondary)
-                        Text("optional").font(UpOnlyType.caption).foregroundStyle(.tertiary)
-                        Spacer()
-                        UpOnlyValueField("0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
-                            .font(.system(size: 13, weight: .medium).monospacedDigit()).frame(width: 96).accessibilityLabel("Amount paid")
-                        TextField("USD", text: $row.holding.paidCurrency).textFieldStyle(.plain).font(.system(size: 12, weight: .medium)).frame(width: 40)
-                            .accessibilityLabel("Currency paid")
+            hero(editable: true)
+            ManageCard {
+                if mode == .metals {
+                    UpOnlyFormRow(label: "Unit") {
+                        UpOnlyFormMenu(value: ((try? MetalWeightUnit.resolve(row.holding.unit)) ?? .grams).title, label: "Weight unit") {
+                            ForEach(MetalWeightUnit.allCases, id: \.self) { unit in Button(unit.title) { row.holding.unit = unit.rawValue } }
+                        }
                     }
-                }.padding(UpOnlyLayout.cardInset).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Portfolio").font(UpOnlyType.body).foregroundStyle(.secondary)
-                        Spacer()
-                        if !portfolios.isEmpty {
-                            Menu {
+                }
+                UpOnlyFormRow(label: "Date", divided: mode == .metals) { UpOnlyDateButton(date: mode == .bankBalances ? date : holdingDate) }
+                if mode != .bankBalances {
+                    // What it cost, if you like, so the app can show the gain since.
+                    UpOnlyFormRow(label: "Cost", note: "optional", divided: true) {
+                        UpOnlyValueField("0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                            .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 110).accessibilityLabel("Amount paid")
+                        TextField("USD", text: $row.holding.paidCurrency).textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.secondary)
+                            .frame(width: 32).accessibilityLabel("Currency paid")
+                    }
+                    UpOnlyFormRow(label: "Portfolio", divided: true) {
+                        if portfolios.isEmpty {
+                            formField(mode == .metals ? "Home safe" : "Ledger or Coinbase", text: $row.holding.portfolioName).accessibilityLabel("Portfolio name")
+                        } else {
+                            UpOnlyFormMenu(value: row.holding.portfolioID == nil ? "New portfolio" : row.holding.portfolioName, label: "Portfolio") {
                                 ForEach(portfolios) { portfolio in Button(portfolio.name) { row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name } }
                                 Divider()
                                 Button("New portfolio") { row.holding.portfolioID = nil; row.holding.portfolioName = "" }
-                            } label: { Text(row.holding.portfolioID == nil ? "Choose existing" : row.holding.portfolioName).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.body) }.menuStyle(.borderedButton)
+                            }
                         }
                     }
-                    if row.holding.portfolioID == nil {
-                        entryField(mode == .metals ? "Home safe" : "Ledger or Coinbase", text: $row.holding.portfolioName).accessibilityLabel("Portfolio name")
-                        UpOnlyOwnerPicker(owner: $row.holding.ownerBusinessID)
+                    if !portfolios.isEmpty, row.holding.portfolioID == nil {
+                        UpOnlyFormRow(label: "Name", divided: true) {
+                            formField(mode == .metals ? "Home safe" : "Ledger or Coinbase", text: $row.holding.portfolioName).accessibilityLabel("Portfolio name")
+                        }
                     }
-                }.padding(UpOnlyLayout.cardInset).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
+                    if row.holding.portfolioID == nil { ownerRow($row.holding.ownerBusinessID) }
+                }
             }
-            primary("Next") { Task { await evaluate() } }.disabled(quantity.wrappedValue.isEmpty || working)
+            primary("Review") { Task { await evaluate() } }.disabled(quantity.wrappedValue.isEmpty || working)
         }.task { amountFocused = true }
     }
+    /// The logo, the amount large with its unit after it, and what it's worth now (or, before anything is typed, what
+    /// to enter). Review shows the same, read back as the app understood it.
+    private func hero(editable: Bool) -> some View {
+        VStack(spacing: 10) {
+            badge
+            if editable {
+                UpOnlyAmountEntry(text: quantity, unit: unitText, label: mode == .bankBalances ? "Bank balance" : mode == .metals ? "Weight" : "Total quantity", focused: $amountFocused)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    // What the app read, not what was typed, so "0,125" can't pass as 125 unseen.
+                    UpOnlyPrivateText(entered.map { readBack($0, fraction: (mode == .bankBalances ? 2 : 0)...18) } ?? quantity.wrappedValue)
+                        .font(UpOnlyAmountEntry.font(quantity.wrappedValue.count)).lineLimit(1).minimumScaleFactor(0.6)
+                    Text(unitText).font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary).fixedSize()
+                }.frame(maxWidth: .infinity)
+            }
+            heroCaption(review: !editable).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity).padding(.vertical, 4)
+    }
+    @ViewBuilder private var badge: some View {
+        if mode == .bankBalances {
+            if let image = account?.profileImage { UpOnlyProfileImage(data: image, name: title, size: 44) }
+            else { UpOnlyBankBadge(name: row.bank.account.name, size: 44) }
+        } else {
+            UpOnlyEntryBadge(mode: mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "",
+                             assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil, image: nil, size: 44)
+        }
+    }
+    /// "GBP", "BTC", or the metal's weight unit.
+    private var unitText: String {
+        switch mode {
+        case .bankBalances: return row.bank.account.currency.uppercased()
+        case .metals:
+            switch (try? MetalWeightUnit.resolve(row.holding.unit)) ?? .grams { case .grams: return "g"; case .kilograms: return "kg"; case .troyOunces: return "oz t" }
+        default: return coin.map { $0.symbol.isEmpty ? $0.name : $0.symbol.uppercased() } ?? row.holding.resolvedCoinID.uppercased()
+        }
+    }
+    @ViewBuilder private func heroCaption(review: Bool) -> some View {
+        let worth = mode == .bankBalances && row.bank.account.currency.uppercased() == "USD" ? nil : approxUSD
+        // A metal entered in ounces or kilos is kept in grams; say how many.
+        let unit = (try? MetalWeightUnit.resolve(row.holding.unit)) ?? .grams
+        let grams = mode == .metals && unit != .grams && !session.privacyMode ? entered.flatMap { try? unit.grams($0) }.map { readBack($0, fraction: 0...4) + " g" } : nil
+        if worth != nil || grams != nil {
+            UpOnlyPrivateText([worth.map { "≈ " + UpOnlyFormat.exactMoney($0) }, grams].compactMap { $0 }.joined(separator: " · "))
+        } else if !review {
+            Text(mode == .bankBalances ? "Balance" : mode == .metals ? "Pure metal weight" : "Total you hold")
+        }
+    }
+    /// What the amount is worth now, from the latest saved price or rate; nothing when the app has none yet.
+    private var approxUSD: Decimal? {
+        guard let amount = entered, amount != 0, let document = session.document else { return nil }
+        switch mode {
+        case .bankBalances:
+            let currency = row.bank.account.currency.uppercased()
+            guard let rate = document.fx.filter({ $0.sourceCurrency == currency && $0.targetCurrency == "USD" }).max(by: { $0.providerTime < $1.providerTime })?.rate.value else { return nil }
+            return try? MoneyInput.multiply(amount, rate, allowingRounding: true)
+        case .metals:
+            guard let metal = try? PreciousMetal.resolve(row.holding.coin), let grams = try? MetalWeightUnit.resolve(row.holding.unit).grams(amount),
+                  let price = latestPrice(metal.assetID) else { return nil }
+            return try? MoneyInput.multiply(grams, price, allowingRounding: true)
+        default:
+            guard let price = latestPrice(CanonicalAssetID(rawValue: row.holding.resolvedCoinID)) else { return nil }
+            return try? MoneyInput.multiply(amount, price, allowingRounding: true)
+        }
+    }
+    private func latestPrice(_ asset: CanonicalAssetID) -> Decimal? {
+        session.document?.quotes.filter { $0.assetID == asset }.max { $0.providerTime < $1.providerTime }?.priceUSD.value
+    }
+
+    // MARK: Review
+
     private var reviewAmount: some View {
         let asOf = (mode == .bankBalances ? date.wrappedValue : holdingDate.wrappedValue).formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
         let paid = row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines)
         let paidValue = (try? numberFormat.decimal(paid, typed: true)).map { readBack($0, fraction: 2...18) } ?? paid
         return VStack(spacing: 16) {
-            Text("Does this look right?").font(UpOnlyType.title).frame(maxWidth: .infinity, alignment: .leading)
-            VStack(spacing: 6) {
-                // What the app read, not what was typed, so "0,125" can't pass as 125 unseen.
-                UpOnlyPrivateText(entered.map { readBack($0, fraction: (mode == .bankBalances ? 2 : 0)...18) } ?? quantity.wrappedValue)
-                    .font(.system(size: 40, weight: .semibold).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
-                Text(unitCaption).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary)
-            }.frame(maxWidth: .infinity).padding(.vertical, 10)
-            VStack(spacing: 0) {
+            hero(editable: false)
+            ManageCard {
                 if mode == .bankBalances {
-                    reviewLine("Account", row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil)
-                    Divider().opacity(0.4)
-                    reviewLine("As of", asOf)
+                    UpOnlyFormRow(label: "Account") { formValue(row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil) }
+                    UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
                 } else {
-                    reviewLine("Portfolio", row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil)
-                    Divider().opacity(0.4)
-                    reviewLine("As of", asOf)
-                    Divider().opacity(0.4)
-                    reviewLine("Paid", paid.isEmpty ? "Not recorded" : paidValue + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty, isPrivate: !paid.isEmpty)
+                    UpOnlyFormRow(label: "Portfolio") { formValue(row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil) }
+                    UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
+                    UpOnlyFormRow(label: "Cost", divided: true) {
+                        formValue(paid.isEmpty ? "Not recorded" : paidValue + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty, isPrivate: !paid.isEmpty)
+                    }
                 }
-            }.padding(.horizontal, 14).padding(.vertical, 4).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
+            }
             if mode != .bankBalances, !holdingNotes.isEmpty || review?.states[row.id] != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     if let state = review?.states[row.id] { Label(reviewSummary(state), systemImage: "checkmark.circle").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
@@ -265,20 +331,8 @@ struct UpOnlyGuidedEntry: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
-            // No Return shortcut here, so a second Return after Next can't save unseen.
+            // No Return shortcut here, so a second Return after Review can't save unseen.
             primary("Save", shortcut: false) { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
-        }
-    }
-    /// "GBP", "BTC", or for metals the unit and metal with the weight in grams ("troy ounces of gold · 31.1035 g").
-    private var unitCaption: String {
-        switch mode {
-        case .bankBalances: return row.bank.account.currency
-        case .metals:
-            let unit = (try? MetalWeightUnit.resolve(row.holding.unit)) ?? .grams
-            var caption = unit.title.lowercased() + " of " + ((try? PreciousMetal.resolve(row.holding.coin))?.name.lowercased() ?? "metal")
-            if unit != .grams, !session.privacyMode, let grams = entered.flatMap({ try? unit.grams($0) }) { caption += " · " + readBack(grams, fraction: 0...4) + " g" }
-            return caption
-        default: return coin.map { $0.symbol.isEmpty ? $0.name : $0.symbol.uppercased() } ?? "total quantity"
         }
     }
     /// Turns the import engine's "previous → new Coin" state into a sentence.
@@ -309,14 +363,31 @@ struct UpOnlyGuidedEntry: View {
         }
         return notes
     }
-    private func reviewLine(_ label: String, _ value: String, badge: String? = nil, muted: Bool = false, isPrivate: Bool = false) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).foregroundStyle(.secondary)
-            Spacer(minLength: 8)
+
+    // MARK: Pieces
+
+    /// Personal or a company, for a new account or portfolio, when there are companies to choose from.
+    @ViewBuilder private func ownerRow(_ owner: Binding<String?>) -> some View {
+        let books = session.document?.businessAccounting ?? []
+        if !books.isEmpty || owner.wrappedValue != nil {
+            UpOnlyFormRow(label: "Owner", divided: true) {
+                UpOnlyFormMenu(value: owner.wrappedValue.map { id in books.first { $0.id == id }?.name ?? "Company unavailable" } ?? "Personal", label: "Asset owner") {
+                    Button("Personal") { owner.wrappedValue = nil }
+                    ForEach(books) { book in Button(book.name) { owner.wrappedValue = book.id } }
+                }
+            }
+        }
+    }
+    private func formValue(_ value: String, badge: String? = nil, muted: Bool = false, isPrivate: Bool = false) -> some View {
+        HStack(spacing: 6) {
             if let badge { Text(badge).font(.system(size: 10, weight: .semibold)).padding(.horizontal, 6).padding(.vertical, 2).background(UpOnlyTint.cashFlow.opacity(0.18), in: Capsule()).foregroundStyle(UpOnlyTint.cashFlow) }
             Group { if isPrivate { UpOnlyPrivateText(value) } else { Text(value) } }
-                .font(UpOnlyType.row.weight(.medium)).foregroundStyle(muted ? .tertiary : .primary).multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
-        }.font(UpOnlyType.body).padding(.vertical, 10)
+                .font(UpOnlyType.row.weight(.medium)).foregroundStyle(muted ? .tertiary : .primary).lineLimit(1).truncationMode(.middle)
+        }
+    }
+    /// A text field inside a form row, typed at the right like the other rows' values.
+    private func formField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
     }
     private func entryField(_ placeholder: String, text: Binding<String>, size: CGFloat = 14, symbol: String? = nil) -> some View {
         HStack(spacing: 8) {
@@ -325,17 +396,6 @@ struct UpOnlyGuidedEntry: View {
                 .font(.system(size: size, weight: size > 18 ? .medium : .regular)).textFieldStyle(.plain)
         }.padding(.vertical, 10)
             .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.12)).frame(height: 1) }
-    }
-    private func currencyButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                if selected { Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)) }
-                Text(title).font(.system(size: 12, weight: selected ? .medium : .regular))
-            }.frame(maxWidth: .infinity).padding(.vertical, 9)
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                .background(selected ? Color.accentColor.opacity(0.1) : Color.primary.opacity(0.045), in: Capsule())
-                .contentShape(Capsule())
-        }.buttonStyle(UpOnlyCardButtonStyle(radius: 18)).accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func primary(_ title: String, shortcut: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).frame(height: 28) }

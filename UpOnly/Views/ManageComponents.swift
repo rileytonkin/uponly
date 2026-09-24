@@ -46,6 +46,8 @@ struct ManageRow<Badge: View, Options: View>: View {
     var captionIsPrivate = false
     var value: String? = nil
     var valueTint: Color = .primary
+    /// A second amount under the value, such as a foreign balance under its dollar value.
+    var valueDetail: String? = nil
     var divided = false
     var chevron = false
     var action: (() -> Void)? = nil
@@ -68,13 +70,16 @@ struct ManageRow<Badge: View, Options: View>: View {
                         }.frame(minWidth: 96, alignment: .leading)
                         Spacer(minLength: 8)
                         if let value {
-                            UpOnlyPrivateText(value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(valueTint).lineLimit(1)
-                                .minimumScaleFactor(value.count > 13 ? 0.7 : 1).layoutPriority(1)
+                            VStack(alignment: .trailing, spacing: 1) {
+                                UpOnlyPrivateText(value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(valueTint).lineLimit(1)
+                                    .minimumScaleFactor(value.count > 13 ? 0.7 : 1)
+                                if let valueDetail { UpOnlyPrivateText(valueDetail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
+                            }.layoutPriority(1)
                         }
                         if chevron { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
                     }.padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(UpOnlyRowButtonStyle()).disabled(action == nil)
-                    .accessibilityLabel(title).accessibilityValue([session.privacyMode && captionIsPrivate ? nil : caption, session.privacyMode ? (value == nil ? nil : "Hidden value") : value]
+                    .accessibilityLabel(title).accessibilityValue([session.privacyMode && captionIsPrivate ? nil : caption, session.privacyMode ? (value == nil ? nil : "Hidden value") : value, session.privacyMode ? nil : valueDetail]
                         .compactMap { $0 }.joined(separator: ", "))
                 menu()
             }

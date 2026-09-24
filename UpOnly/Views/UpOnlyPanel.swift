@@ -17,10 +17,14 @@ struct UpOnlyPanel: View {
             } else if session.state != .unlocked {
                 panelContent.fixedSize(horizontal: false, vertical: true)
             } else {
-                UpOnlyMenuScroll(maxHeight: menuHeight) { panelContent }
+                // Starts at the dashboard's last height rather than a guess, so unlocking doesn't settle in two steps.
+                UpOnlyMenuScroll(contentHeight: session.dashboardHeight ?? 360, maxHeight: menuHeight) { panelContent }
                     .frame(width: 344).fixedSize(horizontal: false, vertical: true)
             }
         }
+        // Fills the popover, pinned to the top, so for the frame before the popover takes a new size (unlocking,
+        // locking) the page shows over its own background rather than a strip of the popover's glass.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.regular)
         .background { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
         .background(UpOnlyPanelKeyboard(close: {
@@ -36,12 +40,13 @@ struct UpOnlyPanel: View {
         .onAppear { if !menuLifecycleManaged { session.menuOpened() } }
         .onDisappear { if !menuLifecycleManaged { session.surfaceClosed() } }
     }
-    /// All assets sets the height and never scrolls; every other dashboard page, the switcher included, opens at the
-    /// same height and scrolls within it, so the menu doesn't jump between pages. Setup and Add keep their own.
+    /// All assets sets the height and never scrolls; every other page (the switcher, Add and Manage included) opens
+    /// at the same height and scrolls within it only when it must, so the menu doesn't jump between pages. Only
+    /// setup, before there's a dashboard to measure, keeps its own.
     private var menuHeight: CGFloat {
         let screen = max(480, (NSScreen.main?.visibleFrame.height ?? 900) - 40)
-        guard session.document?.settings.setupComplete == true, !session.addingInMenu else { return min(600, screen) }
-        if session.dashboardSelection == .all && !session.showingSwitcher { return screen }
+        guard session.document?.settings.setupComplete == true else { return min(600, screen) }
+        if session.dashboardSelection == .all && !session.showingSwitcher && !session.addingInMenu { return screen }
         return min(session.dashboardHeight ?? 600, screen)
     }
     private var panelContent: some View {
@@ -49,7 +54,8 @@ struct UpOnlyPanel: View {
             if session.state == .unlocked, let model = session.monthModel {
                 Group {
                 if session.document?.settings.setupComplete != true { UpOnlySetup().id(session.sessionToken) }
-                else if session.addingInMenu { UpOnlyEntryFlow(compact: true).id(session.sessionToken) }
+                // Add opens at the dashboard's height too, so the menu keeps one size from page to page.
+                else if session.addingInMenu { UpOnlyEntryFlow(compact: true).id(session.sessionToken).frame(minHeight: session.dashboardHeight, alignment: .top) }
                 else { UpOnlyUnlockedPanel(model: model).id(session.sessionToken) }
                 }.frame(width: 344)
             } else { UpOnlyLockView().id(session.sessionToken) }
@@ -133,6 +139,9 @@ struct UpOnlyUnlockedPanel: View {
     }
     @State var companyChart: CompanyChart = .balance
     @State var companyFocus: CompanyFocus = .all
+    /// The header's and the switcher list's heights, so the switcher's breakdown can fill the page rather than leave a gap.
+    @State var headerHeight: CGFloat = 0
+    @State var switcherListHeight: CGFloat = 0
     enum CompanyChart { case balance, profit }
     /// The net worth scope of the current selection: a portfolio, or everything (bank groups have their own page).
     var scope: ValuationScope {
@@ -215,6 +224,7 @@ struct UpOnlyUnlockedPanel: View {
         let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil ? attentionItems : []
         return VStack(spacing: 0) {
             navigationHeader.padding(.top, 14).padding(.bottom, 16)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
             if showingSwitcher { switcherPage }
             else {
                 if !attention.isEmpty { attentionBanner(attention).padding(.bottom, 16) }
@@ -671,6 +681,8 @@ struct UpOnlyUnlockedPanel: View {
         var value: String
         /// The row's own move over the last 24 hours, as a fraction.
         var change: Decimal? = nil
+        /// A second amount under the value, such as a foreign balance under its dollar value. Hidden in privacy mode.
+        var valueDetail: String? = nil
         var image: Data? = nil
         /// A coin or metal's asset ID: its logo, rather than the symbol.
         var logo: String? = nil
@@ -722,6 +734,8 @@ struct UpOnlyUnlockedPanel: View {
                         if let change = row.change {
                             Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
                                 .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1)
+                        } else if let detail = row.valueDetail {
+                            UpOnlyPrivateText(detail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }.layoutPriority(1)
                     if case .chevron = row.trailing {
@@ -731,7 +745,8 @@ struct UpOnlyUnlockedPanel: View {
                     if case .check(let chosen) = row.trailing {
                         Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.accentColor).opacity(chosen ? 1 : 0).frame(width: 12)
                     }
-                }.padding(.vertical, 8).contentShape(Rectangle())
+                // Every row is two lines tall, so one with a second line doesn't stand out from the rest.
+                }.frame(minHeight: 30).padding(.vertical, 8).contentShape(Rectangle())
             }.buttonStyle(UpOnlyRowButtonStyle(selected: row.selected))
                 .contextMenu { ForEach(Array(row.options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
                 .accessibilityLabel(row.name).accessibilityValue(spokenValue(row))
@@ -750,6 +765,7 @@ struct UpOnlyUnlockedPanel: View {
     func spokenValue(_ row: AssetRow) -> String {
         var parts = [session.privacyMode ? "Hidden value" : row.value]
         if let detail = row.detail, !(row.detailIsAmount && session.privacyMode) { parts.append(detail) }
+        if let detail = row.valueDetail, !session.privacyMode { parts.append(detail) }
         if let change = row.change { parts.append(UpOnlyFormat.percent(change) + (worthRange == .all ? " since the first saved value" : " over the " + worthRange.phrase)) }
         return parts.joined(separator: ", ")
     }

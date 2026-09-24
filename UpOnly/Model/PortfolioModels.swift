@@ -198,7 +198,7 @@ nonisolated struct TrustedSigner: Codable, Identifiable, Sendable, Equatable {
 // Physical metal quantities use fine grams, never a token that represents gold.
 nonisolated enum PreciousMetal: String, Codable, CaseIterable, Sendable {
     case gold = "XAU", silver = "XAG", platinum = "XPT", palladium = "XPD"
-    static let selectable: [PreciousMetal] = [.gold, .silver]
+    static let selectable: [PreciousMetal] = [.gold, .silver, .platinum, .palladium]
     var name: String { switch self { case .gold: "Gold"; case .silver: "Silver"; case .platinum: "Platinum"; case .palladium: "Palladium" } }
     var assetID: CanonicalAssetID { CanonicalAssetID(rawValue: "metal-" + name.lowercased() + "-gram") }
     static let gramsPerTroyOunce = Decimal(string: "31.1034768")!

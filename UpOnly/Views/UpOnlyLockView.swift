@@ -80,7 +80,8 @@ struct UpOnlyLockView: View {
                     }.buttonStyle(.bordered)
                 }.controlSize(.large).disabled(session.isBusy)
             } else {
-                HStack(spacing: 0) {
+                // The logo and the fingerprint side by side in a small pill, nothing between them.
+                HStack(spacing: 10) {
                     UpOnlyWordmark(width: 42)
                         .contextMenu {
                             Button("Use Mac password") { session.beginUnlock(usePassword: true) }
@@ -89,25 +90,24 @@ struct UpOnlyLockView: View {
                         .accessibilityAction(named: Text("Use recovery code")) { showRecovery = true }
                         .accessibilityAction(named: Text("Use Mac password")) { session.beginUnlock(usePassword: true) }
                         .help("Control-click to use your recovery code")
-                    Spacer(minLength: 16)
                     if let context = session.authenticationContext {
                         UpOnlyAuthenticationIcon(context: context, password: { session.beginUnlock(usePassword: true) }) {
                             Task { await session.unlockEmbedded(context) }
                         }.id(ObjectIdentifier(context)).frame(width: 32, height: 32)
-                    } else if session.authenticationFailed {
-                        Image(systemName: "touchid").font(.system(size: 28)).foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32).accessibilityHidden(true)
-                            .overlay { UpOnlyPasswordClick { session.beginUnlock(usePassword: true) } }
                     } else {
-                        ProgressView().controlSize(.small).frame(width: 32, height: 32)
+                        // Before Touch ID is ready, and after it's cancelled, the same fingerprint (never a spinner that
+                        // swaps out): clicking it tries again, or asks for the Mac password after a failed attempt.
+                        Image(systemName: "touchid").font(.system(size: 26)).foregroundStyle(.secondary)
+                            .frame(width: 32, height: 32).accessibilityHidden(true)
+                            .overlay { UpOnlyPasswordClick { session.authenticationFailed ? session.beginUnlock(usePassword: true) : session.beginUnlock() } }
                     }
                 }.frame(height: 36)
             }
             if let message = session.message { Text(message).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.body).foregroundStyle(.secondary) }
             if session.isBusy && !compactUnlock { ProgressView().controlSize(.small) }
-        }.padding(.horizontal, UpOnlyLayout.inset).padding(.vertical, compactUnlock ? 10 : UpOnlyLayout.inset)
+        }.padding(.horizontal, compactUnlock ? 12 : UpOnlyLayout.inset).padding(.vertical, compactUnlock ? 10 : UpOnlyLayout.inset)
         // An error on the compact row gets the full width rather than wrapping into a narrow column.
-        .frame(width: compactUnlock && session.message == nil ? 144 : 344, alignment: .leading)
+        .frame(width: compactUnlock && session.message == nil ? 108 : 344, alignment: .leading)
         .accessibilityIdentifier("UpOnlyLocked")
         .animation(reduceMotion ? nil : .snappy, value: showsRecoveryCode)
         .onAppear {

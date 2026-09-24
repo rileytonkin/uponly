@@ -440,8 +440,10 @@ struct UpOnlyChartCanvas: View {
                         .offset(x: left, y: top)
                         .allowsHitTesting(false)
                 }
-                // Anywhere in a point's column counts, dates included: only the pointer's x picks the point.
-                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight + 20).offset(x: axisWidth)
+                // Anywhere in a point's column counts, dates included: only the pointer's x picks the point. The axis
+                // is padding outside the hover area (an offset would move the area but not its coordinates, picking
+                // a point an axis-width right of the pointer).
+                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight + 20)
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location): hovered = nearest(location.x, width: plotWidth); pointer = location
@@ -449,6 +451,7 @@ struct UpOnlyChartCanvas: View {
                         }
                     }
                     .gesture(SpatialTapGesture().onEnded { value in if let index = nearest(value.location.x, width: plotWidth) { onSelect?(visible[index].id) } })
+                    .padding(.leading, axisWidth)
                 ZStack(alignment: .topLeading) {
                     ForEach(ticks) { tick in
                         Text(layout.labelled == nil ? visible[tick.index].label : visible[tick.index].axisLabel ?? "").font(.system(size: 10))

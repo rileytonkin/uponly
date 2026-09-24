@@ -193,31 +193,28 @@ extension UpOnlyUnlockedPanel {
                     if let month = MonthKey(id) { model.drillInto(month) }
                 }
             }
-            HStack {
+            // The latest few in a card like every other list; the full list, or adding the first, is its last row.
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Transactions").font(UpOnlyType.section)
-                Spacer()
-                if entries.isEmpty {
-                    Button("Add") { session.addingInMenu = true }.buttonStyle(.bordered).accessibilityLabel("Add a transaction")
-                } else {
-                    Button("See all") { manage("Entries") }.buttonStyle(.bordered).accessibilityLabel("See all personal transactions")
-                }
-            }
-            if !latest.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    let byMonth = Dictionary(grouping: latest, by: \.month)
-                    ForEach(byMonth.keys.sorted(by: >), id: \.self) { month in
-                        VStack(alignment: .leading, spacing: 6) {
+                ManageCard {
+                    if latest.isEmpty {
+                        ManageRow(title: "Add a transaction", caption: "Or import a bank statement", chevron: true, action: { session.addingInMenu = true }) {
+                            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 24)
+                        } menu: { EmptyView() }
+                    } else {
+                        let byMonth = Dictionary(grouping: latest, by: \.month)
+                        ForEach(byMonth.keys.sorted(by: >), id: \.self) { month in
                             if model.period != .monthly {
                                 Text(MonthKey(month)?.title ?? month).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                             }
                             ForEach(byMonth[month] ?? []) { entry in
-                                UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry))
+                                UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry)).padding(.vertical, 2)
                             }
                         }
-                    }
-                    if entries.count > latest.count {
-                        Button("See all \(entries.count) transactions") { manage("Entries") }
-                            .buttonStyle(.plain).font(UpOnlyType.caption).foregroundStyle(.secondary)
+                        ManageRow(title: entries.count > latest.count ? "See all \(entries.count) transactions" : "See all transactions", divided: true, chevron: true,
+                                  action: { manage("Entries") }) { EmptyView() } menu: { EmptyView() }
+                            .accessibilityLabel("See all personal transactions")
                     }
                 }
             }

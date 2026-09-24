@@ -50,7 +50,7 @@ enum UpOnlyEditor: Identifiable {
     var title: String {
         switch self {
         case .move: "Move coins"
-        case .entry: "Income or expense"
+        case .entry: "New transaction"
         case .editEntry: "Edit transaction"
         case .exchangeRate: "Add exchange rate"
         case .renameAccount: "Rename account"
@@ -62,6 +62,8 @@ enum UpOnlyEditor: Identifiable {
 
 struct UpOnlyManagement: View {
     @Environment(UpOnlySession.self) var session
+    /// Synced profiles opened to show their currencies on Manage → Accounts.
+    @State var expandedProfiles: Set<String> = []
     @State var sourceEditsPending = false
     @State var discardSources = false
     @State var discardingImport = false
@@ -231,7 +233,7 @@ struct UpOnlyManagement: View {
         switch section {
         case "Entries": "Transactions"
         case "Portfolios": "Crypto"
-        case "Precious metals": "Gold & silver"
+        case "Precious metals": "Metals"
         case "Sources": "Data sources"
         case "Security": "Backup & security"
         case "Add your info": "Add"
@@ -293,7 +295,7 @@ struct UpOnlyManagement: View {
         var records: [(title: String, caption: String, symbol: String, tint: Color, section: String)] = []
         if hasData(.banks) { records.append(("Accounts", count(doc?.accounts.count ?? 0, "account"), TrackedKind.banks.symbol, UpOnlyTint.netWorth, "Accounts")) }
         if crypto { records.append(("Crypto", holdingsSummary(.crypto), TrackedKind.crypto.symbol, UpOnlyTint.crypto, "Portfolios")) }
-        if metals { records.append(("Gold & silver", holdingsSummary(.metals), TrackedKind.metals.symbol, UpOnlyTint.metals, "Precious metals")) }
+        if metals { records.append(("Metals", holdingsSummary(.metals), TrackedKind.metals.symbol, UpOnlyTint.metals, "Precious metals")) }
         if hasData(.cashFlow) { records.append(("Transactions", count(doc?.entries.count ?? 0, "transaction"), "list.bullet.rectangle.fill", UpOnlyTint.cashFlow, "Entries")) }
         return VStack(alignment: .leading, spacing: 14) {
             if records.isEmpty {
@@ -319,7 +321,7 @@ struct UpOnlyManagement: View {
         }
     }
     func count(_ number: Int, _ noun: String) -> String { "\(number) " + noun + (number == 1 ? "" : "s") }
-    /// "2 portfolios · 3 coins", "1 safe · gold": what a Crypto or Gold & silver row holds.
+    /// "2 portfolios · 3 coins", "1 safe · gold": what a Crypto or Metals row holds.
     func holdingsSummary(_ kind: TrackedKind) -> String {
         guard let doc = session.document else { return "" }
         let now = Date()
@@ -329,7 +331,7 @@ struct UpOnlyManagement: View {
         let noun = kind == .metals ? (holdings.count == 1 ? " metal" : " metals") : (holdings.count == 1 ? " coin" : " coins")
         return count(portfolios.count, kind == .metals ? "place" : "portfolio") + " · " + String(holdings.count) + noun
     }
-    /// "Crypto, gold & silver and exchange rates on", or what's off.
+    /// "Crypto & metals and exchange rates on", or what's off.
     var sourcesSummary: String {
         guard let settings = session.document?.settings else { return "" }
         var on: [String] = []
@@ -337,7 +339,7 @@ struct UpOnlyManagement: View {
         if settings.automaticWise { on.append("Wise") }
         #endif
         if settings.automaticPrices { on.append("crypto") }
-        if settings.automaticMetals { on.append("gold & silver") }
+        if settings.automaticMetals { on.append("metals") }
         if settings.automaticFX { on.append("exchange rates") }
         guard !on.isEmpty else { return "Prices and rates are off" }
         let list = on.count == 1 ? on[0] : on.dropLast().joined(separator: ", ") + " and " + on.last!
@@ -355,6 +357,18 @@ struct UpOnlyManagement: View {
         case "Portfolios": return AnyView(ManageAddButton(label: "Add a coin") { session.startImport(.holdings) })
         case "Precious metals": return AnyView(ManageAddButton(label: "Add gold or silver") { session.startImport(.metals) })
         case "Entries": return AnyView(ManageAddButton(label: "Add a transaction") { editor = .entry })
+        case "Add your info":
+            // A table of balances or holdings: paste, files and the template live in the header, not above the rows.
+            guard let draft = session.importDraft, draft.mode != .statements, session.importTableMode || draft.rows.count > 1 else { return nil }
+            return AnyView(ManageRowMenu(label: "Import options") {
+                Button("Paste from spreadsheet") { session.importRequest = .paste }
+                Button("Choose CSV files…") { session.importRequest = .chooseFiles }
+                Button("Download CSV template…") { session.importRequest = .template }
+                if !draft.rows.isEmpty {
+                    Divider()
+                    Button("Discard draft…", role: .destructive) { session.importRequest = .discard }
+                }
+            })
         default: return nil
         }
     }

@@ -56,7 +56,7 @@ nonisolated enum StatementError: LocalizedError {
 nonisolated enum ImportMode: String, CaseIterable, Sendable {
     case statements, bankBalances, holdings, metals
     var title: String {
-        switch self { case .statements: "Statements"; case .bankBalances: "Bank balances"; case .holdings: "Crypto holdings"; case .metals: "Gold & silver" }
+        switch self { case .statements: "Statements"; case .bankBalances: "Bank balances"; case .holdings: "Crypto holdings"; case .metals: "Metals" }
     }
     var kind: TrackedKind {
         switch self { case .statements: .cashFlow; case .bankBalances: .banks; case .holdings: .crypto; case .metals: .metals }
@@ -930,7 +930,7 @@ nonisolated enum ImportBatchProcessor {
                         quantity = try MetalWeightUnit.resolve(input.unit).grams(source.numberFormat.decimal(input.quantity, typed: typed))
                     } else {
                         coin = try ImportCoins.resolve(input, coins: coins)
-                        guard !coin.id.hasPrefix("metal-") else { throw ImportFailure("Add gold and silver under Gold & silver.") }
+                        guard !coin.id.hasPrefix("metal-") else { throw ImportFailure("Add gold and other metals under Metals.") }
                         quantity = try source.numberFormat.decimal(input.quantity, typed: typed)
                     }
                     guard MoneyInput.isFinite(quantity), quantity >= 0 else { throw ImportFailure("Enter zero or a positive quantity.") }

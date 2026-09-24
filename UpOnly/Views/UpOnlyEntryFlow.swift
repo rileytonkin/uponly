@@ -5,18 +5,15 @@ import AppKit
 
 struct UpOnlyDateButton: View {
     @Binding var date: Date
+    /// Shown instead of the date while only the month is known ("August 2026").
+    var title: String? = nil
     @State private var showingCalendar = false
     private var label: String {
-        ImportDateFormat.today(date) == ImportDateFormat.today() ? "Today" : date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
+        title ?? (ImportDateFormat.today(date) == ImportDateFormat.today() ? "Today" : date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
     }
     var body: some View {
-        Button { showingCalendar = true } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "calendar").font(.system(size: 13))
-                Text(label).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-            }.foregroundStyle(Color.accentColor).contentShape(Rectangle())
-        }.buttonStyle(.bordered)
+        // A form value like every other choice: the date and a small chevron, no box.
+        Button { showingCalendar = true } label: { UpOnlyFormValue(value: label) }.buttonStyle(.plain)
             .accessibilityLabel("Observation date").accessibilityValue(label)
             .popover(isPresented: $showingCalendar) {
                 UpOnlyDateCalendar(date: $date) { showingCalendar = false }
@@ -29,10 +26,11 @@ struct UpOnlyDateCalendar: View {
     var done: () -> Void
     var body: some View {
         VStack(spacing: 12) {
+            // No focus ring: the calendar is the popover's only control.
             DatePicker("Observation date", selection: $date, in: ...Date(), displayedComponents: .date)
-                .datePickerStyle(.graphical).labelsHidden().environment(\.timeZone, UTCDay.timeZone)
+                .datePickerStyle(.graphical).labelsHidden().environment(\.timeZone, UTCDay.timeZone).focusEffectDisabled()
             HStack {
-                Button("Today") { date = Date() }.buttonStyle(.bordered).foregroundStyle(UpOnlyTint.netWorth)
+                Button("Today") { date = Date() }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
                 Spacer()
                 Button("Done", action: done).buttonStyle(.glassProminent).buttonBorderShape(.capsule).keyboardShortcut(.defaultAction)
             }.font(.system(size: 12))
@@ -79,7 +77,7 @@ struct UpOnlyEntryFlow: View {
                     // One list in the home style: what you have, then what came in and went out.
                     ManageCard {
                         ForEach(Array([ImportMode.bankBalances, .holdings, .metals].enumerated()), id: \.element) { index, mode in
-                            ManageRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver",
+                            ManageRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Metals",
                                       caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight",
                                       divided: index > 0, chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
                                 UpOnlyEntryBadge(mode: mode, size: 28)
@@ -87,7 +85,7 @@ struct UpOnlyEntryFlow: View {
                         }
                     }
                     ManageCard {
-                        ManageRow(title: "Income or expense", caption: "One transaction, typed in", chevron: true, action: { addingEntry = true }) {
+                        ManageRow(title: "Transaction", caption: "Spending or income, typed in", chevron: true, action: { addingEntry = true }) {
                             UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 28)
                         } menu: { EmptyView() }
                         ManageRow(title: "Bank statement", caption: "Import transactions from a CSV file", divided: true, chevron: true, action: importStatement) {
@@ -125,7 +123,8 @@ struct UpOnlyEntryFlow: View {
     private func seed(_ mode: ImportMode) {
         guard var batch = session.importDraft, batch.rows.isEmpty, let source = batch.sources.first else { return }
         let portfolios = session.document?.portfolios.filter { !$0.isArchived && $0.kind == mode.kind } ?? []
-        let portfolio = portfolios.count == 1 ? portfolios.first : nil
+        // The first portfolio rather than a new one; the form's Portfolio row changes it.
+        let portfolio = portfolios.first
         let content: ImportRowContent = mode == .bankBalances ? .bankBalance(BankBalanceInput()) : .holding(HoldingInput(portfolioID: portfolio?.id, portfolioName: portfolio?.name ?? (mode == .metals ? "My metals" : "My crypto")))
         batch.rows = [ImportDraftRow(sourceID: source.id, line: 1, content: content)]
         session.importDraft = batch
@@ -149,6 +148,75 @@ struct UpOnlyEntryFlow: View {
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).frame(maxWidth: .infinity).frame(minHeight: 24) }
             .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large)
+    }
+}
+
+/// The large amount every add form starts with: a field as wide as what's typed, its unit just after it, and a faint
+/// 0 until something is. A sign in front says which way the money moved.
+struct UpOnlyAmountEntry: View {
+    @Environment(UpOnlySession.self) private var session
+    @Binding var text: String
+    var unit: String
+    var sign = ""
+    var tint: Color = .primary
+    var label: String
+    var focused: FocusState<Bool>.Binding
+    /// Smaller as the number grows, so a long one still fits the menu's width beside its unit.
+    static func font(_ count: Int) -> Font { .system(size: count > 14 ? 22 : count > 12 ? 26 : count > 9 ? 32 : 38, weight: .medium).monospacedDigit() }
+    var body: some View {
+        let font = Self.font(text.count)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                if !sign.isEmpty { Text(sign).font(font).foregroundStyle(tint.opacity(text.isEmpty ? 0.35 : 1)).accessibilityHidden(true) }
+                Text(text.isEmpty ? "0" : text).font(font).lineLimit(1).opacity(0).padding(.trailing, 4).accessibilityHidden(true)
+                    .overlay(alignment: .leading) {
+                        ZStack(alignment: .leading) {
+                            if text.isEmpty { Text("0").font(font).foregroundStyle(.tertiary).accessibilityHidden(true) }
+                            Group { if session.privacyMode { SecureField("", text: $text) } else { TextField("", text: $text) } }
+                                .textFieldStyle(.plain).font(font).foregroundStyle(tint).focused(focused).accessibilityLabel(label)
+                        }
+                    }
+            }.fixedSize()
+            Text(unit).font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary).fixedSize()
+        }.frame(maxWidth: .infinity)
+    }
+}
+/// A form row's value that opens a choice: the value and a small chevron, as a date or a menu.
+struct UpOnlyFormValue: View {
+    var value: String
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(value).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+        }.contentShape(Rectangle())
+    }
+}
+/// A choice in a form row (a portfolio, a currency, a unit), drawn as `UpOnlyFormValue`.
+struct UpOnlyFormMenu<Content: View>: View {
+    var value: String
+    var label: String
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        Menu { content() } label: { UpOnlyFormValue(value: value) }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityLabel(label).accessibilityValue(value)
+    }
+}
+/// One line of a form card: what it is on the left, its value or field on the right, rows the same height.
+struct UpOnlyFormRow<Trailing: View>: View {
+    var label: String
+    var note: String? = nil
+    var divided = false
+    @ViewBuilder var trailing: () -> Trailing
+    var body: some View {
+        VStack(spacing: 0) {
+            if divided { Divider().opacity(0.5) }
+            HStack(spacing: 8) {
+                Text(label).font(UpOnlyType.row).foregroundStyle(.secondary)
+                if let note { Text(note).font(UpOnlyType.caption).foregroundStyle(.tertiary) }
+                Spacer(minLength: 12)
+                trailing()
+            }.frame(minHeight: 40)
+        }
     }
 }
 
