@@ -287,13 +287,32 @@ struct UpOnlyChart: View {
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
     }
+    /// Which x-axis labels to show. Marked charts (days, weeks, months, hours) keep only marks whose label fits
+    /// centred under its line, then as many as fit evenly; monthly cash-flow charts label from every point.
+    private func axisTicks(_ plotWidth: CGFloat) -> [UpOnlyChartAxis.Tick] {
+        guard let labelled = layout.labelled else { return UpOnlyChartAxis.ticks(widths: labelWidths, plotWidth: plotWidth) }
+        let centred = labelled.filter { index in
+            let centre = x(index, width: plotWidth), half = labelWidths[index] / 2
+            return centre - half >= 0 && centre + half <= plotWidth
+        }
+        return UpOnlyChartAxis.ticks(labelled: centred, widths: labelWidths, plotWidth: plotWidth)
+    }
     private var historyChart: some View {
         GeometryReader { geometry in
             // The value axis sits on the left and the plot runs from it to the right edge.
             let plotWidth = max(1, geometry.size.width - axisWidth - edge)
             let visible = layout.visible
+            let ticks = axisTicks(plotWidth)
             ZStack(alignment: .topLeading) {
                 Canvas { context, size in
+                    // A faint line at each marked day or hour, as quiet as the value gridlines.
+                    if layout.labelled != nil {
+                        for tick in ticks {
+                            let xx = axisWidth + x(tick.index, width: plotWidth)
+                            var mark = Path(); mark.move(to: CGPoint(x: xx, y: 0)); mark.addLine(to: CGPoint(x: xx, y: plotHeight))
+                            context.stroke(mark, with: .color(.primary.opacity(contrast == .increased ? 0.12 : 0.05)), lineWidth: 1)
+                        }
+                    }
                     for tick in layout.scale.ticks where !layout.runs.isEmpty {
                         let yy = y(Decimal(tick))
                         var grid = Path(); grid.move(to: CGPoint(x: axisWidth, y: yy)); grid.addLine(to: CGPoint(x: axisWidth + plotWidth + edge, y: yy))
@@ -393,8 +412,6 @@ struct UpOnlyChart: View {
                     }
                     .gesture(SpatialTapGesture().onEnded { value in if let index = nearest(value.location.x, width: plotWidth) { onSelect?(visible[index].id) } })
                 ZStack(alignment: .topLeading) {
-                    let ticks = layout.labelled.map { UpOnlyChartAxis.ticks(labelled: $0, widths: labelWidths, plotWidth: plotWidth) }
-                        ?? UpOnlyChartAxis.ticks(widths: labelWidths, plotWidth: plotWidth)
                     ForEach(ticks) { tick in
                         Text(layout.labelled == nil ? visible[tick.index].label : visible[tick.index].axisLabel ?? "").font(.system(size: 10))
                             .foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.5)).fixedSize()
@@ -427,6 +444,7 @@ enum UpOnlyFormat {
     private static let dayFormatter = dateFormatter("MMMd")
     private static let dateWithYear = dateFormatter("MMMdyyyy")
     private static let monthFormatter = dateFormatter("MMM")
+    private static let weekdayFormatter = dateFormatter("EEE")
     private static let monthYearFormatter = dateFormatter("MMMyyyy")
     private static func currencyFormatter(_ code: String) -> NumberFormatter {
         let formatter = NumberFormatter(); formatter.numberStyle = .currency; formatter.currencyCode = code
@@ -454,6 +472,21 @@ enum UpOnlyFormat {
     static func utcDay(_ date: Date) -> String { dayFormatter.string(from: date) }
     /// "Sep 24, 2026".
     static func utcDate(_ date: Date) -> String { dateWithYear.string(from: date) }
+    /// "Thu", "2026": short marks for a chart's time axis, in UTC days like the rest of the history.
+    static func weekday(_ date: Date) -> String { weekdayFormatter.string(from: date) }
+    static func year(_ date: Date) -> String { String(UTCDay.calendar.component(.year, from: date)) }
+    /// "3 PM" and "Thu" on the Mac's own clock, for the 24-hour chart; "Sep 24, 3 PM" on its hover.
+    /// The system puts a narrow no-break space before "PM"; a plain one matches the rest of the app's text.
+    static func localHour(_ date: Date, calendar: Calendar = .current) -> String { plain(localFormatter("j", calendar).string(from: date)) }
+    static func localWeekday(_ date: Date, calendar: Calendar = .current) -> String { localFormatter("EEE", calendar).string(from: date) }
+    static func localMoment(_ date: Date, calendar: Calendar = .current) -> String { plain(localFormatter("MMMdj", calendar).string(from: date)) }
+    private static func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}", with: " ") }
+    private static func localFormatter(_ template: String, _ calendar: Calendar) -> DateFormatter {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US")
+        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter
+    }
     /// "Sep": the month's own abbreviation, not the first three letters of its name.
     static func monthName(_ month: MonthKey) -> String {
         guard let date = UTCDay.calendar.date(from: DateComponents(year: month.year, month: month.month, day: 15)) else { return month.description }

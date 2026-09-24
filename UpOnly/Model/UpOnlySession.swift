@@ -14,6 +14,10 @@ final class UpOnlySession {
     enum RestoreOutcome { case restored, needsConfirmation, cancelled, failed }
     private(set) var state: State = .locked
     private(set) var document: VaultDocument?
+    /// Counts document replacements, so work derived from the document can be reused until it changes.
+    @ObservationIgnored private(set) var documentRevision = 0
+    /// The 24-hour charts' hourly values, by page, document revision and hour: each is two dozen valuations.
+    @ObservationIgnored var hourlyCache: [String: [UpOnlyChartPoint]] = [:]
     private(set) var monthModel: PopoverModel?
     /// True while unlocking, creating, restoring or saving a change the user made; forms disable while it's set.
     private(set) var isBusy = false
@@ -361,7 +365,7 @@ final class UpOnlySession {
         fxIssues = [:]
         if lockingVault { vault.lock() }
         sessionToken = UUID()
-        document = nil
+        document = nil; documentRevision += 1; hourlyCache = [:]
         monthModel = nil
         dashboardSelection = .all
         showingSwitcher = false; dashboardHeight = nil; cashFlowScope = nil
@@ -372,7 +376,7 @@ final class UpOnlySession {
     }
 
     private func publish(_ document: VaultDocument, freshUnlock: Bool = false) {
-        self.document = document
+        self.document = document; documentRevision += 1
         if freshUnlock || monthModel == nil {
             let model = PopoverModel()
             model.owner = self

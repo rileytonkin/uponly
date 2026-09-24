@@ -946,8 +946,9 @@ nonisolated struct ChartEstimates {
     }
     /// The day's components with each missing price, rate or balance estimated, the names of what was estimated, and
     /// whether every part now has a value.
-    func filled(_ components: [ValuationComponent], day: Date) -> (components: [ValuationComponent], estimated: [String], complete: Bool) {
-        let moment = UTCDay.start(of: day).addingTimeInterval(12 * 3600)
+    /// `moment` is when within the day to estimate for: midday unless given (an hour of the 24-hour chart).
+    func filled(_ components: [ValuationComponent], day: Date, at moment: Date? = nil) -> (components: [ValuationComponent], estimated: [String], complete: Bool) {
+        let moment = moment ?? UTCDay.start(of: day).addingTimeInterval(12 * 3600)
         var result: [ValuationComponent] = [], estimated: [String] = [], complete = true
         for component in components {
             guard component.missing != nil || component.usdValue == nil else { result.append(component); continue }
@@ -980,15 +981,15 @@ nonisolated struct ChartEstimates {
         return (result, estimated, complete)
     }
     /// A day's full total, every part estimated where it must be. Nil when a part still can't be valued.
-    func total(_ components: [ValuationComponent], day: Date) -> (total: Decimal, estimated: [String])? {
-        let day = filled(components, day: day)
+    func total(_ components: [ValuationComponent], day: Date, at moment: Date? = nil) -> (total: Decimal, estimated: [String])? {
+        let day = filled(components, day: day, at: moment)
         guard day.complete, let total = AssetOwnership.sum(day.components) else { return nil }
         return (total, day.estimated)
     }
     /// Your share of a day: a company's parts at its ownership that month, or at the nearest month recorded when
     /// that one isn't. Nil when a part still can't be valued or a company has no ownership recorded at all.
-    func personalTotal(_ components: [ValuationComponent], day: Date) -> (total: Decimal, estimated: [String])? {
-        let filled = filled(components, day: day)
+    func personalTotal(_ components: [ValuationComponent], day: Date, at moment: Date? = nil) -> (total: Decimal, estimated: [String])? {
+        let filled = filled(components, day: day, at: moment)
         guard filled.complete else { return nil }
         var estimated = filled.estimated, total = Decimal.zero
         let month = AssetOwnership.month(at: day).description

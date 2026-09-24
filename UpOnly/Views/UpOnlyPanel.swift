@@ -487,13 +487,38 @@ struct UpOnlyUnlockedPanel: View {
             if UTCDay.isSameDay(last, today) { figures[figures.count - 1] = (live, nil); sampleDays[sampleDays.count - 1] = today }
             else { days.append(today); sampleDays.append(today); figures.append((live, nil)) }
         }
-        // The chart starts at its first value, so the axis names that day and the last: the span the line covers.
-        let first = figures.firstIndex { $0 != nil } ?? 0
-        let labels = [String?](repeating: nil, count: first) + DashboardChart.endLabels(Array(days[first...]), range: worthRange)
+        let labels = DashboardChart.axisMarks(days, range: worthRange)
         return days.indices.map { index in
             UpOnlyChartPoint(id: String(days[index].timeIntervalSince1970), label: UpOnlyFormat.utcDay(days[index]), value: figures[index]?.0,
                              detailLabel: UpOnlyFormat.utcDate(sampleDays[index] ?? days[index]), note: figures[index]?.1, date: sampleDays[index], axisLabel: labels[index])
         }
+    }
+    /// The past 24 hours hour by hour, each valued as the app would have shown it then (the latest prices, rates and
+    /// balances saved by that hour), ending at `live`. `key` names the page, for reusing the hours until the next one.
+    func hourlySeries(scope: ValuationScope, interval: DateInterval, key: String, live: Decimal?, _ value: (ValuationResult) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
+        guard let document = session.document else { return [] }
+        let calendar = Calendar.current
+        let cacheKey = key + "|\(session.documentRevision)|\(Int(interval.end.timeIntervalSince1970 / 3600))"
+        var points: [UpOnlyChartPoint]
+        if let cached = session.hourlyCache[cacheKey] { points = cached }
+        else {
+            // From exactly 24 hours ago, then on each hour, so the axis can mark every six hours.
+            var moments = [interval.start]
+            if var hour = calendar.nextDate(after: interval.start, matching: DateComponents(minute: 0, second: 0), matchingPolicy: .nextTime) {
+                while hour < interval.end.addingTimeInterval(-60) { moments.append(hour); hour = hour.addingTimeInterval(3600) }
+            }
+            let marks = DashboardChart.hourMarks(moments, calendar: calendar)
+            points = moments.indices.map { index in
+                let moment = moments[index]
+                let figure = value(NetWorthCalculator.value(at: moment, scope: scope, document: document, now: moment))
+                return UpOnlyChartPoint(id: "h" + String(Int(moment.timeIntervalSince1970)), label: UpOnlyFormat.localHour(moment, calendar: calendar), value: figure?.0,
+                                        detailLabel: UpOnlyFormat.localMoment(moment, calendar: calendar), note: figure?.1, date: moment, axisLabel: marks[index])
+            }
+            if session.hourlyCache.count > 24 { session.hourlyCache = [:] }
+            session.hourlyCache[cacheKey] = points
+        }
+        if let live { points.append(UpOnlyChartPoint(id: "now", label: "Now", value: live, detailLabel: "Now", date: interval.end)) }
+        return points
     }
     var selectedPortfolio: Portfolio? {
         guard case .portfolio(let id) = scope else { return nil }
@@ -502,6 +527,12 @@ struct UpOnlyUnlockedPanel: View {
     /// Where the range's changes start: the chart's first earlier day that can be valued in full, with every part as
     /// it stood then (a missing price, rate or balance estimated from the nearest saved ones). Nil without one.
     func rangeStart(scope: ValuationScope, interval: DateInterval, document: VaultDocument, estimates: ChartEstimates) -> (day: Date, components: [ValuationComponent])? {
+        if worthRange.hourly {
+            // 24 hours: everything as the app would have shown it then.
+            let then = interval.start
+            let start = estimates.filled(NetWorthCalculator.value(at: then, scope: scope, document: document, now: then).components, day: then, at: then)
+            return start.complete ? (then, start.components) : nil
+        }
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
         let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
         for stop in stops {

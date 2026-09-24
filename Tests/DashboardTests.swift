@@ -37,14 +37,23 @@ struct DashboardTests {
         #expect(DashboardChart.stops(sampleDays: [], rangeStart: utc(2026, 8, 20), strideDays: 7).isEmpty)
     }
 
-    @Test("The x-axis names only where the chart starts and ends; a year or more includes the year")
-    func endLabels() {
-        let weekly = days(from: utc(2025, 9, 21), count: 53, every: 7)
-        let labels = DashboardChart.endLabels(weekly, range: .year)
-        #expect(labels.first == "Sep 21, 2025" && labels.last == "Sep 20, 2026" && labels.dropFirst().dropLast().allSatisfy { $0 == nil })
-        let daily = days(from: utc(2026, 9, 17), count: 8)
-        #expect(DashboardChart.endLabels(daily, range: .week).compactMap { $0 } == ["Sep 17", "Sep 24"])
+    @Test("The x-axis marks days over 7 days, Mondays over 30, months over 12 (January as its year), years for a long All")
+    func axisMarks() {
+        #expect(DashboardChart.axisMarks(days(from: utc(2026, 9, 17), count: 8), range: .week).compactMap { $0 } == ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"])
+        #expect(DashboardChart.axisMarks(days(from: utc(2026, 8, 26), count: 30), range: .month).compactMap { $0 } == ["Aug 31", "Sep 7", "Sep 14", "Sep 21"])
+        #expect(DashboardChart.axisMarks(days(from: utc(2025, 9, 25), count: 365), range: .year).compactMap { $0 }
+                == ["Oct", "Nov", "Dec", "2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"])
+        #expect(DashboardChart.axisMarks(days(from: utc(2021, 6, 1), count: 270, every: 7), range: .all).compactMap { $0 } == ["2022", "2023", "2024", "2025", "2026"])
+        // Only the first point of a period is marked, not the first point of the chart.
+        #expect(DashboardChart.axisMarks(days(from: utc(2026, 3, 15), count: 60), range: .year).compactMap { $0 } == ["Apr", "May"])
         #expect(UpOnlyFormat.utcDate(utc(2026, 8, 27, hour: 23)) == "Aug 27, 2026")
+    }
+    @Test("The 24-hour axis marks every six hours, with the weekday at midnight")
+    func hourMarks() {
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = utc(2026, 9, 23, hour: 10).addingTimeInterval(7 * 60)
+        let moments = [start] + (1...23).map { utc(2026, 9, 23, hour: 10).addingTimeInterval(TimeInterval($0) * 3600) }
+        #expect(DashboardChart.hourMarks(moments, calendar: calendar).compactMap { $0 } == ["12 PM", "6 PM", "Thu", "6 AM"])
     }
 
     @Test("A chart is green when it ends at or above where it started, red when below")
@@ -157,14 +166,15 @@ struct DashboardTests {
 
     @Test("Ranges are rolling and named the way the change line says them")
     func ranges() {
-        #expect(WorthRange.allCases.map(\.title) == ["1W", "1M", "3M", "1Y", "All"])
-        #expect(WorthRange.year.phrase == "past year" && WorthRange.month.spokenTitle == "Past month" && WorthRange.all.spokenTitle == "All time")
-        #expect(WorthRange.week.seconds == 7 * 86400 && WorthRange.month.seconds == 30 * 86400 && WorthRange.all.seconds == nil)
-        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year")
+        #expect(WorthRange.allCases.map(\.title) == ["24H", "7D", "30D", "12M", "All"])
+        #expect(WorthRange.year.phrase == "past 12 months" && WorthRange.month.spokenTitle == "Past 30 days" && WorthRange.all.spokenTitle == "All time")
+        #expect(WorthRange.day.seconds == 86400 && WorthRange.week.seconds == 7 * 86400 && WorthRange.month.seconds == 30 * 86400 && WorthRange.all.seconds == nil)
+        #expect(WorthRange.day.hourly && !WorthRange.week.hourly && WorthRange.month.previous == "prev 30D" && WorthRange.all.previous == "at start")
+        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past 12 months")
         // Every day up to a year; All by how long the history is.
         #expect(WorthRange.year.chartStepDays(span: 365 * 86400) == 1)
         #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 800 * 86400) == 3 && WorthRange.all.chartStepDays(span: 2500 * 86400) == 7)
-        #expect(WorthRange.all.months == nil && WorthRange.week.months == 1 && WorthRange.year.months == 12)
+        #expect(WorthRange.all.months == nil && WorthRange.day.months == 1 && WorthRange.year.months == 12)
     }
 }
 

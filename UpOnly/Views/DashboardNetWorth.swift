@@ -28,9 +28,12 @@ extension UpOnlyUnlockedPanel {
         let estimates = ChartEstimates(document: document)
         // Whatever a saved day lacks (a price, a rate, a balance, a company's share that month) is estimated from the
         // nearest saved values and named on hover, so the line never dips or cuts across for want of one.
-        let points = dailySeries(samples, interval: interval, live: valuation.total) { sample in
-            estimates.personalTotal(sample.components, day: sample.utcDay).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
+        func figure(_ result: (total: Decimal, estimated: [String])?) -> (Decimal, String?)? {
+            result.map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
         }
+        let points = worthRange.hourly
+            ? hourlySeries(scope: scope, interval: interval, key: "worth \(scope)", live: valuation.total) { figure(estimates.personalTotal($0.components, day: $0.at, at: $0.at)) }
+            : dailySeries(samples, interval: interval, live: valuation.total) { figure(estimates.personalTotal($0.components, day: $0.utcDay)) }
         // A company's holdings count at your share in the total, so profit on cost is only summed for personal portfolios.
         let personal = Set(document.portfolios.filter { ($0.ownerBusinessID ?? "").isEmpty }.map(\.id))
         let portfolioOf = Dictionary(document.holdings.map { ($0.id, $0.portfolioID) }, uniquingKeysWith: { first, _ in first })
