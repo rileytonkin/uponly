@@ -166,11 +166,11 @@ struct DashboardTests {
 
     @Test("Ranges are rolling and named the way the change line says them")
     func ranges() {
-        #expect(WorthRange.allCases.map(\.title) == ["24H", "7D", "30D", "12M", "All"])
-        #expect(WorthRange.year.phrase == "past 12 months" && WorthRange.month.spokenTitle == "Past 30 days" && WorthRange.all.spokenTitle == "All time")
+        #expect(WorthRange.allCases.map(\.title) == ["24H", "7D", "30D", "1Y", "All"])
+        #expect(WorthRange.year.phrase == "past year" && WorthRange.month.spokenTitle == "Past 30 days" && WorthRange.all.spokenTitle == "All time")
         #expect(WorthRange.day.seconds == 86400 && WorthRange.week.seconds == 7 * 86400 && WorthRange.month.seconds == 30 * 86400 && WorthRange.all.seconds == nil)
         #expect(WorthRange.day.hourly && !WorthRange.week.hourly && WorthRange.month.previous == "prev 30D" && WorthRange.all.previous == "at start")
-        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past 12 months")
+        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year")
         // Every day up to a year; All by how long the history is.
         #expect(WorthRange.year.chartStepDays(span: 365 * 86400) == 1)
         #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 800 * 86400) == 3 && WorthRange.all.chartStepDays(span: 2500 * 86400) == 7)

@@ -67,10 +67,11 @@ extension UpOnlyUnlockedPanel {
         .onChange(of: model.scope) { detail = nil }
     }
     var cashFlowRows: [AssetRow] {
+        // Your picture on Personal and each company's logo on its row, as elsewhere.
         var rows = [AssetRow(id: "personal", name: "Personal", value: model.personalState.totals.map { UpOnlyFormat.exactMoney($0.net) } ?? "Not recorded",
-                             symbol: "person.fill", tint: UpOnlyTint.cashFlow) { detail = "personal" }]
+                             image: session.personalImage, symbol: "person.fill", tint: UpOnlyTint.cashFlow) { detail = "personal" }]
         for row in model.state.businesses {
-            rows.append(AssetRow(id: row.id, name: row.book.name, value: shareValue(row), symbol: "building.2.fill", tint: UpOnlyTint.cashFlow) { detail = "business:" + row.id })
+            rows.append(AssetRow(id: row.id, name: row.book.name, value: shareValue(row), image: session.companyImage(row.book.id), symbol: "building.2.fill", tint: UpOnlyTint.company) { detail = "business:" + row.id })
         }
         return rows
     }

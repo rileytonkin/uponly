@@ -44,7 +44,7 @@ extension UpOnlyUnlockedPanel {
                 } else { Text("Needs a price or rate").font(UpOnlyType.title) }
             }
             if partOwner, let share, companyFocus == .all, focusTotal != nil {
-                UpOnlyValueRow(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
+                UpOnlyValueRow(label: "Your share of assets" + (ownership.map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
             }
             if companyID != nil, let book {
                 let totals = rangeTotals(book)
@@ -52,7 +52,7 @@ extension UpOnlyUnlockedPanel {
                     HStack(alignment: .top, spacing: 12) {
                         companyFigure("Net revenue", totals.revenue)
                         companyFigure("Expenses", totals.expenses.map { -$0 })
-                        companyFigure(partOwner ? "Your share" : "Profit / loss", partOwner ? totals.share : totals.profit, signed: true)
+                        companyFigure(partOwner ? "Your profit" : "Profit / loss", partOwner ? totals.share : totals.profit, signed: true)
                     }
                     // Say which months the figures cover: missing months would otherwise pass for a full range.
                     Text(totals.caption).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -105,10 +105,11 @@ extension UpOnlyUnlockedPanel {
                         let parts = holdingValues.filter { component in document?.holdings.first { $0.id == component.id }?.portfolioID == portfolio.id }
                         return AssetRow(id: portfolio.id.uuidString, name: portfolio.name, detail: parts.isEmpty ? nil : parts.map(\.label).joined(separator: ", "),
                                         value: AssetOwnership.sum(parts).map(UpOnlyFormat.exactMoney) ?? (parts.isEmpty ? "No holdings" : "Price needed"),
+                                        logo: parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document?.holdings.first { $0.id == part.id }?.assetID.rawValue },
                                         symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                         tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, selected: companyFocus == .portfolio(portfolio.id),
                                         trailing: .button(symbol: "chevron.right", label: "Open " + portfolio.name, action: {
-                                            select(.portfolio(portfolio.id))
+                                            select(.portfolio(portfolio.id), .drill)
                                         })) {
                             companyFocus = companyFocus == .portfolio(portfolio.id) ? .all : .portfolio(portfolio.id)
                         }

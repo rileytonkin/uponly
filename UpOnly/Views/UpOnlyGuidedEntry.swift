@@ -45,19 +45,12 @@ struct UpOnlyGuidedEntry: View {
             UpOnlyConfirmation(title: mode == .bankBalances ? "Discard this balance?" : "Discard this holding?", confirmTitle: "Discard", confirm: back, cancel: { discard = false })
         } else {
         VStack(alignment: .leading, spacing: 16) {
-            UpOnlyPageHeader(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver") {
-                if step == 2 || (step == 1 && !preselected) { step -= 1; error = nil; review = nil }
-                else if step == 0 && mode == .bankBalances && newAccount && !activeAccounts.isEmpty && !addingAccount { newAccount = false }
-                else if step == 0 && exactCoin { exactCoin = false }
-                // Nothing typed, or the prefilled value left as it was, is nothing to lose.
-                else if quantity.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.content == initial { back() }
-                else { discard = true }
-            }.disabled(working)
-            Divider()
+            UpOnlyPageHeader(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver", back: goBack).disabled(working)
             if step == 0 { chooseAsset }
             else {
                 HStack(spacing: 12) {
-                    UpOnlyEntryBadge(mode: mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "", image: mode == .bankBalances ? account?.profileImage : nil, size: 36)
+                    UpOnlyEntryBadge(mode: mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "", assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil,
+                                     image: mode == .bankBalances ? account?.profileImage : nil, size: 36)
                     Text(title).font(UpOnlyType.title).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
@@ -78,6 +71,8 @@ struct UpOnlyGuidedEntry: View {
         .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: step)
         .onChange(of: row.content) { _, _ in unchanged = false; error = nil }
         .onChange(of: step) { _, _ in unchanged = false }
+        // Esc is Back when this form is the Add page (in Manage, Manage's own Back handles it).
+        .onChange(of: session.backRequests) { if session.addingInMenu, !session.managementInMenu, !working { goBack() } }
         .onAppear {
             // The modifier sits on a Group whose branches swap with the discard prompt (and the menu can reopen), so
             // set up once; running again would take the typed value as the starting one.
@@ -119,14 +114,17 @@ struct UpOnlyGuidedEntry: View {
             } else {
                 if activeAccounts.count > 4 { entryField("Find an account", text: $search, symbol: "magnifyingglass") }
                 ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(activeAccounts.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { item in
-                            assetButton(name: item.name, caption: item.currency, mode: .bankBalances, image: item.profileImage) {
+                    ManageCard {
+                        ForEach(Array(activeAccounts.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }.enumerated()), id: \.element.id) { index, item in
+                            ManageRow(title: item.name, caption: item.currency, divided: index > 0, chevron: true, action: {
                                 row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
-                            }
+                            }) {
+                                if let image = item.profileImage { UpOnlyProfileImage(data: image, name: item.name, size: 28) }
+                                else { UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: 28) }
+                            } menu: { EmptyView() }
                         }
                     }
-                }.frame(maxHeight: activeAccounts.count > 3 ? 208 : CGFloat(activeAccounts.count) * 64)
+                }.frame(maxHeight: activeAccounts.count > 4 ? 236 : CGFloat(activeAccounts.count) * 52 + 4)
                 Button {
                     if row.bank.account.existingID != nil { row.bank.account.existingID = nil; row.bank.account.name = "" }
                     customCurrency = !["USD", "GBP", "EUR"].contains(row.bank.account.currency); newAccount = true
@@ -160,18 +158,15 @@ struct UpOnlyGuidedEntry: View {
             // Before typing, offer the best-known coins rather than an empty list.
             let suggestions = search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Array(ImportCoins.common.prefix(6)) : ImportCoins.suggestions(search, coins: coins)
             if !suggestions.isEmpty {
-                VStack(spacing: 6) {
-                    ForEach(suggestions) { coin in
-                        Button {
+                // A list in the home style, each coin with its logo.
+                ManageCard {
+                    ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, coin in
+                        ManageRow(title: coin.name, caption: coin.symbol.uppercased(), divided: index > 0, chevron: true, action: {
                             row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; step = 1
-                        } label: {
-                            HStack {
-                                Text(coin.name).font(UpOnlyType.row.weight(.medium))
-                                Spacer(minLength: 6)
-                                Text(coin.symbol.uppercased()).font(UpOnlyType.caption).foregroundStyle(.secondary)
-                                Image(systemName: "chevron.right").font(.system(size: 9)).foregroundStyle(.tertiary)
-                            }.frame(maxWidth: .infinity, minHeight: 28).contentShape(Rectangle())
-                        }.buttonStyle(.bordered).help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
+                        }) {
+                            UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
+                        } menu: { EmptyView() }
+                        .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
                     }
                 }
             } else if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -345,15 +340,15 @@ struct UpOnlyGuidedEntry: View {
         Button(action: action) { Text(title).font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).frame(height: 28) }
             .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(shortcut ? KeyboardShortcut.defaultAction : nil)
     }
-    private func assetButton(name: String, caption: String, mode: ImportMode, symbol: String = "", image: Data? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 11) {
-                UpOnlyEntryBadge(mode: mode, symbol: symbol, image: image, size: 36)
-                VStack(alignment: .leading, spacing: 3) { Text(name).font(UpOnlyType.row.weight(.medium)); Text(caption).font(UpOnlyType.caption).foregroundStyle(.secondary) }.fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(.tertiary)
-            }.padding(11).frame(maxWidth: .infinity, alignment: .leading).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius)).contentShape(RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-        }.buttonStyle(UpOnlyCardButtonStyle(radius: UpOnlyLayout.radius))
+    /// One step back: from review to the amount, from the amount to the choice, and out when nothing would be lost.
+    private func goBack() {
+        if discard { discard = false }
+        else if step == 2 || (step == 1 && !preselected) { step -= 1; error = nil; review = nil }
+        else if step == 0 && mode == .bankBalances && newAccount && !activeAccounts.isEmpty && !addingAccount { newAccount = false }
+        else if step == 0 && exactCoin { exactCoin = false }
+        // Nothing typed, or the prefilled value left as it was, is nothing to lose.
+        else if quantity.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.content == initial { back() }
+        else { discard = true }
     }
     private func evaluate() async {
         guard let batch = session.importDraft, let document = session.document else { return }

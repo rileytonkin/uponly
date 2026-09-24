@@ -194,6 +194,8 @@ struct UpOnlyManagement: View {
             if next == "Entries" { entryMonth = session.entryMonthForManagement; entryLimit = 100 }
         }
         .onChange(of: session.importDraft?.id) { importBaseline = session.importDraft?.rows.map(\.content) ?? [] }
+        // Esc is Back here, a step at a time.
+        .onChange(of: session.backRequests) { if session.managementInMenu { back() } }
         .onChange(of: session.requestedRateCurrency) { _, currency in if currency != nil { editor = .exchangeRate } }
     }
     /// Needs attention's report and the closed months still to check, oldest first.

@@ -76,18 +76,23 @@ struct UpOnlyEntryFlow: View {
                     if !session.managementInMenu {
                         UpOnlyPageHeader(title: "Add", backLabel: "Back to overview") { session.addingInMenu = false }
                     }
-                    VStack(spacing: 9) {
-                        ForEach([ImportMode.bankBalances, .holdings, .metals], id: \.self) { mode in
-                            addCard(UpOnlyEntryBadge(mode: mode, size: 32),
-                                    title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver",
-                                    detail: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight") {
-                                if session.startImport(mode) { seed(mode) }
-                            }
+                    // One list in the home style: what you have, then what came in and went out.
+                    ManageCard {
+                        ForEach(Array([ImportMode.bankBalances, .holdings, .metals].enumerated()), id: \.element) { index, mode in
+                            ManageRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Gold & silver",
+                                      caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight",
+                                      divided: index > 0, chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
+                                UpOnlyEntryBadge(mode: mode, size: 28)
+                            } menu: { EmptyView() }
                         }
-                        addCard(UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 32),
-                                title: "Income or expense", detail: "One transaction, typed in") { addingEntry = true }
-                        addCard(UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 32),
-                                title: "Bank statement", detail: "Import transactions from a CSV file", action: importStatement)
+                    }
+                    ManageCard {
+                        ManageRow(title: "Income or expense", caption: "One transaction, typed in", chevron: true, action: { addingEntry = true }) {
+                            UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 28)
+                        } menu: { EmptyView() }
+                        ManageRow(title: "Bank statement", caption: "Import transactions from a CSV file", divided: true, chevron: true, action: importStatement) {
+                            UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28)
+                        } menu: { EmptyView() }
                     }
                     Button(session.importDraft == nil ? "Import several at once from a spreadsheet…" : "Continue your unfinished import…", action: showBulk)
                         .buttonStyle(.plain).font(UpOnlyType.body).foregroundStyle(.secondary).accessibilityIdentifier("BulkImport")
@@ -97,19 +102,11 @@ struct UpOnlyEntryFlow: View {
             .padding(UpOnlyLayout.inset)
             .frame(maxWidth: .infinity, maxHeight: compact ? nil : .infinity, alignment: .top)
             .background(Color(nsColor: .windowBackgroundColor))
-    }
-    private func addCard<Badge: View>(_ badge: Badge, title: String, detail: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                badge
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(UpOnlyType.row.weight(.medium))
-                    Text(detail).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
-            }.padding(UpOnlyLayout.cardInset).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius)).contentShape(RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-        }.buttonStyle(UpOnlyCardButtonStyle(radius: UpOnlyLayout.radius)).accessibilityLabel(title).accessibilityHint(detail)
+            // Esc: out of the transaction form, else off the Add page. A guided form handles its own steps.
+            .onChange(of: session.backRequests) {
+                guard compact, session.addingInMenu, !session.managementInMenu, session.importDraft == nil else { return }
+                if addingEntry { addingEntry = false } else { session.addingInMenu = false }
+            }
     }
     // A statement goes straight to the file picker; the summary and review follow.
     private func importStatement() {
@@ -151,6 +148,8 @@ struct UpOnlyEntryFlow: View {
 struct UpOnlyEntryBadge: View {
     var mode: ImportMode
     var symbol = ""
+    /// The coin's ID, for its logo.
+    var assetID: String? = nil
     var image: Data?
     var size: CGFloat = 56
     private var tint: Color {
@@ -171,6 +170,8 @@ struct UpOnlyEntryBadge: View {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: size * 0.46, weight: .medium))
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.6), tint], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: size, height: size).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: size * 0.28))
+            } else if mode == .holdings, let assetID, NSImage(named: "CoinLogos/" + assetID) != nil {
+                UpOnlyAssetBadge(assetID: assetID, symbol: symbol, size: size)
             } else if mode == .holdings, !symbol.isEmpty {
                 Text(symbol == "BTC" ? "₿" : symbol == "ETH" ? "Ξ" : symbol).font(.system(size: symbol.count > 2 && symbol != "BTC" ? size * 0.25 : size * 0.48, weight: .medium))
                     .foregroundStyle(tint).frame(width: size, height: size).background(tint.opacity(0.12), in: Circle())

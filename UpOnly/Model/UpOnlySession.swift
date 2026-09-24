@@ -48,6 +48,56 @@ final class UpOnlySession {
     var dashboardHeight: CGFloat?
     /// Income & spending's account choice, put back after a bank or company page borrowed it.
     var cashFlowScope: PerformanceScope?
+    /// Your own picture, from your personal Wise profile, for what's about you (your bank balances, Personal).
+    var personalImage: Data? {
+        guard let document else { return nil }
+        return document.accounts.first { $0.externalProfileID != nil && $0.profileImage != nil && AssetOwnership.businessID(for: $0, in: document) == nil }?.profileImage
+    }
+    /// A company's logo, from the bank profile its accounts come from.
+    func companyImage(_ id: String) -> Data? {
+        guard let document else { return nil }
+        return document.accounts.first { $0.profileImage != nil && AssetOwnership.businessID(for: $0, in: document) == id }?.profileImage
+    }
+    /// Esc asks the page showing to go back; each page that can go back watches this.
+    private(set) var backRequests = 0
+    /// Income & spending has a Personal or company page open (it has its own Back).
+    var dashboardDetailOpen = false
+    /// Esc steps back before it closes anything: the switcher, then a page inside Manage or Add or Income & spending,
+    /// then a page opened from another page's row. False when there's nowhere to go back to, so the menu closes.
+    func handleEscape() -> Bool {
+        if showingSwitcher { showingSwitcher = false; return true }
+        guard state == .unlocked else { return false }
+        if managementInMenu || addingInMenu || dashboardDetailOpen { backRequests += 1; return true }
+        return dashboardBack()
+    }
+    /// Pages the current one was opened from (a home row, a company's portfolio), most recent last: the dashboard's
+    /// back box and Esc return through them. Choosing from the switcher starts afresh.
+    private(set) var dashboardTrail: [DashboardSelection] = []
+    enum DashboardMove { case jump, drill, back }
+    /// Shows a dashboard page. A bank group's page reads its company's accounting, so Income & spending's account
+    /// choice is put aside there and given back afterwards.
+    func showDashboard(_ selection: DashboardSelection, _ move: DashboardMove = .jump) {
+        let leavingGroup: Bool = { if case .bankGroup = dashboardSelection { return true }; return false }()
+        if case .bankGroup(let id) = selection {
+            if !leavingGroup { cashFlowScope = monthModel?.scope }
+            monthModel?.selectScope(id == "personal" ? .personal : .business(id))
+        } else if leavingGroup {
+            monthModel?.selectScope(cashFlowScope ?? .all); cashFlowScope = nil
+        }
+        switch move {
+        case .jump: dashboardTrail = []
+        case .drill: if dashboardSelection != selection { dashboardTrail.append(dashboardSelection) }
+        case .back: break
+        }
+        showingSwitcher = false
+        dashboardSelection = selection
+    }
+    /// Back one page along the trail; false when there's nowhere to go back to.
+    @discardableResult func dashboardBack() -> Bool {
+        guard let previous = dashboardTrail.popLast() else { return false }
+        showDashboard(previous, .back)
+        return true
+    }
     /// 1 for net worth pages, 0 for cash flow; the older way of saying which half of the dashboard is showing.
     var destination: Int {
         get { dashboardSelection == .cashFlow ? 0 : 1 }
@@ -379,10 +429,10 @@ final class UpOnlySession {
         fxIssues = [:]
         if lockingVault { vault.lock() }
         sessionToken = UUID()
-        document = nil; documentRevision += 1; hourlyCache = [:]; intraday = [:]; intradayFetchedAt = [:]
+        document = nil; documentRevision += 1; hourlyCache = [:]; intraday = [:]; intradayFetchedAt = [:]; intradayReady = []
         monthModel = nil
         dashboardSelection = .all
-        showingSwitcher = false; dashboardHeight = nil; cashFlowScope = nil
+        showingSwitcher = false; dashboardHeight = nil; cashFlowScope = nil; dashboardTrail = []
         message = nil
         isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
         sourceIssues = [:]
@@ -402,7 +452,7 @@ final class UpOnlySession {
         // A page whose portfolio was archived, or whose company no longer has an account, goes back to All assets.
         if !Self.selectionExists(dashboardSelection, in: document) {
             if case .bankGroup = dashboardSelection { monthModel?.selectScope(cashFlowScope ?? .all); cashFlowScope = nil }
-            dashboardSelection = .all
+            dashboardSelection = .all; dashboardTrail = []
         }
         state = .unlocked
         if freshUnlock { recordActivity(); scheduleRefresh() }
@@ -411,33 +461,50 @@ final class UpOnlySession {
 
     /// Waits until no other write is running, then claims the writer. Background work also waits for queued user edits.
     /// User edits go in the order they were made, so two quick toggles save in that order.
-    /// Fetches intraday prices for every coin (and gold) held, for a 24-hour, 7-day or 30-day chart. Each is reused for
-    /// a few minutes over 24 hours and longer over the other ranges; a failure leaves the chart on saved prices.
-    func loadIntraday(_ range: WorthRange) async {
-        guard state == .unlocked, let document, range.intradayStep != nil else { return }
+    /// Ranges whose intraday prices have all been fetched at least once: until then their chart stays on saved
+    /// prices, so it changes once when they arrive rather than coin by coin.
+    private(set) var intradayReady: Set<String> = []
+    /// Fetches intraday prices for every coin (and gold) held, for the given short ranges, all at once, and publishes
+    /// them together. Each is reused for a few minutes over 24 hours and longer over the other ranges; a failure leaves
+    /// that coin on saved prices.
+    func loadIntraday(_ ranges: [WorthRange]) async {
+        guard state == .unlocked, let document else { return }
         let token = sessionToken, now = Date()
-        let reuse: TimeInterval = range == .day ? 5 * 60 : range == .week ? 30 * 60 : 2 * 3600
         let assets = Set(document.holdings.filter { $0.isActive(at: now) && document.portfolio(id: $0.portfolioID)?.isActive(at: now) == true }.map(\.assetID))
             .filter { PreciousMetal.asset($0) == nil ? document.settings.automaticPrices || isFixture : (document.settings.automaticMetals || isFixture) && PreciousMetal.asset($0) == .gold }
-        for asset in assets.sorted(by: { $0.rawValue < $1.rawValue }) {
-            let key = range.title + "|" + asset.rawValue
-            if let fetched = intradayFetchedAt[key], now.timeIntervalSince(fetched) < reuse { continue }
-            let reference = document.quotes.filter { $0.assetID == asset }.max { $0.providerTime < $1.providerTime }?.priceUSD.value
-            let symbol = PublicPrices.knownSymbols[asset.rawValue] ?? catalog.first { $0.id == asset.rawValue }?.symbol.lowercased()
-            let series: ChartEstimates.Series
-            #if UPONLY_FIXTURE
-            if isFixture {
+        struct Job: Sendable { var key: String; var asset: CanonicalAssetID; var range: WorthRange; var symbol: String?; var reference: Decimal?; var saved: ChartEstimates.Series }
+        var jobs: [Job] = []
+        for range in ranges where range.intradayStep != nil {
+            let reuse: TimeInterval = range == .day ? 5 * 60 : range == .week ? 30 * 60 : 2 * 3600
+            for asset in assets {
+                let key = range.title + "|" + asset.rawValue
+                if let fetched = intradayFetchedAt[key], now.timeIntervalSince(fetched) < reuse { continue }
                 let saved = document.quotes.filter { $0.assetID == asset }.map { (time: $0.providerTime, value: $0.priceUSD.value) }.sorted { $0.time < $1.time }
-                series = Self.syntheticIntraday(asset, saved: saved, range: range, now: now)
+                jobs.append(Job(key: key, asset: asset, range: range, symbol: PublicPrices.knownSymbols[asset.rawValue] ?? catalog.first { $0.id == asset.rawValue }?.symbol.lowercased(),
+                                reference: saved.last?.value, saved: saved))
+                intradayFetchedAt[key] = now
             }
-            else { series = (try? await PublicPrices.intraday(asset, symbol: symbol, reference: reference, range: range, now: now, coinGeckoKey: document.settings.coinGeckoKey)) ?? [] }
-            #else
-            series = (try? await PublicPrices.intraday(asset, symbol: symbol, reference: reference, range: range, now: now, coinGeckoKey: document.settings.coinGeckoKey)) ?? []
-            #endif
-            guard token == sessionToken, state == .unlocked else { return }
-            intradayFetchedAt[key] = now
-            if !series.isEmpty { intraday[key] = series }
         }
+        var fetched: [String: ChartEstimates.Series] = [:]
+        if isFixture {
+            #if UPONLY_FIXTURE
+            for job in jobs { fetched[job.key] = Self.syntheticIntraday(job.asset, saved: job.saved, range: job.range, now: now) }
+            #endif
+        } else {
+            let key = document.settings.coinGeckoKey
+            fetched = await withTaskGroup(of: (String, ChartEstimates.Series).self) { group in
+                for job in jobs {
+                    group.addTask { (job.key, (try? await PublicPrices.intraday(job.asset, symbol: job.symbol, reference: job.reference, range: job.range, now: now, coinGeckoKey: key)) ?? []) }
+                }
+                var result: [String: ChartEstimates.Series] = [:]
+                for await (key, series) in group where !series.isEmpty { result[key] = series }
+                return result
+            }
+        }
+        guard token == sessionToken, state == .unlocked else { return }
+        // One change for everything that arrived, so the chart redraws once.
+        if !fetched.isEmpty { intraday.merge(fetched) { _, latest in latest } }
+        intradayReady.formUnion(ranges.filter { $0.intradayStep != nil }.map(\.title))
     }
     #if UPONLY_FIXTURE
     /// Saved prices drawn between, with a little noise at each step, so the finer charts can be looked at without
@@ -1068,6 +1135,7 @@ final class UpOnlySession {
                 let selected = ProcessInfo.processInfo.environment["UPONLY_PERFORMANCE_SCOPE"] ?? "all"
                 monthModel?.selectScope(selected == "all" ? .all : selected == "personal" ? .personal : .business(selected))
                 monthModel?.select(preview == "performance-missing" ? .current() : .current().previous)
+                dashboardSelection = .cashFlow
                 if let raw = ProcessInfo.processInfo.environment["UPONLY_PERFORMANCE_PERIOD"], let period = PerformancePeriod(rawValue: raw) { monthModel?.selectPeriod(period) }
             }
             if ["networth", "networth-companies", "worth-missing-rates", "missing-balances", "missing-prices"].contains(preview), fixture.showsNetWorth { destination = 1 }
