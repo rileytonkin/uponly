@@ -621,7 +621,9 @@ struct UpOnlyUnlockedPanel: View {
                     Spacer(minLength: 8)
                     // Value over its change, as in Delta, so the name keeps the width.
                     VStack(alignment: .trailing, spacing: 1) {
-                        UpOnlyPrivateText(row.value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1).minimumScaleFactor(0.7)
+                        // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
+                        UpOnlyPrivateText(row.value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1)
+                            .minimumScaleFactor(row.value.count > 13 ? 0.7 : 1)
                         // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
                         if let change = row.change {
                             Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
