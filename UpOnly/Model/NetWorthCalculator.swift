@@ -854,47 +854,22 @@ nonisolated enum BalanceReconstruction {
     }
 }
 
-/// What moved in the last 24 hours, measured only against prices that were current then. Nothing is estimated:
-/// without a fresh enough observation the change is unknown.
-nonisolated enum DayChange {
-    static let window: TimeInterval = 24 * 3600
-    /// A price counts for a moment when it was observed within this long before it.
-    static let tolerance: TimeInterval = 3 * 3600
-    /// Today's total against the total 24 hours ago, for the same accounts and portfolios, with every holding
-    /// priced within `tolerance` of each moment. `then` is the valuation made as of 24 hours ago.
-    static func total(now current: ValuationResult, then earlier: ValuationResult) -> (amount: Decimal, fraction: Decimal?)? {
-        guard let today = current.total, let before = earlier.total,
-              Set(current.includedAccountIDs) == Set(earlier.includedAccountIDs),
-              Set(current.includedPortfolioIDs) == Set(earlier.includedPortfolioIDs),
-              pricesFresh(current), pricesFresh(earlier) else { return nil }
-        let amount = today - before
-        return (amount, before > 0 ? amount / before : nil)
+/// A change over the chart's range: today's figure against the one the range starts from.
+nonisolated struct PeriodChange: Equatable {
+    var amount: Decimal
+    /// Nil when the range started from nothing.
+    var fraction: Decimal?
+    /// The figure the range started from.
+    var previous: Decimal
+    init(from previous: Decimal, to current: Decimal) {
+        self.previous = previous
+        amount = current - previous
+        fraction = previous > 0 ? (current - previous) / previous : nil
     }
-    static func pricesFresh(_ valuation: ValuationResult) -> Bool {
-        valuation.components.allSatisfy { fresh($0, at: valuation.at) }
-    }
-    private static func fresh(_ component: ValuationComponent, at moment: Date) -> Bool {
-        component.kind != .holding || component.quoteTime.map { moment.timeIntervalSince($0) <= tolerance } == true
-    }
-    /// A group's parts now against the same parts 24 hours ago (from `earlier`, a valuation made as of then): only
-    /// when every part existed then and every price is fresh at both moments. For a portfolio or bank row.
-    static func parts(_ current: [ValuationComponent], earlier: [ValuationComponent], now: Date) -> (amount: Decimal, fraction: Decimal?)? {
-        let ids = Set(current.map(\.id))
-        let before = earlier.filter { ids.contains($0.id) }
-        guard !current.isEmpty, before.count == current.count,
-              current.allSatisfy({ fresh($0, at: now) }), before.allSatisfy({ fresh($0, at: now.addingTimeInterval(-window)) }),
-              let today = AssetOwnership.sum(current), let then = AssetOwnership.sum(before) else { return nil }
-        return (today - then, then > 0 ? (today - then) / then : nil)
-    }
-    /// One asset's price now against its price 24 hours ago, as a fraction. Each side is the latest quote at or
-    /// before its moment, and must be within `tolerance` of it.
-    static func price(assetID: CanonicalAssetID, quotes: [QuoteObservation], now: Date) -> Decimal? {
-        func quote(at moment: Date) -> QuoteObservation? {
-            quotes.lazy.filter { $0.assetID == assetID && $0.providerTime <= moment && moment.timeIntervalSince($0.providerTime) <= tolerance }
-                .latest { $0.providerTime < $1.providerTime }
-        }
-        guard let latest = quote(at: now), let earlier = quote(at: now.addingTimeInterval(-window)), earlier.priceUSD.value > 0 else { return nil }
-        return (latest.priceUSD.value - earlier.priceUSD.value) / earlier.priceUSD.value
+    /// The same parts then and now; nil when none of them existed then or either side can't be valued.
+    init?(parts current: [ValuationComponent], then earlier: [ValuationComponent]) {
+        guard !current.isEmpty, !earlier.isEmpty, let now = AssetOwnership.sum(current), let then = AssetOwnership.sum(earlier) else { return nil }
+        self.init(from: then, to: now)
     }
 }
 
@@ -911,4 +886,73 @@ extension HoldingPerformance {
         }
         return covered > 0 ? (gain, cost, covered, holdings.count) : nil
     }
+}
+
+/// Prices and rates for history. A saved day that lacks a coin's price or a currency's rate takes the nearest
+/// observation within `window` of it (the earlier one wins a tie), so a chart counts everything held that day instead
+/// of dipping whenever one price wasn't saved. A day that still can't be valued is left out.
+nonisolated struct ChartPrices {
+    static let window: TimeInterval = 30 * 86400
+    private var quotes: [String: [(time: Date, value: Decimal)]] = [:]
+    private var rates: [String: [(time: Date, value: Decimal)]] = [:]
+    private var assets: [UUID: CanonicalAssetID] = [:]
+    init(document: VaultDocument) {
+        for quote in document.quotes { quotes[quote.assetID.rawValue, default: []].append((quote.providerTime, quote.priceUSD.value)) }
+        for key in quotes.keys { quotes[key]?.sort { $0.time < $1.time } }
+        for rate in document.fx where rate.targetCurrency == "USD" { rates[rate.sourceCurrency, default: []].append((rate.providerTime, rate.rate.value)) }
+        for key in rates.keys { rates[key]?.sort { $0.time < $1.time } }
+        assets = Dictionary(document.holdings.map { ($0.id, $0.assetID) }, uniquingKeysWith: { first, _ in first })
+    }
+    /// The observation nearest `moment` within the window, and when it was made.
+    static func nearest(_ series: [(time: Date, value: Decimal)], to moment: Date) -> (time: Date, value: Decimal)? {
+        guard !series.isEmpty else { return nil }
+        var low = 0, high = series.count
+        while low < high { let mid = (low + high) / 2; if series[mid].time <= moment { low = mid + 1 } else { high = mid } }
+        let before = low > 0 ? series[low - 1] : nil, after = low < series.count ? series[low] : nil
+        let pick: (time: Date, value: Decimal)?
+        switch (before, after) {
+        case let (b?, a?): pick = moment.timeIntervalSince(b.time) <= a.time.timeIntervalSince(moment) ? b : a
+        case let (b?, nil): pick = b
+        case let (nil, a?): pick = a
+        default: pick = nil
+        }
+        guard let pick, abs(pick.time.timeIntervalSince(moment)) <= window else { return nil }
+        return pick
+    }
+    /// The day's components with each missing price or rate taken from the nearest saved one, the names of what was
+    /// filled that way, and whether every part now has a value (a missing balance can't be filled).
+    func filled(_ components: [ValuationComponent], day: Date) -> (components: [ValuationComponent], estimated: [String], complete: Bool) {
+        let moment = UTCDay.start(of: day).addingTimeInterval(12 * 3600)
+        var result: [ValuationComponent] = [], estimated: [String] = [], complete = true
+        for component in components {
+            guard component.missing != nil || component.usdValue == nil else { result.append(component); continue }
+            let found: (time: Date, value: Decimal)?
+            switch (component.kind, component.missing) {
+            case (.holding, "quote"?): found = assets[component.id].flatMap { id in quotes[id.rawValue].flatMap { Self.nearest($0, to: moment) } }
+            case (.bank, "fx"?): found = rates[component.currency].flatMap { Self.nearest($0, to: moment) }
+            default: found = nil
+            }
+            guard let found, let amount = component.nativeAmount?.value,
+                  let usd = try? MoneyInput.multiply(amount, found.value, allowingRounding: true) else { result.append(component); complete = false; continue }
+            var copy = component
+            copy.usdValue = PreciseDecimal(usd); copy.missing = nil
+            if component.kind == .holding { copy.quoteTime = found.time } else { copy.fxTime = found.time }
+            result.append(copy)
+            estimated.append(component.label + " at its " + ChartPrices.dayName(found.time) + (component.kind == .holding ? " price" : " rate"))
+        }
+        return (result, estimated, complete)
+    }
+    /// A coin or metal's price now against its price nearest `start`, as a fraction; nil without both.
+    func priceChange(_ assetID: CanonicalAssetID, since start: Date, now: Date) -> Decimal? {
+        guard let series = quotes[assetID.rawValue], let then = Self.nearest(series, to: start), then.value > 0,
+              let latest = series.last(where: { $0.time <= now }), latest.time > then.time else { return nil }
+        return (latest.value - then.value) / then.value
+    }
+    static func dayName(_ date: Date) -> String { dayFormatter.string(from: date) }
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US")
+        formatter.calendar = UTCDay.calendar; formatter.timeZone = UTCDay.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter
+    }()
 }

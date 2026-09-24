@@ -14,15 +14,10 @@ extension UpOnlyUnlockedPanel {
                 }
                 businessDetails(row).padding(.top, 14)
             } else {
-            // With no companies the tab title already says Cash flow, so the eyebrow says what the figure is.
+            // With no companies the title already says Income & spending, so the eyebrow says what the figure is.
             if model.books.isEmpty { headline(eyebrow(performanceBasis)) } else { headline(performanceScopeSelector) }
             if let totals = model.availableTotals {
-                // The eye sits by the number it hides, as on every other page.
-                HStack(alignment: .center, spacing: 4) {
-                    UpOnlyAmount(value: totals.net, signed: true, tint: UpOnlyTint.signed(totals.net))
-                    UpOnlyPrivacyButton()
-                    Spacer(minLength: 0)
-                }.padding(.top, 10)
+                UpOnlyAmount(value: totals.net, signed: true, tint: UpOnlyTint.signed(totals.net)).padding(.top, 10)
                 if let caption = performanceCaption { Text(caption).font(UpOnlyType.body).foregroundStyle(.secondary).padding(.top, 6) }
             } else if case .exchangeRates(let currencies)? = model.state.unavailable {
                 nativeMonthContent(gaps.first ?? (model.month, currencies)).padding(.top, 16)
@@ -119,7 +114,7 @@ extension UpOnlyUnlockedPanel {
     /// Revenue, expenses, profit and your share summed over the months in the selected range, with a caption saying
     /// which months that covers.
     func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String) {
-        let months = rangeMonths
+        let months = rangeMonths(book)
         let rows = months.compactMap { key in book.months.first { $0.month == key.description } }
         guard let firstRow = rows.first, let lastRow = rows.last else { return (nil, nil, nil, nil, "No accounting" + worthRange.within + ".") }
         let profit = rows.reduce(Decimal(0)) { $0 + $1.profitUSD }
@@ -136,11 +131,11 @@ extension UpOnlyUnlockedPanel {
         if rows.contains(where: \.estimated) { caption += " · current month is provisional" }
         return (revenue, expenses, profit, share, caption)
     }
-    /// The whole months the net worth range covers, ending with the current one. All reaches back to the first
-    /// reported accounting month (at most ten years).
-    var rangeMonths: [MonthKey] {
+    /// The whole months the net worth range covers, ending with the current one. All reaches back to the company's
+    /// first reported accounting month (at most ten years).
+    func rangeMonths(_ book: BusinessBook?) -> [MonthKey] {
         let count = worthRange.months ?? {
-            guard let first = model.books.flatMap(\.months).compactMap({ MonthKey($0.month) }).min() else { return 1 }
+            guard let first = (book.map { [$0] } ?? model.books).flatMap(\.months).compactMap({ MonthKey($0.month) }).min() else { return 1 }
             var n = 1, cursor = MonthKey.current()
             while cursor > first && n < 120 { cursor = cursor.previous; n += 1 }
             return n
@@ -151,7 +146,7 @@ extension UpOnlyUnlockedPanel {
     }
     /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.
     func rangeMonthPoints(_ book: BusinessBook?) -> [UpOnlyChartPoint] {
-        let months = rangeMonths
+        let months = rangeMonths(book)
         let showYear = months.first?.year != months.last?.year
         return months.map { key -> UpOnlyChartPoint in
             let row = model.history.first { $0.month == key } ?? (key, nil, false)

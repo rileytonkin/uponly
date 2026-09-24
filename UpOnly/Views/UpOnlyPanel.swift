@@ -14,13 +14,16 @@ struct UpOnlyPanel: View {
             } else if session.state != .unlocked {
                 panelContent.fixedSize(horizontal: false, vertical: true)
             } else {
-                UpOnlyMenuScroll(maxHeight: 600) { panelContent }
+                UpOnlyMenuScroll(maxHeight: menuHeight) { panelContent }
                     .frame(width: 344).fixedSize(horizontal: false, vertical: true)
             }
         }
         .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.regular)
         .background { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
-        .background(UpOnlyPanelKeyboard(close: { if let closeMenu { closeMenu() } else { dismiss() } }).frame(width: 0, height: 0))
+        .background(UpOnlyPanelKeyboard(close: {
+            if session.showingSwitcher { session.showingSwitcher = false }
+            else if let closeMenu { closeMenu() } else { dismiss() }
+        }).frame(width: 0, height: 0))
         .background {
             if session.state == .unlocked, session.unlockTiming != nil {
                 UpOnlyUnlockDisplayProbe { session.recordUnlockedMenuDisplay() }.frame(width: 1, height: 1)
@@ -28,6 +31,14 @@ struct UpOnlyPanel: View {
         }
         .onAppear { if !menuLifecycleManaged { session.menuOpened() } }
         .onDisappear { if !menuLifecycleManaged { session.surfaceClosed() } }
+    }
+    /// All assets sets the height and never scrolls; every other dashboard page, the switcher included, opens at the
+    /// same height and scrolls within it, so the menu doesn't jump between pages. Setup and Add keep their own.
+    private var menuHeight: CGFloat {
+        let screen = max(480, (NSScreen.main?.visibleFrame.height ?? 900) - 40)
+        guard session.document?.settings.setupComplete == true, !session.addingInMenu else { return min(600, screen) }
+        if session.dashboardSelection == .all && !session.showingSwitcher { return screen }
+        return min(session.dashboardHeight ?? 600, screen)
     }
     private var panelContent: some View {
         Group {
@@ -99,13 +110,16 @@ private struct UpOnlyPanelKeyboard: NSViewRepresentable {
     }
 }
 
-/// The unlocked dashboard: tabs, header, attention row and the shared pieces its pages use.
-/// Cash flow, Net worth and company pages live in DashboardCashFlow, DashboardNetWorth and DashboardCompany.
+/// The unlocked dashboard: the switcher title, attention row and the shared pieces its pages use. Cash flow, net worth,
+/// company pages and the switcher live in DashboardCashFlow, DashboardNetWorth, DashboardCompany and DashboardSwitcher.
 struct UpOnlyUnlockedPanel: View {
     @Environment(UpOnlySession.self) var session
     var model: PopoverModel
     @State var detail: String?
-    @State var showingSwitcher = false
+    var showingSwitcher: Bool {
+        get { session.showingSwitcher }
+        nonmutating set { session.showingSwitcher = newValue }
+    }
     @State var worthRange: WorthRange = .year
     @State var holdingSort: HoldingSort = .value
     /// How a portfolio's holdings table is ordered.
@@ -118,25 +132,26 @@ struct UpOnlyUnlockedPanel: View {
     enum CompanyChart { case balance, profit }
     /// The net worth scope of the current selection: a portfolio, or everything (bank groups have their own page).
     var scope: ValuationScope {
-        get { if case .portfolio(let id) = session.dashboardSelection { return .portfolio(id) }; return .allTracked }
-        nonmutating set { if case .portfolio(let id) = newValue { select(.portfolio(id)) } else { select(.all) } }
+        if case .portfolio(let id) = session.dashboardSelection { return .portfolio(id) }
+        return .allTracked
     }
-    /// Switches what the dashboard shows. A bank group's page reads its company's accounting, so the cash-flow
-    /// scope follows it there and back.
+    /// Switches what the dashboard shows. A bank group's page reads its company's accounting, so Income & spending's
+    /// account choice is put aside there and given back afterwards.
     func select(_ selection: UpOnlySession.DashboardSelection) {
         detail = nil; companyFocus = .all; showingSwitcher = false
-        if case .bankGroup(let id) = selection { model.selectScope(id == "personal" ? .personal : .business(id)) }
-        else if case .bankGroup = session.dashboardSelection { model.selectScope(.all) }
+        let leavingGroup = selectedGroupID != nil
+        if case .bankGroup(let id) = selection {
+            if !leavingGroup { session.cashFlowScope = model.scope }
+            model.selectScope(id == "personal" ? .personal : .business(id))
+        } else if leavingGroup {
+            model.selectScope(session.cashFlowScope ?? .all); session.cashFlowScope = nil
+        }
         session.dashboardSelection = selection
     }
-    /// The bank group page being shown, with today's accounts in it.
-    var resolvedCompany: CompanySelection? {
-        guard case .bankGroup(let id) = session.dashboardSelection, let document = session.document else { return nil }
-        let components = NetWorthCalculator.value(at: Date(), scope: .allTracked, document: document).components
-        let group = BankBalanceGroup.groups(components, document: document).first { $0.id == id }
-            ?? BankBalanceGroup(id: id, name: id == "personal" ? "Bank balances" : model.books.first { $0.id == id }?.name ?? "Company",
-                                image: nil, businessID: id == "personal" ? nil : id, components: [])
-        return CompanySelection(group: group)
+    /// The bank group page being shown: "personal" or a company's id.
+    var selectedGroupID: String? {
+        if case .bankGroup(let id) = session.dashboardSelection { return id }
+        return nil
     }
     /// The switcher's title: what the page below is about.
     var selectionTitle: String {
@@ -144,18 +159,27 @@ struct UpOnlyUnlockedPanel: View {
         case .all: "All assets"
         case .cashFlow: "Income & spending"
         case .portfolio(let id): session.document?.portfolio(id: id)?.name ?? "Portfolio"
-        case .bankGroup(let id): id == "personal" ? "Bank balances" : model.books.first { $0.id == id }?.name ?? "Company"
+        case .bankGroup(let id): id == "personal" ? "Bank balances" : companyName(id)
         }
+    }
+    /// A company's accounting name, else the name of the bank profile its accounts come from.
+    func companyName(_ id: String) -> String {
+        if let book = model.books.first(where: { $0.id == id }) { return book.name }
+        guard let document = session.document else { return "Company" }
+        return document.accounts.first { AssetOwnership.businessID(for: $0, in: document) == id }.map(AssetOwnership.profileName) ?? "Company"
     }
     /// Net worth is always today's value; the range only sets how much history the chart shows.
     /// Cash flow keeps the month, year or all-time selector.
     var isWorthPage: Bool { !(session.destination == 0 && shows(.cashFlow)) }
     var selectedInterval: DateInterval {
         guard isWorthPage else { return model.selectedInterval() }
+        return worthInterval(scope)
+    }
+    /// The chart range for a net worth scope. All starts at that scope's first saved value.
+    func worthInterval(_ scope: ValuationScope) -> DateInterval {
         let now = Date()
         if let seconds = worthRange.seconds { return DateInterval(start: now.addingTimeInterval(-seconds), end: now) }
-        // All starts at the first saved value, whichever page it's for.
-        let first = session.document?.dailyValuations.lazy.map(\.utcDay).min() ?? now
+        let first = session.document?.dailyValuations.lazy.filter { $0.scope == scope }.map(\.utcDay).min() ?? now
         return DateInterval(start: min(UTCDay.start(of: first), now), end: now)
     }
 
@@ -179,15 +203,16 @@ struct UpOnlyUnlockedPanel: View {
         return !document.accounts.isEmpty || !document.entries.isEmpty || !document.holdings.isEmpty || !(document.businessAccounting ?? []).isEmpty
     }
     var body: some View {
-        let company = showingSwitcher ? nil : resolvedCompany
+        let group = showingSwitcher ? nil : selectedGroupID
+        let home = session.dashboardSelection == .all && !showingSwitcher
         // The banner only shows on the overview and cash flow, so it is only worked out there.
-        let attention = !showingSwitcher && company == nil && detail == nil && selectedPortfolio == nil ? attentionItems : []
+        let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil ? attentionItems : []
         return VStack(spacing: 0) {
             navigationHeader.padding(.top, 14).padding(.bottom, 16)
             if showingSwitcher { switcherPage }
             else {
                 if !attention.isEmpty { attentionBanner(attention).padding(.bottom, 16) }
-                if let company { companyContent(company) }
+                if let group { companyContent(group) }
                 else if !hasData, shows(.cashFlow) || showsNetWorth { addFirstData }
                 else if session.destination == 0 && shows(.cashFlow) { monthContent }
                 else if showsNetWorth { worthContent }
@@ -198,14 +223,13 @@ struct UpOnlyUnlockedPanel: View {
                 }
             }
         }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 16)
+        // All assets sets the height every other page opens at (the session checks the selection still exists).
+        .frame(minHeight: home ? nil : session.dashboardHeight, alignment: .top)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            if home, height > 0, session.dashboardHeight != ceil(height) { session.dashboardHeight = ceil(height) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
-        // Returning from Manage or Add to a bank group's page: its accounting scope comes back with it.
-        .onAppear { if case .bankGroup(let id) = session.dashboardSelection { model.selectScope(id == "personal" ? .personal : .business(id)) } }
-        .onChange(of: session.document?.settings.tracked) { _, _ in select(showsNetWorth || !shows(.cashFlow) ? .all : .cashFlow) }
-        .onChange(of: session.document?.portfolios) { _, _ in
-            if case .portfolio(let id) = session.dashboardSelection, session.document?.portfolio(id: id)?.isArchived != false { select(.all) }
-        }
     }
     /// One title for every page: the switcher box and the name of what's showing. Cash flow's drill-ins keep a Back.
     @ViewBuilder var navigationHeader: some View {
@@ -213,11 +237,12 @@ struct UpOnlyUnlockedPanel: View {
             UpOnlyPageHeader(title: detail == "personal" ? "Personal" : selectedBusiness?.book.name ?? "Company",
                              backLabel: "Back to income & spending") { self.detail = nil }
         } else {
-            HStack(spacing: 8) {
+            // The eye sits by the title, so it's in the same place on every page.
+            HStack(spacing: 4) {
                 switcherTitle
+                UpOnlyPrivacyButton()
                 Spacer(minLength: 8)
-                addButton
-                dashboardActions
+                HStack(spacing: 8) { addButton; dashboardActions }
             }.frame(minHeight: 32)
         }
     }
@@ -290,7 +315,7 @@ struct UpOnlyUnlockedPanel: View {
         .accessibilityLabel("More").accessibilityIdentifier("DashboardActions")
         .help("Manage, privacy and lock")
     }
-    // The tab above already names the page, so the empty state is just the invitation.
+    // The title above already names the page, so the empty state is just the invitation.
     var addFirstData: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 7) {
@@ -450,22 +475,66 @@ struct UpOnlyUnlockedPanel: View {
             .accessibilityHint(performanceBasis)
     }
     /// One point per chart stop from the start of the range to the last sample. `value` returns a sample's figure
-    /// and, when the figure is an estimate, a note saying what it leaves out.
+    /// and, when the figure is an estimate, a note saying what it used.
     func dailySeries(_ samples: [DailyValuation], interval: DateInterval, _ value: (DailyValuation) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
         let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
-        let labels = DashboardChart.endLabels(stops.map { $0.day }, range: worthRange)
+        let figures = stops.map { stop in stop.sample.flatMap { value(samples[$0]) } }
+        // The chart starts at its first value, so the axis names that day and the last: the span the line covers.
+        let first = figures.firstIndex { $0 != nil } ?? 0
+        let labels = [String?](repeating: nil, count: first) + DashboardChart.endLabels(stops[first...].map(\.day), range: worthRange)
         return stops.enumerated().map { index, stop -> UpOnlyChartPoint in
             let sample = stop.sample.map { samples[$0] }
-            let figure = sample.flatMap(value)
+            let figure = figures[index]
             return UpOnlyChartPoint(id: String(stop.day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(stop.day), value: figure?.0,
-                                    detailLabel: UpOnlyFormat.utcDate(sample?.utcDay ?? stop.day), partial: figure?.1 != nil, note: figure?.1, axisLabel: labels[index])
+                                    detailLabel: UpOnlyFormat.utcDate(sample?.utcDay ?? stop.day), note: figure?.1, date: sample?.utcDay, axisLabel: labels[index])
         }
     }
     var selectedPortfolio: Portfolio? {
-        guard session.destination == 1, case .portfolio(let id) = scope else { return nil }
+        guard case .portfolio(let id) = scope else { return nil }
         return session.document?.portfolio(id: id)
     }
-    var showsHoldings: Bool { session.document?.showsHoldings == true }
+    /// Where the range's changes start: the chart's first earlier day that can be valued in full, with every part as
+    /// it stood then (a missing price or rate taken from the nearest day). Nil when there's no such day.
+    func rangeStart(scope: ValuationScope, interval: DateInterval, document: VaultDocument, prices: ChartPrices) -> (day: Date, components: [ValuationComponent])? {
+        let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
+        let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
+        for stop in stops {
+            guard let index = stop.sample, !UTCDay.isSameDay(samples[index].utcDay, interval.end) else { continue }
+            let day = prices.filled(samples[index].components, day: samples[index].utcDay)
+            if day.complete { return (samples[index].utcDay, day.components) }
+        }
+        return nil
+    }
+    /// Today's figure against the chart's first value: the start of the range, or of the history when that's later.
+    /// `since` names the period for the line ("prev 1M"); `span` gives the dates for hover and VoiceOver ("over the
+    /// past month", "since Aug 30"). Nil without an earlier value.
+    struct RangeChange {
+        var change: PeriodChange
+        var since: String
+        var span: String
+    }
+    func periodChange(_ points: [UpOnlyChartPoint], now: Decimal?) -> RangeChange? {
+        guard let now, let index = points.firstIndex(where: { $0.value != nil }), let previous = points[index].value,
+              let day = points[index].date, !UTCDay.isSameDay(day, Date()) else { return nil }
+        let date = worthRange.showsYear ? UpOnlyFormat.utcDate(day) : UpOnlyFormat.utcDay(day)
+        return RangeChange(change: PeriodChange(from: previous, to: now), since: worthRange.previous,
+                           span: index == 0 && worthRange != .all ? "over the " + worthRange.phrase : "since " + date)
+    }
+    /// "(↑ 21.0%)  vs $10,000.00 prev 1M": the change over the range, as on the admin dashboard. The percentage
+    /// stays in privacy mode; the amounts don't.
+    func changeLine(_ range: RangeChange) -> some View {
+        let change = range.change
+        let previous = session.privacyMode ? "••••" : UpOnlyFormat.exactMoney(change.previous)
+        let moved = session.privacyMode ? UpOnlyFormat.hiddenMovement(change.amount, fraction: nil) : UpOnlyFormat.movement(change.amount, fraction: nil, cents: true)
+        return HStack(spacing: 7) {
+            if let fraction = change.fraction { UpOnlyChangeBadge(fraction: fraction) }
+            else { Text(moved).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(change.amount)) }
+            Text("vs " + previous + " " + range.since).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85)
+        }.help(session.privacyMode ? "" : moved + " " + range.span)
+            .accessibilityElement(children: .ignore).accessibilityLabel("Change " + range.span)
+            .accessibilityValue([session.privacyMode ? "amount hidden" : moved, change.fraction.map(UpOnlyFormat.percent), session.privacyMode ? nil : "from " + previous]
+                .compactMap { $0 }.joined(separator: ", "))
+    }
 
     // MARK: Rows
 

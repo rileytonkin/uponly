@@ -34,6 +34,12 @@ final class UpOnlySession {
     /// id), one portfolio, or cash flow. Kept here so a trip to Manage or Add returns to the same page.
     enum DashboardSelection: Equatable { case all, bankGroup(String), portfolio(UUID), cashFlow }
     var dashboardSelection: DashboardSelection = .all
+    /// The switcher sheet over the dashboard. Esc closes it before the menu, and closing the menu closes it.
+    var showingSwitcher = false
+    /// The All assets page's height. Every other dashboard page opens at the same size and scrolls within it.
+    var dashboardHeight: CGFloat?
+    /// Income & spending's account choice, put back after a bank or company page borrowed it.
+    var cashFlowScope: PerformanceScope?
     /// 1 for net worth pages, 0 for cash flow; the older way of saying which half of the dashboard is showing.
     var destination: Int {
         get { dashboardSelection == .cashFlow ? 0 : 1 }
@@ -358,6 +364,7 @@ final class UpOnlySession {
         document = nil
         monthModel = nil
         dashboardSelection = .all
+        showingSwitcher = false; dashboardHeight = nil; cashFlowScope = nil
         message = nil
         isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
         sourceIssues = [:]
@@ -374,6 +381,11 @@ final class UpOnlySession {
         if freshUnlock || !document.showsDestination(destination) { destination = document.defaultDestination }
         if freshUnlock || !document.showsSection(managementSection) { managementSection = document.defaultManagementSection }
         monthModel?.replace(with: document)
+        // A page whose portfolio was archived, or whose company no longer has an account, goes back to All assets.
+        if !Self.selectionExists(dashboardSelection, in: document) {
+            if case .bankGroup = dashboardSelection { monthModel?.selectScope(cashFlowScope ?? .all); cashFlowScope = nil }
+            dashboardSelection = .all
+        }
         state = .unlocked
         if freshUnlock { recordActivity(); scheduleRefresh() }
         else if !isFixture { Task { await Task.yield(); await self.configureBackground() } }
@@ -381,6 +393,14 @@ final class UpOnlySession {
 
     /// Waits until no other write is running, then claims the writer. Background work also waits for queued user edits.
     /// User edits go in the order they were made, so two quick toggles save in that order.
+    static func selectionExists(_ selection: DashboardSelection, in document: VaultDocument, at date: Date = Date()) -> Bool {
+        switch selection {
+        case .all, .cashFlow: return true
+        case .portfolio(let id): return document.portfolio(id: id)?.isActive(at: date) == true
+        case .bankGroup(let id):
+            return document.accounts.contains { document.isBankTracked($0.id, at: date) && (AssetOwnership.businessID(for: $0, in: document) ?? "personal") == id }
+        }
+    }
     private func acquireWriter(token: UUID, background: Bool) async throws {
         let ticket = UUID()
         if !background { userWriters.append(ticket) }
@@ -573,6 +593,7 @@ final class UpOnlySession {
     func surfaceOpened() { financeSurfaces += 1; handleActivity() }
     func surfaceClosed() {
         dropZoneVisible = false
+        showingSwitcher = false
         financeSurfaces = max(0, financeSurfaces - 1)
         // Dismissing a popover keeps the vault available for the remaining idle period.
         if financeSurfaces == 0, authenticationContext != nil { lock() }
