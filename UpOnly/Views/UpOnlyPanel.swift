@@ -24,7 +24,8 @@ struct UpOnlyPanel: View {
         .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.regular)
         .background { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
         .background(UpOnlyPanelKeyboard(close: {
-            if session.showingSwitcher { session.showingSwitcher = false }
+            // Esc steps back first (switcher, a page in Manage or Add, a drill-in) and closes the menu from the top.
+            if session.handleEscape() {}
             else if let closeMenu { closeMenu() } else { dismiss() }
         }).frame(width: 0, height: 0))
         .background {
@@ -138,18 +139,20 @@ struct UpOnlyUnlockedPanel: View {
         if case .portfolio(let id) = session.dashboardSelection { return .portfolio(id) }
         return .allTracked
     }
-    /// Switches what the dashboard shows. A bank group's page reads its company's accounting, so Income & spending's
-    /// account choice is put aside there and given back afterwards.
-    func select(_ selection: UpOnlySession.DashboardSelection) {
-        detail = nil; companyFocus = .all; showingSwitcher = false
-        let leavingGroup = selectedGroupID != nil
-        if case .bankGroup(let id) = selection {
-            if !leavingGroup { session.cashFlowScope = model.scope }
-            model.selectScope(id == "personal" ? .personal : .business(id))
-        } else if leavingGroup {
-            model.selectScope(session.cashFlowScope ?? .all); session.cashFlowScope = nil
+    /// Switches what the dashboard shows: a jump from the switcher, or a drill from a row, which Back returns from.
+    func select(_ selection: UpOnlySession.DashboardSelection, _ move: UpOnlySession.DashboardMove = .jump) {
+        detail = nil; companyFocus = .all
+        session.showDashboard(selection, move)
+    }
+    /// The title of the page Back returns to.
+    var backTitle: String? {
+        guard let previous = session.dashboardTrail.last else { return nil }
+        switch previous {
+        case .all: return "All assets"
+        case .cashFlow: return "Income & spending"
+        case .portfolio(let id): return session.document?.portfolio(id: id)?.name ?? "Portfolio"
+        case .bankGroup(let id): return id == "personal" ? "Bank balances" : companyName(id)
         }
-        session.dashboardSelection = selection
     }
     /// The bank group page being shown: "personal" or a company's id.
     var selectedGroupID: String? {
@@ -233,9 +236,15 @@ struct UpOnlyUnlockedPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
-        // The shorter ranges fetch finer prices while they show; the chart uses saved prices until they arrive.
+        // However the page changed (switcher, a row, Back, Esc), its drill-ins and focus start fresh.
+        .onChange(of: session.dashboardSelection) { detail = nil; companyFocus = .all }
+        .onChange(of: detail) { _, detail in session.dashboardDetailOpen = detail != nil }
+        .onChange(of: session.backRequests) { if detail != nil, !session.managementInMenu, !session.addingInMenu { detail = nil } }
+        // The shorter ranges' finer prices load as soon as the dashboard shows, all together, so picking one is
+        // usually instant; the showing range refreshes them when they're due.
+        .task(id: isWorthPage) { if isWorthPage { await session.loadIntraday([.day, .week, .month]) } }
         .task(id: worthRange.intradayStep == nil || !isWorthPage ? "" : worthRange.title) {
-            if worthRange.intradayStep != nil, isWorthPage { await session.loadIntraday(worthRange) }
+            if worthRange.intradayStep != nil, isWorthPage { await session.loadIntraday([worthRange]) }
         }
     }
     /// One title for every page: the switcher box and the name of what's showing. Cash flow's drill-ins keep a Back.
@@ -244,10 +253,17 @@ struct UpOnlyUnlockedPanel: View {
             UpOnlyPageHeader(title: detail == "personal" ? "Personal" : selectedBusiness?.book.name ?? "Company",
                              backLabel: "Back to income & spending") { self.detail = nil }
         } else {
-            // The eye sits by the title, so it's in the same place on every page.
+            // The eye sits by the title, so it's in the same place on every page. A page opened from another page's row
+            // has a back box first.
             HStack(spacing: 4) {
-                switcherTitle
-                UpOnlyPrivacyButton()
+                if let backTitle, !showingSwitcher {
+                    Button { session.dashboardBack() } label: {
+                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                            .frame(width: 26, height: 26).background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7)).contentShape(Rectangle())
+                    }.buttonStyle(.plain).padding(.trailing, 4).help("Back to " + backTitle + " (Esc)").accessibilityLabel("Back to " + backTitle)
+                }
+                switcherTitle.layoutPriority(1)
+                UpOnlyPrivacyButton(size: 26)
                 Spacer(minLength: 8)
                 HStack(spacing: 8) { addButton; dashboardActions }
             }.frame(minHeight: 32)
@@ -259,7 +275,7 @@ struct UpOnlyUnlockedPanel: View {
                 Image(systemName: showingSwitcher ? "xmark" : "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary).frame(width: 26, height: 26)
                     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-                Text(selectionTitle).font(UpOnlyType.pageTitle).lineLimit(1).truncationMode(.middle)
+                Text(selectionTitle).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).truncationMode(.middle)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
@@ -298,13 +314,19 @@ struct UpOnlyUnlockedPanel: View {
         }.buttonStyle(.plain).glassEffect(.regular, in: .capsule).accessibilityIdentifier("DataAttention")
             .accessibilityLabel("Needs attention").accessibilityValue(items.joined(separator: ", "))
     }
+    /// The + adds to what's showing: a coin or metal on a portfolio's page, otherwise anything.
     var addButton: some View {
-        Button { session.addingInMenu = true } label: {
+        let portfolio = selectedPortfolio
+        return Button {
+            if let portfolio { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id)) }
+            else { session.addingInMenu = true }
+        } label: {
             Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
                 .frame(width: 32, height: 32).contentShape(Circle())
         }
         .buttonStyle(.plain).glassEffect(.regular, in: .circle)
-        .accessibilityLabel("Add").accessibilityIdentifier("AddInfo").help("Add a balance, holding, transaction or statement")
+        .accessibilityLabel(portfolio.map { "Add to " + $0.name } ?? "Add").accessibilityIdentifier("AddInfo")
+        .help(portfolio.map { ($0.kind == .metals ? "Add gold or silver to " : "Add a coin to ") + $0.name } ?? "Add a balance, holding, transaction or statement")
     }
     var dashboardActions: some View {
         Menu {
@@ -539,7 +561,7 @@ struct UpOnlyUnlockedPanel: View {
     /// recorded by then. Nil until intraday prices have arrived for something in `liveComponents`.
     func intradaySeries(scope: ValuationScope, interval: DateInterval, samples: [DailyValuation], liveComponents: [ValuationComponent], live: Decimal?,
                         _ value: ([ValuationComponent], Date) -> (Decimal, String?)?) -> [UpOnlyChartPoint]? {
-        guard let step = worthRange.intradayStep, let document = session.document else { return nil }
+        guard let step = worthRange.intradayStep, session.intradayReady.contains(worthRange.title), let document = session.document else { return nil }
         let assetOf = Dictionary(document.holdings.map { ($0.id, $0.assetID.rawValue) }, uniquingKeysWith: { first, _ in first })
         let prices = Dictionary(liveComponents.compactMap { component -> (String, ChartEstimates.Series)? in
             guard component.kind == .holding, let asset = assetOf[component.id], let series = session.intraday[worthRange.title + "|" + asset] else { return nil }
@@ -648,6 +670,8 @@ struct UpOnlyUnlockedPanel: View {
         /// The row's own move over the last 24 hours, as a fraction.
         var change: Decimal? = nil
         var image: Data? = nil
+        /// A coin or metal's asset ID: its logo, rather than the symbol.
+        var logo: String? = nil
         var symbol: String
         var tint: Color
         var selected = false
@@ -672,6 +696,7 @@ struct UpOnlyUnlockedPanel: View {
             Button(action: row.action) {
                 HStack(spacing: 10) {
                     if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 24) }
+                    else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 24) }
                     else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 24) }
                     VStack(alignment: .leading, spacing: 1) {
                         Text(row.name).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)

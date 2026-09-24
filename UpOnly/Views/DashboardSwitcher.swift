@@ -10,6 +10,8 @@ extension UpOnlyUnlockedPanel {
         var section: String
         var name: String
         var image: Data? = nil
+        /// A portfolio's largest holding, whose logo stands for it.
+        var logo: String? = nil
         var symbol: String
         var tint: Color
         var value: Decimal?
@@ -20,6 +22,11 @@ extension UpOnlyUnlockedPanel {
         var share: Int? = nil
         /// A second line when there's no change to show ("this month").
         var detail: String? = nil
+    }
+    /// What a group without a total is waiting for: a rate, a balance or a price.
+    static func needed(_ parts: [ValuationComponent]) -> String {
+        let missing = Set(parts.compactMap(\.missing))
+        return missing.contains("balance") ? "Balance needed" : missing.contains("fx") ? "Rate needed" : missing.contains("quote") ? "Price needed" : "Needs update"
     }
     /// Bank groups, portfolios and companies, valued now and where the range starts. A company's portfolios count in
     /// its row, unless it has no bank account to show them under; then they're listed on their own with its name.
@@ -34,8 +41,8 @@ extension UpOnlyUnlockedPanel {
             let total = AssetOwnership.sum(parts)
             let name = group.businessID.map(companyName) ?? group.name
             return SelectionRow(id: group.id, selection: .bankGroup(group.id), section: group.businessID == nil ? "Accounts" : "Companies", name: name,
-                                image: group.image, symbol: group.businessID == nil ? "building.columns.fill" : "building.2.fill", tint: group.businessID == nil ? UpOnlyTint.netWorth : UpOnlyTint.company,
-                                value: total, valueText: total.map(UpOnlyFormat.exactMoney) ?? "Needs update", change: PeriodChange(parts: parts, then: then),
+                                image: group.businessID == nil ? session.personalImage : group.image, symbol: group.businessID == nil ? "building.columns.fill" : "building.2.fill", tint: group.businessID == nil ? UpOnlyTint.netWorth : UpOnlyTint.company,
+                                value: total, valueText: total.map(UpOnlyFormat.exactMoney) ?? Self.needed(parts), change: PeriodChange(parts: parts, then: then),
                                 personal: AssetOwnership.personalTotal(parts, at: date, document: document))
         }
         let companies = Set(groups.compactMap(\.businessID))
@@ -47,8 +54,9 @@ extension UpOnlyUnlockedPanel {
             let then = before.filter { $0.kind == .holding && portfolioOf[$0.id] == portfolio.id }
             let total = parts.isEmpty ? nil : AssetOwnership.sum(parts)
             let company = owner.flatMap { id in model.books.first { $0.id == id }?.name }
+            let largest = parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document.holdings.first { $0.id == part.id }?.assetID.rawValue }
             rows.append(SelectionRow(id: portfolio.id.uuidString, selection: .portfolio(portfolio.id), section: portfolio.kind == .metals ? "Gold & silver" : "Crypto",
-                                     name: portfolio.name + (company.map { " · " + $0 } ?? ""),
+                                     name: portfolio.name + (company.map { " · " + $0 } ?? ""), logo: largest,
                                      symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                      tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto,
                                      value: total, valueText: parts.isEmpty ? "No holdings" : total.map(UpOnlyFormat.exactMoney) ?? "Price needed",
@@ -105,7 +113,7 @@ extension UpOnlyUnlockedPanel {
         // Stand-in figures keep proportions, so shares show in privacy mode too; only without them are they hidden.
         let share = session.privacyMode && session.standInFactor == nil ? nil : row.share.map { $0 == 0 ? "<1% of total" : "\($0)% of total" }
         return AssetRow(id: row.id, name: row.name, detail: share ?? row.detail, value: row.valueText, change: row.change?.fraction,
-                        image: row.image, symbol: row.symbol, tint: row.tint, trailing: .check(chosen)) { select(row.selection) }
+                        image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint, trailing: .check(chosen)) { select(row.selection) }
     }
 }
 
@@ -120,8 +128,8 @@ struct UpOnlyBreakdown: View {
         let total = max(values.reduce(0, +), 1)
         let ends = values.indices.map { values[...$0].reduce(0, +) / total }
         let largest = percents.indices.max { percents[$0] < percents[$1] } ?? 0
-        // Round-capped segments with a small gap; the caps take up about the gap themselves.
-        let gap = slices.count > 1 ? 0.018 : 0
+        // Square-ended segments with a hairline gap: round ends would reach past their own slice into the next.
+        let gap = slices.count > 1 ? 0.012 : 0
         return HStack(spacing: 20) {
             ZStack {
                 Circle().stroke(Color.primary.opacity(0.06), lineWidth: 10)
@@ -129,7 +137,7 @@ struct UpOnlyBreakdown: View {
                     let start = (index == 0 ? 0 : ends[index - 1]) + gap / 2, end = max(start, ends[index] - gap / 2)
                     Circle().trim(from: start, to: shown ? end : start)
                         .stroke(LinearGradient(colors: [slices[index].tint, slices[index].tint.opacity(0.78)], startPoint: .top, endPoint: .bottom),
-                                style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                                style: StrokeStyle(lineWidth: 10, lineCap: .butt))
                 }
                 VStack(spacing: 0) {
                     Text(percents[largest] == 0 ? "<1%" : "\(percents[largest])%").font(.system(size: 15, weight: .semibold).monospacedDigit())

@@ -158,10 +158,11 @@ struct UpOnlyValueRow: View {
 
 struct UpOnlyPrivacyButton: View {
     var inMenu = false
+    var size: CGFloat = 32
     @Environment(UpOnlySession.self) private var session
     var body: some View {
         if inMenu { button }
-        else { button.buttonStyle(UpOnlyToolbarButtonStyle()) }
+        else { button.buttonStyle(UpOnlyToolbarButtonStyle(size: size)) }
     }
     // Never disabled while a save runs: hiding values has to work at once, even during a history rebuild.
     private var button: some View {
@@ -237,13 +238,21 @@ struct UpOnlyPillMenu: ViewModifier {
             .glassEffect(.regular, in: .capsule)
     }
 }
-/// A flat list row: it darkens while pressed and stays lightly tinted while selected.
+/// A flat list row: a soft highlight under the pointer, darker while pressed, lightly tinted while selected.
 struct UpOnlyRowButtonStyle: ButtonStyle {
     var selected = false
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.background {
-            RoundedRectangle(cornerRadius: 8).fill(configuration.isPressed ? Color.primary.opacity(0.06) : selected ? UpOnlyTint.netWorth.opacity(0.1) : .clear)
-                .padding(.horizontal, -6)
+    func makeBody(configuration: Configuration) -> some View { Row(configuration: configuration, selected: selected) }
+    private struct Row: View {
+        let configuration: ButtonStyleConfiguration
+        let selected: Bool
+        @State private var hovering = false
+        @Environment(\.isEnabled) private var isEnabled
+        var body: some View {
+            configuration.label.background {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? UpOnlyTint.netWorth.opacity(0.1) : hovering && isEnabled ? Color.primary.opacity(0.045) : .clear)
+                    .padding(.horizontal, -6)
+            }.onHover { hovering = $0 }
         }
     }
 }
@@ -258,14 +267,14 @@ nonisolated enum WorthRange: CaseIterable {
     case day, week, month, year, all
     /// The segment above the chart.
     var title: String {
-        switch self { case .day: "24H"; case .week: "7D"; case .month: "30D"; case .year: "12M"; case .all: "All" }
+        switch self { case .day: "24H"; case .week: "7D"; case .month: "30D"; case .year: "1Y"; case .all: "All" }
     }
-    /// "No saved values in the past 12 months", and the range's spoken name.
+    /// "No saved values in the past year", and the range's spoken name.
     var phrase: String {
-        switch self { case .day: "past 24 hours"; case .week: "past 7 days"; case .month: "past 30 days"; case .year: "past 12 months"; case .all: "all time" }
+        switch self { case .day: "past 24 hours"; case .week: "past 7 days"; case .month: "past 30 days"; case .year: "past year"; case .all: "all time" }
     }
     var spokenTitle: String { phrase.prefix(1).uppercased() + String(phrase.dropFirst()) }
-    /// " in the past 12 months", or nothing for All: "No saved values in the past 12 months."
+    /// " in the past year", or nothing for All: "No saved values in the past year."
     var within: String { self == .all ? "" : " in the " + phrase }
     /// What a change is measured against, as on the admin dashboard: "vs $4,304.28 prev 30D".
     var previous: String { self == .all ? "at start" : "prev " + title }
@@ -324,7 +333,7 @@ nonisolated enum DashboardChart {
         return result
     }
     /// X-axis marks, one where each period starts, named briefly: every day over 7 days ("Thu"), Mondays over 30
-    /// ("Sep 7"), month starts over 12 months ("Oct", with January as its year, "2026"), and for All months or years
+    /// ("Sep 7"), month starts over a year ("Oct", with January as its year, "2026"), and for All months or years
     /// by how long the history is. The chart labels as many as fit, evenly spaced, each over a faint line.
     static func axisMarks(_ days: [Date], range: WorthRange) -> [String?] {
         guard let first = days.first, let last = days.last else { return [] }

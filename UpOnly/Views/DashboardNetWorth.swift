@@ -181,7 +181,7 @@ extension UpOnlyUnlockedPanel {
     func overviewRows(_ snapshot: WorthSnapshot) -> [AssetRow] {
         guard let valuation = snapshot.valuation, !valuation.isUnavailable, scope == .allTracked else { return [] }
         return selectionRows(current: valuation.components, start: snapshot.start, at: snapshot.interval.end).map { row in
-            AssetRow(id: row.id, name: row.name, value: row.valueText, change: row.change?.fraction, image: row.image, symbol: row.symbol, tint: row.tint) { select(row.selection) }
+            AssetRow(id: row.id, name: row.name, value: row.valueText, change: row.change?.fraction, image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint) { select(row.selection, .drill) }
         }
     }
     /// One holding in a portfolio's table: what it is, its market price and move over the range, and what you hold.
