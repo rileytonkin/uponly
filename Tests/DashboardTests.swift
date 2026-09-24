@@ -161,8 +161,9 @@ struct DashboardTests {
         #expect(WorthRange.year.phrase == "past year" && WorthRange.month.spokenTitle == "Past month" && WorthRange.all.spokenTitle == "All time")
         #expect(WorthRange.week.seconds == 7 * 86400 && WorthRange.month.seconds == 30 * 86400 && WorthRange.all.seconds == nil)
         #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year")
-        // All samples by how long the history is.
-        #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 400 * 86400) == 7 && WorthRange.all.chartStepDays(span: 1500 * 86400) == 30)
+        // Every day up to a year; All by how long the history is.
+        #expect(WorthRange.year.chartStepDays(span: 365 * 86400) == 1)
+        #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 800 * 86400) == 3 && WorthRange.all.chartStepDays(span: 2500 * 86400) == 7)
         #expect(WorthRange.all.months == nil && WorthRange.week.months == 1 && WorthRange.year.months == 12)
     }
 }

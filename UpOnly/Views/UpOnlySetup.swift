@@ -11,6 +11,8 @@ enum UpOnlyLayout {
 }
 /// Type roles shared by every page, so the same kind of text looks the same everywhere.
 enum UpOnlyType {
+    /// The dashboard's title, beside the switcher box ("All assets", a portfolio's name).
+    static let pageTitle = Font.system(size: 20, weight: .semibold)
     /// Page and empty-state titles ("Which account?", "Nothing here yet").
     static let title = Font.system(size: 18, weight: .semibold)
     /// Section headings inside a page or card ("Holdings", "Bank accounts", "Transactions").

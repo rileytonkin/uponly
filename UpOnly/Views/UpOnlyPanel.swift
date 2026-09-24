@@ -252,7 +252,7 @@ struct UpOnlyUnlockedPanel: View {
                 Image(systemName: showingSwitcher ? "xmark" : "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary).frame(width: 26, height: 26)
                     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-                Text(selectionTitle).font(.system(size: 20, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                Text(selectionTitle).font(UpOnlyType.pageTitle).lineLimit(1).truncationMode(.middle)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
@@ -474,19 +474,25 @@ struct UpOnlyUnlockedPanel: View {
             .help(performanceBasis)
             .accessibilityHint(performanceBasis)
     }
-    /// One point per chart stop from the start of the range to the last sample. `value` returns a sample's figure
-    /// and, when the figure is an estimate, a note saying what it used.
-    func dailySeries(_ samples: [DailyValuation], interval: DateInterval, _ value: (DailyValuation) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
+    /// One point per chart stop from the start of the range to the last sample, ending at `live`, the figure shown
+    /// above the chart, so the line finishes where the headline says. `value` returns a sample's figure and, when
+    /// it's an estimate, a note saying what was estimated.
+    func dailySeries(_ samples: [DailyValuation], interval: DateInterval, live: Decimal? = nil, _ value: (DailyValuation) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
         let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
-        let figures = stops.map { stop in stop.sample.flatMap { value(samples[$0]) } }
+        var days = stops.map(\.day)
+        var sampleDays = stops.map { $0.sample.map { samples[$0].utcDay } }
+        var figures = stops.map { stop in stop.sample.flatMap { value(samples[$0]) } }
+        if let live, let last = days.last {
+            let today = UTCDay.start(of: interval.end)
+            if UTCDay.isSameDay(last, today) { figures[figures.count - 1] = (live, nil); sampleDays[sampleDays.count - 1] = today }
+            else { days.append(today); sampleDays.append(today); figures.append((live, nil)) }
+        }
         // The chart starts at its first value, so the axis names that day and the last: the span the line covers.
         let first = figures.firstIndex { $0 != nil } ?? 0
-        let labels = [String?](repeating: nil, count: first) + DashboardChart.endLabels(stops[first...].map(\.day), range: worthRange)
-        return stops.enumerated().map { index, stop -> UpOnlyChartPoint in
-            let sample = stop.sample.map { samples[$0] }
-            let figure = figures[index]
-            return UpOnlyChartPoint(id: String(stop.day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(stop.day), value: figure?.0,
-                                    detailLabel: UpOnlyFormat.utcDate(sample?.utcDay ?? stop.day), note: figure?.1, date: sample?.utcDay, axisLabel: labels[index])
+        let labels = [String?](repeating: nil, count: first) + DashboardChart.endLabels(Array(days[first...]), range: worthRange)
+        return days.indices.map { index in
+            UpOnlyChartPoint(id: String(days[index].timeIntervalSince1970), label: UpOnlyFormat.utcDay(days[index]), value: figures[index]?.0,
+                             detailLabel: UpOnlyFormat.utcDate(sampleDays[index] ?? days[index]), note: figures[index]?.1, date: sampleDays[index], axisLabel: labels[index])
         }
     }
     var selectedPortfolio: Portfolio? {
@@ -494,13 +500,13 @@ struct UpOnlyUnlockedPanel: View {
         return session.document?.portfolio(id: id)
     }
     /// Where the range's changes start: the chart's first earlier day that can be valued in full, with every part as
-    /// it stood then (a missing price or rate taken from the nearest day). Nil when there's no such day.
-    func rangeStart(scope: ValuationScope, interval: DateInterval, document: VaultDocument, prices: ChartPrices) -> (day: Date, components: [ValuationComponent])? {
+    /// it stood then (a missing price, rate or balance estimated from the nearest saved ones). Nil without one.
+    func rangeStart(scope: ValuationScope, interval: DateInterval, document: VaultDocument, estimates: ChartEstimates) -> (day: Date, components: [ValuationComponent])? {
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
         let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
         for stop in stops {
             guard let index = stop.sample, !UTCDay.isSameDay(samples[index].utcDay, interval.end) else { continue }
-            let day = prices.filled(samples[index].components, day: samples[index].utcDay)
+            let day = estimates.filled(samples[index].components, day: samples[index].utcDay)
             if day.complete { return (samples[index].utcDay, day.components) }
         }
         return nil
