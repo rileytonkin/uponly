@@ -4,9 +4,12 @@ import SwiftUI
 // Longer forms scroll vertically; they never become a separate app window.
 struct UpOnlyMenuScroll<Content: View>: View {
     @State var contentHeight: CGFloat = 360
-    var maxHeight: CGFloat = 540
+    /// The tallest it grows before scrolling: given, else the page's room (Manage pages share the dashboard's height).
+    var maxHeight: CGFloat? = nil
     @ViewBuilder var content: () -> Content
+    @Environment(\.upOnlyScrollHeight) private var pageHeight
     var body: some View {
+        let maxHeight = self.maxHeight ?? pageHeight
         ScrollView {
             content().frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -16,6 +19,11 @@ struct UpOnlyMenuScroll<Content: View>: View {
         }.scrollBounceBehavior(.basedOnSize)
             .frame(height: min(contentHeight, maxHeight))
     }
+}
+
+extension EnvironmentValues {
+    /// How tall a page's scrolling area may grow: set by the menu so Manage pages match the dashboard's height.
+    @Entry var upOnlyScrollHeight: CGFloat = 540
 }
 
 /// The "…" options menu at the end of a row.
@@ -100,8 +108,8 @@ struct UpOnlyManagement: View {
             if !hasGuidedHeader {
                 UpOnlyPageHeader(title: editor?.title ?? pageTitle(month), backLabel: backLabel, backTitle: backTitle, back: back,
                                  subtitle: editor == nil && month != nil ? "Is this month complete?" : nil,
-                                 trailing: editor == nil ? monthMenu(review?.months ?? [], current: month) : nil).padding(UpOnlyLayout.inset)
-                Divider()
+                                 trailing: editor == nil ? monthMenu(review?.months ?? [], current: month) ?? sectionActions : nil)
+                    .padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 12)
             }
             if let portfolio = archive {
                 UpOnlyConfirmation(title: "Archive " + portfolio.name + "?", detail: "It leaves net worth and this page, and its history is kept. You can restore it from Archived at the bottom of the page.", confirmTitle: "Archive portfolio",
@@ -117,7 +125,7 @@ struct UpOnlyManagement: View {
             } else if let editor {
                 UpOnlyMenuScroll {
                     UpOnlyEditSheet(editor: editor, onCancel: finishEditing, onSave: finishEditing).id(editor.id)
-                        .padding(UpOnlyLayout.inset)
+                        .padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset)
                 }
             } else if session.managementSection == "Add your info" {
                 VStack(spacing: 0) {
@@ -161,7 +169,7 @@ struct UpOnlyManagement: View {
                         case "Entries": entries
                         default: security
                         }
-                    }.padding(UpOnlyLayout.inset)
+                    }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset)
                 }
             }
         }
@@ -222,7 +230,7 @@ struct UpOnlyManagement: View {
         case "Entries": "Transactions"
         case "Portfolios": "Crypto"
         case "Precious metals": "Gold & silver"
-        case "Sources": "Prices & rates"
+        case "Sources": "Data sources"
         case "Security": "Backup & security"
         case "Add your info": "Add"
         default: section
@@ -275,38 +283,81 @@ struct UpOnlyManagement: View {
         editor = nil; session.requestedRateCurrency = nil
         if editorReturnsHome { editorReturnsHome = false; leaveManage() }
     }
+    /// Manage's first page, in the home list's style: what you've recorded in one card, how it's kept in another,
+    /// each row saying what's inside.
     var navigation: some View {
+        let doc = session.document
         let crypto = hasData(.crypto) || hasArchived(.crypto), metals = hasData(.metals) || hasArchived(.metals)
-        return VStack(spacing: 8) {
-            if hasData(.banks) { navigationButton("Accounts", symbol: TrackedKind.banks.symbol, section: "Accounts") }
-            if crypto { navigationButton("Crypto", symbol: TrackedKind.crypto.symbol, tint: UpOnlyTint.crypto, section: "Portfolios") }
-            if metals { navigationButton("Gold & silver", symbol: TrackedKind.metals.symbol, tint: UpOnlyTint.metals, section: "Precious metals") }
-            if hasData(.cashFlow) { navigationButton("Transactions", symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, section: "Entries") }
-            if hasData(.banks) || crypto || metals || hasData(.cashFlow) { Divider().padding(.vertical, 4) }
-            else {
+        var records: [(title: String, caption: String, symbol: String, tint: Color, section: String)] = []
+        if hasData(.banks) { records.append(("Accounts", count(doc?.accounts.count ?? 0, "account"), TrackedKind.banks.symbol, UpOnlyTint.netWorth, "Accounts")) }
+        if crypto { records.append(("Crypto", holdingsSummary(.crypto), TrackedKind.crypto.symbol, UpOnlyTint.crypto, "Portfolios")) }
+        if metals { records.append(("Gold & silver", holdingsSummary(.metals), TrackedKind.metals.symbol, UpOnlyTint.metals, "Precious metals")) }
+        if hasData(.cashFlow) { records.append(("Transactions", count(doc?.entries.count ?? 0, "transaction"), "list.bullet.rectangle.fill", UpOnlyTint.cashFlow, "Entries")) }
+        return VStack(alignment: .leading, spacing: 14) {
+            if records.isEmpty {
                 Text("Accounts, crypto, gold and silver, and transactions appear here once you add them with the plus button.")
-                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.bottom, 4)
+                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                ManageCard {
+                    ForEach(Array(records.enumerated()), id: \.element.section) { index, record in
+                        ManageRow(title: record.title, caption: record.caption, divided: index > 0, chevron: true, action: { session.managementSection = record.section }) {
+                            UpOnlySymbolBadge(symbol: record.symbol, tint: record.tint, size: 24)
+                        } menu: { EmptyView() }
+                    }
+                }
             }
-            navigationButton("Prices & rates", symbol: "arrow.triangle.2.circlepath", section: "Sources")
-            navigationButton("Backup & security", symbol: "lock.shield.fill", section: "Security")
+            ManageCard {
+                ManageRow(title: "Data sources", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Sources" }) {
+                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 24)
+                } menu: { EmptyView() }
+                ManageRow(title: "Backup & security", caption: "Touch ID, recovery code and backups", divided: true, chevron: true, action: { session.managementSection = "Security" }) {
+                    UpOnlySymbolBadge(symbol: "lock.shield.fill", tint: UpOnlyTint.netWorth, size: 24)
+                } menu: { EmptyView() }
+            }
+        }
+    }
+    func count(_ number: Int, _ noun: String) -> String { "\(number) " + noun + (number == 1 ? "" : "s") }
+    /// "2 portfolios · 3 coins", "1 safe · gold": what a Crypto or Gold & silver row holds.
+    func holdingsSummary(_ kind: TrackedKind) -> String {
+        guard let doc = session.document else { return "" }
+        let now = Date()
+        let portfolios = doc.portfolios.filter { !$0.isArchived && $0.kind == kind }
+        let holdings = doc.holdings.filter { holding in holding.isActive(at: now) && portfolios.contains { $0.id == holding.portfolioID } }
+        guard !portfolios.isEmpty else { return "Archived only" }
+        let noun = kind == .metals ? (holdings.count == 1 ? " metal" : " metals") : (holdings.count == 1 ? " coin" : " coins")
+        return count(portfolios.count, kind == .metals ? "place" : "portfolio") + " · " + String(holdings.count) + noun
+    }
+    /// "Crypto, gold & silver and exchange rates on", or what's off.
+    var sourcesSummary: String {
+        guard let settings = session.document?.settings else { return "" }
+        var on: [String] = []
+        #if UPONLY_PERSONAL
+        if settings.automaticWise { on.append("Wise") }
+        #endif
+        if settings.automaticPrices { on.append("crypto") }
+        if settings.automaticMetals { on.append("gold & silver") }
+        if settings.automaticFX { on.append("exchange rates") }
+        guard !on.isEmpty else { return "Prices and rates are off" }
+        let list = on.count == 1 ? on[0] : on.dropLast().joined(separator: ", ") + " and " + on.last!
+        return list.prefix(1).uppercased() + list.dropFirst() + " on"
+    }
+    /// A section's own actions, beside its title: Add, and for accounts, updating every balance at once.
+    var sectionActions: AnyView? {
+        switch session.managementSection {
+        case "Accounts":
+            let many = (session.document?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1
+            return AnyView(HStack(spacing: 8) {
+                if many { ManageRowMenu(label: "More account options") { Button("Update all balances…") { session.startImport(.bankBalances, prefill: true) } } }
+                ManageAddButton(label: "Add account") { session.startImport(.bankBalances, newAccount: true) }
+            })
+        case "Portfolios": return AnyView(ManageAddButton(label: "Add a coin") { session.startImport(.holdings) })
+        case "Precious metals": return AnyView(ManageAddButton(label: "Add gold or silver") { session.startImport(.metals) })
+        case "Entries": return AnyView(ManageAddButton(label: "Add a transaction") { editor = .entry })
+        default: return nil
         }
     }
     func hasData(_ kind: TrackedKind) -> Bool { session.document?.hasData(kind) == true }
     func hasArchived(_ kind: TrackedKind) -> Bool { session.document?.portfolios.contains { $0.isArchived && $0.kind == kind } == true }
-    func navigationButton(_ title: String, symbol: String, tint: Color = UpOnlyTint.netWorth, section: String) -> some View {
-        Button {
-            session.managementSection = section
-        } label: {
-            HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 24)
-                Text(title).font(UpOnlyType.row.weight(.medium))
-                Spacer()
-                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
-            }.padding(UpOnlyLayout.cardInset)
-                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-                .contentShape(RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-        }.buttonStyle(UpOnlyCardButtonStyle(radius: UpOnlyLayout.radius)).accessibilityLabel(title)
-    }
     /// Owner choices, shown when there is a company to choose, or when the current owner is a company that's gone
     /// (so it can be set back to Personal). The current owner is ticked.
     @ViewBuilder func ownerMenu(current: String?, choose: @escaping (String?) -> Void) -> some View {

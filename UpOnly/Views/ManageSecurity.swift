@@ -9,33 +9,36 @@ extension UpOnlyManagement {
         case nil: securityOverview
         }
     }
+    /// Backup & security as one list: locking, the recovery code, backups, and diagnostics apart from them.
     var securityOverview: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            UpOnlySettingsCard(title: "App lock", subtitle: "", symbol: "lock.shield.fill") {
-                Label("Unlock with Touch ID or your Mac password", systemImage: "touchid")
-                    .font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true)
-                Text("Locks after five minutes of inactivity, or when your Mac locks or sleeps.")
-                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button { session.lockAndAuthenticate() } label: { Label("Lock now", systemImage: "lock") }
+        VStack(alignment: .leading, spacing: 14) {
+            ManageCard {
+                ManageRow(title: "Lock now", caption: "Touch ID or your Mac password opens it. Locks after five minutes idle, or when your Mac locks or sleeps.",
+                          action: { session.lockAndAuthenticate() }) {
+                    UpOnlySymbolBadge(symbol: "lock.fill", size: 24)
+                } menu: { EmptyView() }
+                ManageRow(title: "New recovery code", caption: "Opens this vault if Touch ID and your password can’t. Replace it if someone may have seen it.",
+                          divided: true, chevron: true, action: { openSecurityPage(.recoveryCode) }) {
+                    UpOnlySymbolBadge(symbol: "key.fill", size: 24)
+                } menu: { EmptyView() }
             }
-            UpOnlySettingsCard(title: "Recovery code", subtitle: "", symbol: "key.fill") {
-                Text("Opens this vault if Touch ID and your Mac password can’t. Replace it if someone may have seen it.")
-                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button { openSecurityPage(.recoveryCode) } label: { Label("Create a new recovery code…", systemImage: "key") }
+            ManageCard {
+                ManageRow(title: "Export encrypted backup", caption: "Restoring it needs your recovery code; keep the two apart.",
+                          action: { Task { await session.exportBackup() } }) {
+                    UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 24)
+                } menu: { EmptyView() }
+                ManageRow(title: "Restore from a backup", caption: "Replaces everything here; your current vault is kept beside it.",
+                          divided: true, chevron: true, action: { openSecurityPage(.restore) }) {
+                    UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 24)
+                } menu: { EmptyView() }
             }
-            UpOnlySettingsCard(title: "Backup and recovery", subtitle: "", symbol: "externaldrive.fill") {
-                Text("Keep your recovery code separately. You’ll need it to restore a backup.")
-                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button { Task { await session.exportBackup() } } label: { Label("Export encrypted backup…", systemImage: "square.and.arrow.up") }
-                    .buttonStyle(.glassProminent)
-                Button { openSecurityPage(.restore) } label: { Label("Restore from a backup…", systemImage: "clock.arrow.circlepath") }
+            ManageCard {
+                ManageRow(title: "Write diagnostics file", caption: "An unencrypted list of account and holding names and dates (no amounts), to help find chart gaps. Delete it when you’re done.",
+                          action: { diagnosticsMessage = session.writeDiagnostics() }) {
+                    UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 24)
+                } menu: { EmptyView() }
             }
-            UpOnlySettingsCard(title: "Diagnostics", subtitle: "", symbol: "stethoscope") {
-                Text("Writes an unencrypted text file to the app's support folder listing account and holding names and dates (no amounts), to help find chart gaps. Delete it when you're done.")
-                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("Write diagnostics file") { diagnosticsMessage = session.writeDiagnostics() }.buttonStyle(.bordered)
-                if let diagnosticsMessage { Text(diagnosticsMessage).font(UpOnlyType.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-            }
+            if let diagnosticsMessage { Text(diagnosticsMessage).font(UpOnlyType.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
         }
     }
     @ViewBuilder var newRecoveryCodePage: some View {
