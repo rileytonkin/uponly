@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "timeout": 30, "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/amora-switch.sh\" conductor_cloud_claude_account.sh; exit 0" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "timeout": 30, "command": "out=$(bash \"${CLAUDE_PROJECT_DIR}/.claude/amora-switch.sh\" conductor_cloud_claude_guard.sh 2>/dev/null); case \"$out\" in AMORA_BLOCK:*) printf '%s\\n' \"${out#AMORA_BLOCK:}\" >&2; exit 2 ;; *) [ -n \"$out\" ] && printf '%s\\n' \"$out\"; exit 0 ;; esac" },
+          { "type": "command", "timeout": 30, "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/amora-switch.sh\" conductor_cloud_claude_failover.sh; exit 0" },
+          { "type": "command", "timeout": 25, "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/amora-switch.sh\" conductor_cloud_codex_failover.sh; exit 0" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "timeout": 10, "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/amora-switch.sh\" conductor_cloud_claude_bump.sh --stop-hook; exit 0" }
+        ]
+      }
+    ]
+  }
+}
