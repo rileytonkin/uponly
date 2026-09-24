@@ -305,6 +305,12 @@ struct UpOnlyUnlockedPanel: View {
     }
     var dashboardActions: some View {
         Menu {
+            if let portfolio = selectedPortfolio {
+                Button { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, prefill: true, portfolioID: portfolio.id)) } label: {
+                    Label(portfolio.kind == .metals ? "Update weights" : "Update holdings", systemImage: "square.and.pencil")
+                }
+                Divider()
+            }
             Button { manage("Manage") } label: { Label("Manage", systemImage: "slider.horizontal.3") }
                 .accessibilityIdentifier("ManageUpOnly")
             UpOnlyPrivacyButton(inMenu: true)
