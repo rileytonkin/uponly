@@ -22,34 +22,68 @@ nonisolated enum PriceError: LocalizedError {
 private final class NoPriceRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
+/// Hosts that answered 429, and when they may be called again.
+private final class ProviderPauses: @unchecked Sendable {
+    private let lock = NSLock()
+    private var until: [String: Date] = [:]
+    func isPaused(_ host: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return (until[host] ?? .distantPast) > Date()
+    }
+    func pause(_ host: String, for seconds: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        until[host] = max(until[host] ?? .distantPast, Date().addingTimeInterval(seconds))
+    }
+}
 nonisolated enum PublicPrices {
-    static func request(host: String, path: String, query: [URLQueryItem], key: String = "", limit: Int = 2 * 1024 * 1024) async throws -> Data {
-        guard ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com"].contains(host), key.utf8.count <= 512,
-              !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PriceError.invalidResponse }
-        var components = URLComponents(); components.scheme = "https"; components.host = host; components.path = path; components.queryItems = query.isEmpty ? nil : query
-        guard let url = components.url else { throw PriceError.invalidResponse }
+    /// One session for every provider call, so up to 80 exchange-rate requests share connections.
+    private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = 20; configuration.timeoutIntervalForResource = 40
-        let session = URLSession(configuration: configuration, delegate: NoPriceRedirects(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
+        return URLSession(configuration: configuration, delegate: NoPriceRedirects(), delegateQueue: nil)
+    }()
+    private static let pauses = ProviderPauses()
+    /// Being offline or cancelled says nothing about a source, so it must never count as a failed attempt.
+    static func isOffline(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        guard let error = error as? URLError else { return false }
+        // A timeout is one slow request, not a lost connection; it fails that item alone.
+        return [.cancelled, .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(error.code)
+    }
+    static func request(host: String, path: String, query: [URLQueryItem], key: String = "", limit: Int = 2 * 1024 * 1024) async throws -> Data {
+        guard ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com"].contains(host), key.utf8.count <= 512,
+              !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PriceError.invalidResponse }
+        guard !pauses.isPaused(host) else { throw PriceError.rateLimited }
+        var components = URLComponents(); components.scheme = "https"; components.host = host; components.path = path; components.queryItems = query.isEmpty ? nil : query
+        guard let url = components.url else { throw PriceError.invalidResponse }
         var request = URLRequest(url: url); request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("UpOnly/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
         if host == "api.coingecko.com", !key.isEmpty { request.setValue(key, forHTTPHeaderField: "x-cg-demo-api-key") }
         if host == "api.gold-api.com", !key.isEmpty { request.setValue(key, forHTTPHeaderField: "x-api-key") }
         let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse else { throw PriceError.invalidResponse }
-        if http.statusCode == 429 { throw PriceError.rateLimited }
+        if http.statusCode == 429 {
+            // Honour Retry-After (seconds or an HTTP date); without it, wait out CoinGecko's one-minute window.
+            let header = (http.value(forHTTPHeaderField: "Retry-After") ?? "").trimmingCharacters(in: .whitespaces)
+            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            let wait = TimeInterval(header) ?? formatter.date(from: header)?.timeIntervalSinceNow ?? 60
+            pauses.pause(host, for: min(max(wait, 1), 3600))
+            throw PriceError.rateLimited
+        }
         if host == "api.coingecko.com", [401, 403].contains(http.statusCode) { throw PriceError.credentials }
         if host == "api.gold-api.com", [401, 403].contains(http.statusCode) { throw PriceError.metalCredentials }
         guard http.statusCode == 200, response.expectedContentLength <= limit else { throw PriceError.unavailable }
-        var data = Data()
+        var body: [UInt8] = []; body.reserveCapacity(Int(max(response.expectedContentLength, 0)))
         for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < limit else { throw PriceError.invalidResponse }; data.append(byte)
+            guard body.count < limit else { throw PriceError.invalidResponse }
+            body.append(byte)
+            if body.count % 65536 == 0 { try Task.checkCancellation() }
         }
-        return data
+        try Task.checkCancellation()
+        return Data(body)
     }
     /// CoinGecko's search endpoint: a few hundred kilobytes at most, ranked by market cap, instead of the whole 16 MB coin list.
     static func searchCoins(_ query: String, key: String) async throws -> [CatalogCoin] {
@@ -120,7 +154,7 @@ nonisolated enum PublicPrices {
             do { result.rates += try await fetch(currency) }
             catch {
                 try Task.checkCancellation()
-                if error is CancellationError { throw error }
+                if isOffline(error) { throw error }
                 result.fxIssues[currency] = "Couldn’t get the \(currency) → USD rate. Try again or add a dated rate."
                 result.messages.append(result.fxIssues[currency]!)
             }
@@ -216,24 +250,25 @@ nonisolated enum PriceHistory {
         guard row.symbol == metal.rawValue, row.currency == "USD", let date = formatter.date(from: row.updatedAt), date.timeIntervalSince1970 > 0, date <= fetchedAt.addingTimeInterval(300) else { throw PriceError.invalidResponse }
         return QuoteObservation(assetID: metal.assetID, priceUSD: PreciseDecimal(try pricePerGram(row.price)), providerTime: date, fetchedAt: fetchedAt, provider: "Gold API · spot")
     }
-    struct CryptoHistory: Decodable { var prices: [[Decimal]] }
+    struct CryptoHistory: Decodable { var prices: [[Decimal?]] }
     static func decodeCrypto(_ data: Data, request: PriceHistoryRequest, fetchedAt: Date) throws -> [QuoteObservation] {
         let response = try JSONDecoder().decode(CryptoHistory.self, from: data)
         guard response.prices.count <= 30000 else { throw PriceError.invalidResponse }
+        let asset = try CanonicalAssetID(request.identifier)
         var days: [Date: QuoteObservation] = [:]
         for pair in response.prices {
             try Task.checkCancellation()
-            guard pair.count == 2 else { throw PriceError.invalidResponse }
-            try MoneyInput.requirePositiveFinite(pair[0]); try MoneyInput.requirePositiveFinite(pair[1])
-            let timestamp = NSDecimalNumber(decimal: pair[0]).doubleValue / 1000
-            guard timestamp.isFinite else { throw PriceError.invalidResponse }
+            // A null, zero or out-of-range point is skipped (the day stays a gap) instead of discarding the whole chunk.
+            guard pair.count == 2, let millis = pair[0], let price = pair[1], MoneyInput.isFinite(millis), MoneyInput.isFinite(price), millis > 0, price > 0 else { continue }
+            let timestamp = NSDecimalNumber(decimal: millis).doubleValue / 1000
+            guard timestamp.isFinite else { continue }
             let date = Date(timeIntervalSince1970: timestamp)
-            guard date >= request.start, date <= request.end, date <= fetchedAt else { throw PriceError.invalidResponse }
-            if date == request.end { continue }
+            guard date >= request.start, date < request.end, date <= fetchedAt else { continue }
             let day = UTCDay.start(of: date)
             if days[day].map({ $0.providerTime >= date }) == true { continue }
-            days[day] = QuoteObservation(assetID: try CanonicalAssetID(request.identifier), priceUSD: PreciseDecimal(pair[1]), providerTime: date, fetchedAt: fetchedAt, provider: "CoinGecko · historical")
+            days[day] = QuoteObservation(assetID: asset, priceUSD: PreciseDecimal(price), providerTime: date, fetchedAt: fetchedAt, provider: "CoinGecko · historical")
         }
+        guard !days.isEmpty || response.prices.isEmpty else { throw PriceError.invalidResponse }
         return days.values.sorted { $0.providerTime < $1.providerTime }
     }
     struct MetalDay: Decodable { var day: String; var avg_price: Decimal }
@@ -250,33 +285,55 @@ nonisolated enum PriceHistory {
             return QuoteObservation(assetID: metal.assetID, priceUSD: PreciseDecimal(try pricePerGram(row.avg_price)), providerTime: end, fetchedAt: fetchedAt, provider: "Gold API · daily average")
         }.sorted { $0.providerTime < $1.providerTime }
     }
-    struct FXHistory: Decodable { var base: String; var rates: [String: [String: Decimal]] }
-    static func decodeFX(_ data: Data, request: PriceHistoryRequest, fetchedAt: Date) throws -> [FXObservation] {
-        let response = try JSONDecoder().decode(FXHistory.self, from: data)
-        guard response.base == request.identifier, response.rates.count <= 100 else { throw PriceError.invalidResponse }
-        return try response.rates.map { key, rates in
-            let date = try ImportDateFormat.iso.date(key)
-            guard let rate = rates["USD"], date >= request.start.addingTimeInterval(-7 * 86400), date < request.end, date <= fetchedAt else { throw PriceError.invalidResponse }
-            try MoneyInput.requirePositiveFinite(rate)
-            return FXObservation(sourceCurrency: request.identifier, targetCurrency: "USD", rate: PreciseDecimal(rate), providerTime: date, fetchedAt: fetchedAt, provider: "Frankfurter · historical")
-        }.sorted { $0.providerTime < $1.providerTime }
+    /// A fetched chunk is done once every day has a price, or once it ended more than three days ago: days
+    /// still missing then are publication gaps (weekends, holidays, before a coin was listed), not worth refetching.
+    static func isComplete(_ request: PriceHistoryRequest, observations: [Date], now: Date) -> Bool {
+        Set(observations.map { UTCDay.start(of: $0) }).count == Int(request.end.timeIntervalSince(request.start) / 86400) || now.timeIntervalSince(request.end) > 3 * 86400
     }
+    private struct DayKey: Hashable { var id: String; var day: Date }
     static func applying(_ update: PriceUpdate, to document: VaultDocument, now: Date) throws -> VaultDocument {
         var next = document
-        var quoteKeys = Set(next.quotes.map { $0.assetID.rawValue + ":" + String($0.providerTime.timeIntervalSince1970) })
-        for quote in update.quotes where quoteKeys.insert(quote.assetID.rawValue + ":" + String(quote.providerTime.timeIntervalSince1970)).inserted { next.quotes.append(quote) }
-        var rateKeys = Set(next.fx.map { $0.sourceCurrency + ":" + String($0.providerTime.timeIntervalSince1970) })
-        for rate in update.rates where rateKeys.insert(rate.sourceCurrency + ":" + String(rate.providerTime.timeIntervalSince1970)).inserted { next.fx.append(rate) }
-        for interval in update.coverage {
-            next.priceHistoryCoverage = (next.priceHistoryCoverage ?? []).filter { !($0.key == interval.key && $0.start == interval.start && $0.end == interval.end) } + [interval]
-        }
-        var changedDays = Set((update.quotes.map(\.providerTime) + update.rates.map(\.providerTime)).map { UTCDay.start(of: $0) }).filter { $0 < UTCDay.start(of: now) }
-        for interval in update.coverage {
-            for timestamp in stride(from: interval.start.timeIntervalSince1970, to: interval.end.timeIntervalSince1970, by: 86400) {
-                changedDays.insert(Date(timeIntervalSince1970: timestamp))
+        let today = UTCDay.start(of: now)
+        // Only past days that gained an observation are recomputed; a rate also carries forward up to seven days.
+        var changedDays = Set<Date>()
+        func touch(_ day: Date, carry: Int = 0) {
+            for offset in 0...carry {
+                let date = day.addingTimeInterval(Double(offset) * 86400)
+                if date < today { changedDays.insert(date) }
             }
         }
-        let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
+        var quoteKeys = Set(next.quotes.map { $0.assetID.rawValue + ":" + String($0.providerTime.timeIntervalSince1970) })
+        for quote in update.quotes where quoteKeys.insert(quote.assetID.rawValue + ":" + String(quote.providerTime.timeIntervalSince1970)).inserted {
+            next.quotes.append(quote); touch(UTCDay.start(of: quote.providerTime))
+        }
+        // A past day keeps only each asset's last quote, which is all a daily valuation reads; today keeps every quote.
+        var lastOfDay: [DayKey: Date] = [:]
+        for quote in next.quotes where quote.providerTime < today {
+            let key = DayKey(id: quote.assetID.rawValue, day: UTCDay.start(of: quote.providerTime))
+            lastOfDay[key] = max(lastOfDay[key] ?? quote.providerTime, quote.providerTime)
+        }
+        var kept = Set<DayKey>()
+        next.quotes = next.quotes.filter { quote in
+            let key = DayKey(id: quote.assetID.rawValue, day: UTCDay.start(of: quote.providerTime))
+            return key.day >= today || (quote.providerTime == lastOfDay[key] && kept.insert(key).inserted)
+        }
+        // One rate per currency and UTC day. A rate fetched while its day was still open is provisional (Frankfurter
+        // blends in providers as they publish), so a later fetch replaces it; once fetched after the day closed it stays.
+        var rateIndex: [DayKey: Int] = [:]
+        for (index, rate) in next.fx.enumerated() { rateIndex[DayKey(id: rate.sourceCurrency, day: UTCDay.start(of: rate.providerTime))] = index }
+        for rate in update.rates {
+            let key = DayKey(id: rate.sourceCurrency, day: UTCDay.start(of: rate.providerTime))
+            if let index = rateIndex[key] {
+                let existing = next.fx[index]
+                guard existing.provider != "Manual", rate.fetchedAt > existing.fetchedAt, UTCDay.start(of: existing.fetchedAt) <= key.day else { continue }
+                next.fx[index] = rate
+            } else {
+                rateIndex[key] = next.fx.count; next.fx.append(rate)
+            }
+            touch(key.day, carry: 7)
+        }
+        next.priceHistoryCoverage = coalesced((next.priceHistoryCoverage ?? []) + update.coverage)
+        let scopes = next.valuationScopes
         // A backfill can improve an existing partial-day valuation. Recompute only affected days.
         for day in changedDays.sorted() {
             try Task.checkCancellation()
@@ -284,11 +341,32 @@ nonisolated enum PriceHistory {
             evaluation.dailyValuations.removeAll { UTCDay.start(of: $0.utcDay) == day }
             let at = day.addingTimeInterval(86400 - 1)
             for scope in scopes {
-                let value = NetWorthCalculator.value(at: at, scope: scope, document: evaluation, now: now)
-                next = NetWorthCalculator.recordingSample(value, in: next)
+                NetWorthCalculator.recordSample(NetWorthCalculator.value(at: at, scope: scope, document: evaluation, now: now), in: &next)
             }
         }
         return next
+    }
+    /// Each key's complete intervals merged into runs; an incomplete interval is kept (its latest check only)
+    /// while some of it is still uncovered, since it only delays the retry of that gap.
+    static func coalesced(_ coverage: [PriceHistoryCoverage]) -> [PriceHistoryCoverage] {
+        var result: [PriceHistoryCoverage] = []
+        for (_, intervals) in Dictionary(grouping: coverage, by: \.key).sorted(by: { $0.key < $1.key }) {
+            var complete: [PriceHistoryCoverage] = []
+            for interval in intervals.filter(\.complete).sorted(by: { $0.start < $1.start }) {
+                if let last = complete.last, interval.start <= last.end {
+                    complete[complete.count - 1].end = max(last.end, interval.end)
+                    complete[complete.count - 1].checkedAt = max(last.checkedAt, interval.checkedAt)
+                } else { complete.append(interval) }
+            }
+            var open: [PriceHistoryCoverage] = []
+            for interval in intervals where !interval.complete && !complete.contains(where: { $0.start <= interval.start && $0.end >= interval.end }) {
+                if let index = open.firstIndex(where: { $0.start == interval.start && $0.end == interval.end }) {
+                    if interval.checkedAt >= open[index].checkedAt { open[index] = interval }
+                } else { open.append(interval) }
+            }
+            result += complete + open.sorted { $0.start < $1.start }
+        }
+        return result
     }
 }
 extension PublicPrices {
@@ -298,6 +376,12 @@ extension PublicPrices {
         let crypto = active.filter { PreciousMetal.asset($0.assetID) == nil }.map { $0.assetID.rawValue }
         let metals = Set(active.compactMap { PreciousMetal.asset($0.assetID) })
         func message(_ error: Error) -> String { (error as? PriceError)?.localizedDescription ?? "A price source is unavailable. Missing history will be retried." }
+        // A provider that answered 429 isn't called again in this refresh; going offline stops every remaining request.
+        var limited = Set<PriceHistoryRequest.Source>(), offline = false
+        func note(_ error: Error, _ source: PriceHistoryRequest.Source) {
+            if isOffline(error) { offline = true }
+            if (error as? PriceError) == .rateLimited { limited.insert(source) }
+        }
         if includeCurrent && document.settings.automaticPrices && crypto.isEmpty { result.sourceIssues["crypto"] = "No coins are tracked yet. Add a crypto holding under Manage." }
         if includeCurrent && document.settings.automaticMetals && metals.isEmpty { result.sourceIssues["metals"] = "No gold or silver is tracked yet. Add a holding under Manage." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
@@ -306,41 +390,44 @@ extension PublicPrices {
                 result.quotes += quotes
                 let missing = Set(crypto).subtracting(quotes.map(\.assetID.rawValue)).sorted()
                 if !missing.isEmpty { result.sourceIssues["crypto"] = "CoinGecko has no price for " + missing.joined(separator: ", ") + ". Check the coin ID matches CoinGecko's." }
-            } catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["crypto"] = message(error) }
+            } catch { try Task.checkCancellation(); note(error, .crypto); result.messages.append(message(error)); result.sourceIssues["crypto"] = message(error) }
         }
         if includeCurrent && document.settings.automaticMetals {
-            for metal in metals.sorted(by: { $0.rawValue < $1.rawValue }) {
+            for metal in metals.sorted(by: { $0.rawValue < $1.rawValue }) where !offline && !limited.contains(.metal) {
                 do {
                     try await Task.sleep(for: .seconds(1.1))
                     let data = try await request(host: "api.gold-api.com", path: "/price/" + metal.rawValue, query: [])
                     result.quotes.append(try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: now))
-                } catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["metals"] = message(error) }
+                } catch { try Task.checkCancellation(); note(error, .metal); result.messages.append(message(error)); result.sourceIssues["metals"] = message(error) }
             }
             if !metals.isEmpty && document.settings.metalHistoryKey.isEmpty { result.messages.append("Add a free Gold API key in Sources to recover metal price history after time offline.") }
         }
-        if includeCurrent && document.settings.automaticFX {
+        if includeCurrent && document.settings.automaticFX && !offline {
             do {
                 let update = try await fx(currencies: Set(document.accounts.map(\.currency) + document.entries.map(\.currency)))
                 result.rates += update.rates; result.messages += update.messages; result.fxIssues = update.fxIssues
             }
-            catch { try Task.checkCancellation(); result.messages.append(message(error)); result.sourceIssues["fx"] = message(error) }
+            catch { try Task.checkCancellation(); note(error, .fx); result.messages.append(message(error)); result.sourceIssues["fx"] = message(error) }
         }
         // Monthly personal performance needs its dated FX immediately; do not
         // queue years of month-end rates behind unrelated asset history.
-        let historicalFX = try await performanceFX(document: document, now: now, retry: reconnected)
-        result.rates += historicalFX.rates; result.coverage += historicalFX.coverage
-        result.messages += historicalFX.messages
-        result.fxIssues.merge(historicalFX.fxIssues) { _, latest in latest }
+        if !offline {
+            let historicalFX = try await performanceFX(document: document, now: now, retry: reconnected)
+            result.rates += historicalFX.rates; result.coverage += historicalFX.coverage
+            result.messages += historicalFX.messages
+            result.fxIssues.merge(historicalFX.fxIssues) { _, latest in latest }
+        }
         let pending = PriceHistory.requests(document: document, now: now, reconnected: reconnected)
-        var count = 0, metalCount = 0, fxCount = 0
-        for item in pending {
+        var count = 0, metalCount = 0, fxCount = 0, queued = false
+        for item in pending where !offline && !limited.contains(item.source) {
             // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
-            // Prices stay at four calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
+            // Prices stay at eight calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
             if item.source == .fx {
-                guard fxCount < 80 else { continue }
+                guard fxCount < 80 else { queued = true; continue }
                 fxCount += 1
             } else {
-                guard count < 8 else { continue }
+                // Metal chunks never count as queued: the hourly gate stops a follow-up round from fetching them anyway.
+                guard count < 8 else { queued = queued || item.source == .crypto; continue }
                 if item.source == .metal {
                     if metalCount >= 4 { continue }
                     let last = (document.priceHistoryCoverage ?? []).filter { $0.key.hasPrefix("asset:metal-") }.map(\.checkedAt).max()
@@ -354,6 +441,8 @@ extension PublicPrices {
                 let observations: [Date]
                 switch item.source {
                 case .crypto:
+                    // Spaced out so a refresh stays well inside the Demo plan's 30 calls a minute.
+                    try await Task.sleep(for: .seconds(2))
                     let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + item.identifier + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(item.start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(item.end.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: document.settings.coinGeckoKey)
                     let quotes = try PriceHistory.decodeCrypto(data, request: item, fetchedAt: now)
                     result.quotes += quotes; observations = quotes.map(\.providerTime)
@@ -368,11 +457,14 @@ extension PublicPrices {
                     let rates = try decodeFX(data, currency: item.identifier, fetchedAt: now, start: item.start, end: item.end)
                     result.rates += rates; observations = rates.map(\.providerTime)
                 }
-                let complete = Set(observations.map { UTCDay.start(of: $0) }).count == Int(item.end.timeIntervalSince(item.start) / 86400)
+                let complete = PriceHistory.isComplete(item, observations: observations, now: now)
                 result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: complete))
                 if !complete { result.messages.append("Some dates have no published price. Chart gaps are retained and checked again later.") }
             } catch {
                 try Task.checkCancellation(); result.messages.append(message(error))
+                // Offline or rate-limited: nothing is recorded, so the chunk is simply fetched at the next refresh.
+                note(error, item.source)
+                if offline || limited.contains(item.source) { continue }
                 if item.source == .fx {
                     result.fxIssues[item.identifier] = "Couldn’t get historical \(item.identifier) → USD rates. Try again or add a rate dated for this period."
                 }
@@ -380,7 +472,7 @@ extension PublicPrices {
                 result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false))
             }
         }
-        if pending.count > count + fxCount { result.messages.append("More price history is queued for the next refresh.") }
+        if queued && !offline { result.messages.append("More price history is queued for the next refresh.") }
         if document.settings.automaticPrices && document.holdings.contains(where: { PreciousMetal.asset($0.assetID) == nil && $0.createdAt < now.addingTimeInterval(-365 * 86400) }) {
             result.messages.append("CoinGecko Demo can recover the past 365 days. Previously saved older observations remain available.")
         }
@@ -626,6 +718,8 @@ extension PublicPrices {
                 try Task.checkCancellation()
                 result.fxIssues[request.identifier] = "Couldn’t get the dated " + request.identifier + " rate. Try again or add it manually."
                 result.messages.append(result.fxIssues[request.identifier]!)
+                // Offline or rate-limited: stop without a cooldown so these months are tried again at the next refresh.
+                if isOffline(error) || (error as? PriceError) == .rateLimited { break }
                 result.coverage.append(PriceHistoryCoverage(key: request.key, start: request.start, end: request.end, checkedAt: now, complete: false))
             }
         }

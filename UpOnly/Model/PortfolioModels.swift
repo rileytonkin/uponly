@@ -195,10 +195,6 @@ nonisolated struct TrustedSigner: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
-nonisolated enum BalanceChangeKind: String, Sendable {
-    case change
-}
-
 // Physical metal quantities use fine grams, never a token that represents gold.
 nonisolated enum PreciousMetal: String, Codable, CaseIterable, Sendable {
     case gold = "XAU", silver = "XAG", platinum = "XPT", palladium = "XPD"
@@ -210,7 +206,7 @@ nonisolated enum PreciousMetal: String, Codable, CaseIterable, Sendable {
     static func resolve(_ text: String) throws -> PreciousMetal {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let metal = allCases.first(where: { $0.rawValue.lowercased() == clean || $0.name.lowercased() == clean || $0.assetID.rawValue == clean }) else {
-            throw ImportFailure("Choose Gold or Silver. Tokenized gold belongs in Crypto holdings.")
+            throw ImportFailure("Choose gold, silver, platinum or palladium. Tokenized gold belongs in Crypto holdings.")
         }
         return metal
     }

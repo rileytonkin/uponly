@@ -120,7 +120,9 @@ nonisolated enum VaultCrypto {
             vaultID: file.vaultID,
             generation: file.generation
         )
-        let document = try VaultJSON.decode(VaultDocument.self, from: plaintext)
+        // The ciphertext authenticated, so a document this build can't decode was written by a newer version, not damaged.
+        let document: VaultDocument
+        do { document = try VaultJSON.decode(VaultDocument.self, from: plaintext) } catch { throw VaultError.unknownSchema }
         guard document.schema == VaultSchema.document else { throw VaultError.unknownSchema }
         guard document.vaultID == file.vaultID, document.generation == file.generation else {
             throw VaultError.corrupt
@@ -171,7 +173,7 @@ nonisolated enum VaultCrypto {
             data as CFData,
             &error
         ) as Data? else {
-            throw error!.takeRetainedValue() as Error
+            throw error.map { $0.takeRetainedValue() as Error } ?? VaultError.corrupt
         }
         return wrapped
     }
@@ -185,7 +187,7 @@ nonisolated enum VaultCrypto {
             data as CFData,
             &error
         ) as Data? else {
-            throw error!.takeRetainedValue() as Error
+            throw error.map { $0.takeRetainedValue() as Error } ?? VaultError.corrupt
         }
         return plain
     }
@@ -198,7 +200,7 @@ nonisolated enum VaultCrypto {
         ]
         var error: Unmanaged<CFError>?
         guard let key = SecKeyCreateWithData(x963 as CFData, attributes as CFDictionary, &error) else {
-            throw error!.takeRetainedValue() as Error
+            throw error.map { $0.takeRetainedValue() as Error } ?? VaultError.corrupt
         }
         return key
     }

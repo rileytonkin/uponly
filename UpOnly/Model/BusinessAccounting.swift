@@ -37,10 +37,15 @@ nonisolated struct OwnershipPeriod: Codable, Sendable, Equatable {
     var fromMonth: String
     var numerator: Int
     var denominator: Int
-    var label: String { numerator == 1 && denominator == 3 ? "⅓" : NSDecimalNumber(decimal: Decimal(numerator) / Decimal(denominator) * 100).stringValue + "%" }
+    var label: String {
+        if numerator == 1 && denominator == 3 { return "⅓" }
+        var percent = Decimal(numerator) / Decimal(denominator) * 100, rounded = Decimal()
+        NSDecimalRound(&rounded, &percent, 2, .plain)
+        return NSDecimalNumber(decimal: rounded).stringValue + "%"
+    }
     func portion(_ amount: Decimal) throws -> Decimal {
         guard numerator >= 0, denominator > 0, numerator <= denominator else { throw VaultError.invalidAmount }
-        var a = try MoneyInput.multiply(amount, Decimal(numerator)), b = Decimal(denominator), value = Decimal(), rounded = Decimal()
+        var a = try MoneyInput.multiply(amount, Decimal(numerator), allowingRounding: true), b = Decimal(denominator), value = Decimal(), rounded = Decimal()
         let status = NSDecimalDivide(&value, &a, &b, .plain)
         guard status == .noError || status == .lossOfPrecision else { throw VaultError.invalidAmount }
         NSDecimalRound(&rounded, &value, 2, .plain)
@@ -370,9 +375,10 @@ nonisolated enum OwnerPayments {
             let entry = document.entries[index]
             guard entry.source != .manual, entry.bucket == .personal, entry.kindIsUserEdited != true else { continue }
             if isPersonalTransferCounterparty(entry.label, document: document) { document.entries[index].kind = .transfer }
-            else if entry.kind == .transfer, entry.source == .csv, isCompanyCounterparty(entry.label, month: entry.month, document: document) {
+            else if entry.kind == .transfer, entry.source == .csv, entry.outflow == false, isCompanyCounterparty(entry.label, month: entry.month, document: document) {
                 // Money a connected company paid you is income in Personal. Earlier versions saved statement rows
-                // as transfers. Wise rows are left alone: the sync classifies them, and a transfer between your own
+                // as transfers. Money you sent it stays a transfer, and so does a row whose direction is unknown.
+                // Wise rows are left alone: the sync classifies them, and a transfer between your own
                 // profiles must stay a transfer or the two would flip each other on every refresh.
                 document.entries[index].kind = .income
             }

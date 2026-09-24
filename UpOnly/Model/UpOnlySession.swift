@@ -11,10 +11,20 @@ import LocalAuthentication
 @MainActor @Observable
 final class UpOnlySession {
     enum State { case newVault, locked, unlocked, recovery }
+    enum RestoreOutcome { case restored, needsConfirmation, cancelled, failed }
     private(set) var state: State = .locked
     private(set) var document: VaultDocument?
     private(set) var monthModel: PopoverModel?
+    /// True while unlocking, creating, restoring or saving a change the user made; forms disable while it's set.
     private(set) var isBusy = false
+    /// One vault write at a time. Writers wait their turn instead of failing; a waiting user edit goes before background work.
+    @ObservationIgnored private var writerActive = false
+    @ObservationIgnored private var userWriters: [UUID] = []
+    @ObservationIgnored private var configuringBackground = false
+    @ObservationIgnored private var exportingBackup = false
+    /// A backup chosen to replace the vault, kept while the user confirms. Lock clears it.
+    @ObservationIgnored private var pendingRestore: (package: BackupPackage, recovery: RecoveryCode)?
+    @ObservationIgnored private var reconfigureBackground = false
     private(set) var sessionToken = UUID()
     var message: String?
     private(set) var fxIssues: [String: String] = [:]
@@ -32,7 +42,10 @@ final class UpOnlySession {
     private(set) var passwordUnlockRequested = false
     private(set) var authenticationFailed = false
     @ObservationIgnored private(set) var unlockTiming: UnlockTiming?
-    var privacyMode: Bool { document?.settings.privacyMode == true }
+    var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
+    /// Hiding values takes effect at once, even while another save finishes; the saved setting follows.
+    private var privacyOverride: Bool?
+    @ObservationIgnored private var privacyAttempt = UUID()
     var importDraft: ImportBatchDraft?
     var importMode: ImportMode = .statements
     var importTableMode = false
@@ -42,6 +55,8 @@ final class UpOnlySession {
     // The single-entry form shows its own Back; the Manage header steps aside.
     var entryEditorInMenu = false
     var importMessage: String?
+    /// "Add account" opens the guided form on its new-account step; the form clears this once it has read it.
+    var importStartsNewAccount = false
     private(set) var importLoading = false
     private(set) var importRevision = UUID()
     @ObservationIgnored private var importTask: Task<ImportBatchDraft, Error>?
@@ -53,18 +68,16 @@ final class UpOnlySession {
     /// True while past days are being recomputed in the background.
     private(set) var historyRebuilding = false
     @ObservationIgnored private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
-    private(set) var backgroundCheckedAt: Date?
     private(set) var backgroundIssues: [String] = []
     private var priceRequest: Task<PriceUpdate, Error>?
     /// True while `priceRequest` is a scheduled catch-up, which a manual refresh may pre-empt.
     private var priceRequestIsAutomatic = false
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
-    private var networkAvailable = true
+    @ObservationIgnored private var networkAvailable = true
     private var catalogRequest: Task<[CatalogCoin], Error>?
     private var sourceRevision = UUID()
     private(set) var catalog: [CatalogCoin] = []
     private(set) var refreshing = false
-    var attentionIncludesPerformance = false
     var sourceMessage: String?
     private(set) var setupProgressMessage: String?
     @ObservationIgnored private var pendingSetupProgress: SetupProgress?
@@ -81,8 +94,8 @@ final class UpOnlySession {
     private(set) var wiseError: String?
     @ObservationIgnored private var wiseRequest: Task<WiseSnapshot, Error>?
     #endif
-    private var lastActivity = Date()
-    private var financeSurfaces = 0
+    @ObservationIgnored private var lastActivity = Date()
+    @ObservationIgnored private var financeSurfaces = 0
     private var pickerDepth = 0
     @ObservationIgnored private var activeFilePanel: NSSavePanel?
     var filePickerIsOpen: Bool { pickerDepth > 0 }
@@ -94,10 +107,12 @@ final class UpOnlySession {
         activeFilePanel?.makeKeyAndOrderFront(nil)
         activeFilePanel?.orderFrontRegardless()
     }
+    /// The menu stays open (and idle lock waits) only while the dialog itself is on screen, not during the work after it.
     private func presentFilePanel(_ panel: NSSavePanel) async -> NSApplication.ModalResponse {
         let token = sessionToken
         activeFilePanel = panel
-        defer { if activeFilePanel === panel { activeFilePanel = nil } }
+        pickerDepth += 1
+        defer { pickerFinished(); if activeFilePanel === panel { activeFilePanel = nil } }
         // This is an explicit user request to open a dialog. Cooperative
         // activation alone can leave an accessory app’s panel behind another app.
         NSApp.activate(ignoringOtherApps: true)
@@ -112,9 +127,9 @@ final class UpOnlySession {
             panel.orderFrontRegardless()
         }
     }
-    private var observers: [NSObjectProtocol] = []
-    private var inactivityTimer: Timer?
-    private var eventMonitor: Any?
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var inactivityTimer: Timer?
+    @ObservationIgnored private var eventMonitor: Any?
     #if UPONLY_FIXTURE
     @ObservationIgnored private var previewWindow: NSWindow?
     #endif
@@ -143,7 +158,10 @@ final class UpOnlySession {
                     guard let self else { return }
                     let reconnected = available && !self.networkAvailable
                     self.networkAvailable = available
-                    if reconnected { self.startBackgroundRefresh() }
+                    guard reconnected else { return }
+                    self.startBackgroundRefresh()
+                    // History periods that failed while offline are retried now, not after their six-hour back-off.
+                    if self.state == .unlocked { Task { await self.refreshPrices(reconnected: true, automatic: true) } }
                 }
             }
             monitor.start(queue: DispatchQueue(label: "org.uponly.network"))
@@ -230,6 +248,7 @@ final class UpOnlySession {
             guard sessionToken == token else { return }
             unlockTiming = timing
             publish(opened.document, freshUnlock: true)
+            if await vault.openedPrevious { message = Self.previousCopyNotice }
             timing?.mark("dashboard_published")
         } catch VaultError.needsRecovery { if sessionToken == token { state = .recovery } }
         catch VaultError.cancelled { if sessionToken == token { authenticationFailed = true } }
@@ -272,6 +291,7 @@ final class UpOnlySession {
             let opened = try await vault.recover(RecoveryCode(canonical: code))
             guard sessionToken == token else { return }
             publish(opened.document, freshUnlock: true)
+            if await vault.openedPrevious { message = Self.previousCopyNotice }
         } catch VaultError.cancelled { }
         catch { if sessionToken == token { message = "That recovery code could not open this vault." } }
     }
@@ -280,15 +300,28 @@ final class UpOnlySession {
         guard !isBusy, state != .unlocked else { return }
         state = vault.io.fileExists(at: layout.current) ? .locked : .newVault
         message = nil
+        // No evaluation is running now; show the fingerprint/password button instead of a spinner.
+        if state == .locked { authenticationFailed = true }
+    }
+    /// Stops a Touch ID prompt that is waiting for a finger, e.g. when the user switches to the recovery code.
+    func cancelPendingUnlock() {
+        authenticationContext?.invalidate(); authenticationContext = nil
     }
 
     func lockAndAuthenticate() {
         lock()
-        beginUnlock()
+        // Re-arm the embedded fingerprint only. Without Touch ID, asking to lock shouldn't pop a password dialog.
+        if liveAuthenticator == nil || LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) { beginUnlock() }
+        else { authenticationFailed = true }
     }
 
-    func lock() {
+    func lock() { endSession(lockingVault: true) }
+
+    /// Clears the session's work and view state. A restore whose vault already opened the backup passes false,
+    /// keeping that new vault session and the authentication it was saved with.
+    private func endSession(lockingVault: Bool) {
         activeFilePanel?.cancel(nil)
+        pendingRestore = nil
         unlockTiming = nil
         authenticationContext?.invalidate(); authenticationContext = nil
         passwordUnlockRequested = false
@@ -304,7 +337,7 @@ final class UpOnlySession {
         priceRequest?.cancel(); priceRequest = nil
         catalogRequest?.cancel(); catalogRequest = nil
         sourceRevision = UUID()
-        cancelImport(); importDraft = nil; importMessage = nil; catalog = []; sourceMessage = nil; refreshing = false
+        cancelImport(); importDraft = nil; importMessage = nil; importStartsNewAccount = false; catalog = []; sourceMessage = nil; refreshing = false
         addingInMenu = false
         managementInMenu = false
         importReturnsHome = false
@@ -312,13 +345,14 @@ final class UpOnlySession {
         entryMonthForManagement = ""
         requestedRateCurrency = nil
         fxIssues = [:]
-        vault.lock()
+        if lockingVault { vault.lock() }
         sessionToken = UUID()
         document = nil
         monthModel = nil
         destination = 0
         message = nil
-        isBusy = false
+        isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
+        sourceIssues = [:]
         state = vault.io.fileExists(at: layout.current) ? .locked : .newVault
     }
 
@@ -337,11 +371,27 @@ final class UpOnlySession {
         else if !isFixture { Task { await Task.yield(); await self.configureBackground() } }
     }
 
+    /// Waits until no other write is running, then claims the writer. Background work also waits for queued user edits.
+    /// User edits go in the order they were made, so two quick toggles save in that order.
+    private func acquireWriter(token: UUID, background: Bool) async throws {
+        let ticket = UUID()
+        if !background { userWriters.append(ticket) }
+        defer { if !background, token == sessionToken { userWriters.removeAll { $0 == ticket } } }
+        let deadline = Date().addingTimeInterval(background ? 600 : 60)
+        while writerActive || (background ? !userWriters.isEmpty : userWriters.first != ticket) {
+            guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+            guard Date() < deadline else { throw VaultError.barrierHeld }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+        writerActive = true
+    }
     func mutate(_ edit: (inout VaultDocument) throws -> Void) async throws {
-        guard state == .unlocked, !isBusy else { throw VaultError.locked }
+        guard state == .unlocked else { throw VaultError.locked }
         let token = sessionToken
+        try await acquireWriter(token: token, background: false)
         isBusy = true
-        defer { if token == sessionToken { isBusy = false } }
+        defer { if token == sessionToken { isBusy = false; writerActive = false } }
         let current = try await vault.currentSession()
         guard token == sessionToken else { throw VaultError.locked }
         var next = current.document
@@ -368,17 +418,20 @@ final class UpOnlySession {
         if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
         // Backdated tracking makes an account count on earlier days, so those days change too.
         if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < UTCDay.start(of: now) { backdated = min(backdated ?? tracked, tracked) }
+        // Archiving or restoring a portfolio changes every day since it was archived.
+        let archiveDays = next.portfolios.compactMap { portfolio -> Date? in
+            let before = current.document.portfolio(id: portfolio.id)?.archivedAt
+            return before == portfolio.archivedAt ? nil : [before, portfolio.archivedAt].compactMap { $0 }.min()
+        }
+        if let archived = archiveDays.min(), archived < UTCDay.start(of: now) { backdated = min(backdated ?? archived, archived) }
         // Past days are rebuilt afterwards in short background chunks, newest first, so saving never waits on years of history.
         let rebuilt = backdated.map { $0 < UTCDay.start(of: now) } ?? false
         if rebuilt, let backdated {
             let from = min(next.pendingHistoryRebuild?.from ?? backdated, UTCDay.start(of: backdated))
             next.pendingHistoryRebuild = PendingHistoryRebuild(from: from, cursor: now)
         }
-        let scopes: [ValuationScope] = [.allTracked, .banks] + next.portfolios.map { .portfolio($0.id) }
-        for scope in scopes {
-            next = NetWorthCalculator.recordingSample(
-                NetWorthCalculator.value(at: now, scope: scope, document: next, now: now), in: next
-            )
+        for scope in next.valuationScopes {
+            NetWorthCalculator.recordSample(NetWorthCalculator.value(at: now, scope: scope, document: next, now: now), in: &next)
         }
         next.generation = current.document.generation + 1
         try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
@@ -393,41 +446,61 @@ final class UpOnlySession {
         guard historyRebuildTask == nil, document?.pendingHistoryRebuild != nil else { return }
         historyRebuilding = true
         historyRebuildTask = Task { [weak self] in
-            defer { Task { @MainActor [weak self] in self?.historyRebuildTask = nil; self?.historyRebuilding = false } }
             await self?.refreshPrices()
-            while let self, self.state == .unlocked, let pending = self.document?.pendingHistoryRebuild {
-                if self.isBusy { try? await Task.sleep(for: .seconds(1)); continue }
-                let from = UTCDay.start(of: pending.from)
-                let chunkStart = max(from, UTCDay.start(of: pending.cursor).addingTimeInterval(-45 * 86400))
-                let chunkEnd = pending.cursor
+            var failed = false
+            while let self, self.state == .unlocked, self.document?.pendingHistoryRebuild != nil {
                 do {
+                    // The chunk is worked out from the document being saved, so a backdated save that landed while this
+                    // waited for its turn widens the range instead of being overwritten.
                     try await self.mutatePrepared { document in
-                        var next = HoldingMutations.rebuildHistory(from: chunkStart, to: chunkEnd, document: document, now: Date())
-                        // A save during the rebuild may have pushed the start further back; keep the earlier of the two.
-                        let latest = next.pendingHistoryRebuild ?? pending
-                        next.pendingHistoryRebuild = chunkStart <= UTCDay.start(of: latest.from) ? nil : PendingHistoryRebuild(from: latest.from, cursor: chunkStart)
+                        guard let pending = document.pendingHistoryRebuild else { throw CancellationError() }
+                        // Days before the rebuild horizon are never stored (HoldingMutations.rebuildHistory), so stop there.
+                        let from = max(UTCDay.start(of: pending.from), UTCDay.start(of: Date()).addingTimeInterval(-2200 * 86400))
+                        var next = document
+                        guard pending.cursor > from else { next.pendingHistoryRebuild = nil; return next }
+                        let chunkStart = max(from, UTCDay.start(of: pending.cursor).addingTimeInterval(-45 * 86400))
+                        next = HoldingMutations.rebuildHistory(from: chunkStart, to: pending.cursor, document: document, now: Date())
+                        next.pendingHistoryRebuild = chunkStart <= from ? nil : PendingHistoryRebuild(from: pending.from, cursor: chunkStart)
                         return next
                     }
-                } catch { break }
+                } catch {
+                    failed = !(error is CancellationError)
+                    break
+                }
+                // Give a waiting edit its turn between chunks.
+                try? await Task.sleep(for: .milliseconds(50))
             }
-            guard let self, self.state == .unlocked else { return }
-            await self.refreshPrices(); _ = self.writeDiagnostics()
+            guard let self else { return }
+            if self.state == .unlocked { await self.refreshPrices() }
+            self.historyRebuildTask = nil; self.historyRebuilding = false
+            // A backdated save during the last chunk queued more work; pick it up now rather than in 15 minutes.
+            // After a failed save (full disk, size limit) the 15-minute loop retries instead of spinning here.
+            if !failed, self.state == .unlocked, self.document?.pendingHistoryRebuild != nil { self.scheduleHistoryRebuild() }
         }
     }
     /// Re-runs balance reconstruction for every account so tracking and derived series match the current rules.
     func repairBalanceHistory() async {
-        guard state == .unlocked, !isBusy, let doc = document else { return }
+        guard state == .unlocked, let doc = document else { return }
         let ids = Set(doc.accounts.filter { account in doc.bankBalances.contains { $0.accountID == account.id } }.map(\.id))
         guard !ids.isEmpty else { return }
-        var changed = false
-        try? await mutate { document in changed = BalanceReconstruction.apply(accountIDs: ids, to: &document) != nil }
-        _ = changed
+        // Most runs change nothing; skip the full-vault write then.
+        var probe = doc
+        guard BalanceReconstruction.apply(accountIDs: ids, to: &probe) != nil else { return }
+        try? await mutatePrepared { document in
+            var next = document
+            _ = BalanceReconstruction.apply(accountIDs: ids, to: &next)
+            return next
+        }
     }
 
-    private func mutatePrepared(_ prepare: @escaping @Sendable (VaultDocument) throws -> VaultDocument) async throws {
-        guard state == .unlocked, !isBusy else { throw VaultError.locked }
-        let token = sessionToken; isBusy = true
-        defer { if token == sessionToken { isBusy = false; preparedMutation = nil } }
+    /// Prepares the next document off the main actor. Background writers (history, prices, cached updates) don't
+    /// set `isBusy`, so forms stay usable while they run; user edits simply wait for them to finish.
+    private func mutatePrepared(background: Bool = true, _ prepare: @escaping @Sendable (VaultDocument) throws -> VaultDocument) async throws {
+        guard state == .unlocked else { throw VaultError.locked }
+        let token = sessionToken
+        try await acquireWriter(token: token, background: background)
+        if !background { isBusy = true }
+        defer { if token == sessionToken { if !background { isBusy = false }; writerActive = false; preparedMutation = nil } }
         let current = try await vault.currentSession()
         guard token == sessionToken else { throw VaultError.locked }
         let task = Task.detached(priority: .userInitiated) {
@@ -448,58 +521,6 @@ final class UpOnlySession {
         catch { if token == sessionToken { message = error as? VaultError == .oversizedVault ? "This vault has reached its 128 MB limit. The last saved version is unchanged and can still be backed up." : "Your change could not be saved. Please try again." } }
     }
 
-    func importStatement(_ draft: StatementDraft) async throws {
-        try await mutate { doc in
-            guard doc.accounts.contains(where: { $0.id == draft.accountID }) else { throw VaultError.invalidAmount }
-            guard !doc.importedStatements.contains(where: { $0.digest == draft.digest }) else { throw StatementError.duplicate }
-            let references = Set(doc.entries.compactMap(\.sourceRef))
-            doc.entries.append(contentsOf: draft.entries.filter { !references.contains($0.sourceRef ?? "") }); doc.track(.cashFlow)
-            doc.importedStatements.append(ImportedStatement(digest: draft.digest, originalBytes: draft.bytes, importedAt: Date()))
-            let months = Set(draft.entries.map(\.month))
-            doc.reviewedMonths.removeAll { months.contains($0) }
-        }
-    }
-
-    func addPortfolio(name: String, ownerBusinessID: String? = nil) async throws {
-        let clean = try Self.name(name)
-        try await mutate { document in
-            // Unique within an owner: a personal portfolio and a company's may share a name.
-            let owner = ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
-            guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(clean) == .orderedSame })
-            else { throw VaultError.invalidAmount }
-            if let ownerBusinessID, !(document.businessAccounting ?? []).contains(where: { $0.id == ownerBusinessID }) { throw VaultError.invalidAmount }
-            document.portfolios.append(Portfolio(name: clean, ownerBusinessID: ownerBusinessID)); document.track(.crypto)
-        }
-    }
-
-    func addAccount(name: String, currency: String, balance: String, date: Date) async throws {
-        let clean = try Self.name(name)
-        let code = try MoneyInput.normalizeCurrency(currency)
-        let amount = try MoneyInput.parseExact(balance)
-        guard date <= Date().addingTimeInterval(300) else { throw VaultError.observationInFuture }
-        try await mutate { document in
-            let account = Account(name: clean, currency: code)
-            document.accounts.append(account); document.track(.banks)
-            document.setBankTracked(account.id, tracked: true, at: date)
-            document.bankBalances.append(BankBalanceObservation(
-                id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: code,
-                observedAt: date, source: "manual", sourceIdentity: account.id.uuidString
-            ))
-        }
-    }
-
-    func updateBalance(account: Account, text: String, date: Date) async throws {
-        let amount = try MoneyInput.parseExact(text)
-        guard date <= Date().addingTimeInterval(300) else { throw VaultError.observationInFuture }
-        try await mutate { document in
-            guard document.accounts.contains(where: { $0.id == account.id }) else { throw VaultError.invalidAmount }
-            document.bankBalances.append(BankBalanceObservation(
-                id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: account.currency,
-                observedAt: date, source: "manual", sourceIdentity: account.id.uuidString
-            ))
-        }
-    }
-
     static func name(_ raw: String) throws -> String {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 100, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
@@ -507,6 +528,7 @@ final class UpOnlySession {
         return name
     }
 
+    static let previousCopyNotice = "Your vault file was damaged, so Up Only opened the copy from your previous save. Your most recent change may be missing."
     static let inactivityInterval: TimeInterval = 5 * 60
     func recordActivity(at date: Date = Date()) { lastActivity = date }
     func handleActivity(at date: Date = Date()) {
@@ -516,12 +538,17 @@ final class UpOnlySession {
         recordActivity(at: date)
     }
     func checkInactivity(at date: Date = Date()) {
-        guard state == .unlocked, date.timeIntervalSince(lastActivity) >= Self.inactivityInterval else { return }
+        // Activity inside the out-of-process file dialog isn't seen here, so an open dialog gets longer before locking.
+        guard state == .unlocked, date.timeIntervalSince(lastActivity) >= (filePickerIsOpen ? 3 : 1) * Self.inactivityInterval else { return }
         lock()
     }
     func togglePrivacyMode() async throws {
         recordActivity()
-        try await mutate { $0.settings.privacyMode.toggle() }
+        let hidden = !privacyMode, attempt = UUID()
+        privacyOverride = hidden; privacyAttempt = attempt
+        // Only the latest toggle hands back to the saved setting, so a quick double toggle doesn't flicker.
+        defer { if privacyAttempt == attempt { privacyOverride = nil } }
+        try await mutate { $0.settings.privacyMode = hidden }
     }
 
     func menuOpened() {
@@ -529,7 +556,11 @@ final class UpOnlySession {
         // One attempt per opening. Reopening retries after cancellation;
         // changes to the lock view must not immediately prompt again.
         if state == .locked { beginUnlock() }
-        else if state == .unlocked { Task { await self.applyBackgroundCache() } }
+        else if state == .unlocked {
+            // A note from an earlier visit ("Couldn't save…") no longer describes what's on screen.
+            message = nil
+            Task { await self.applyBackgroundCache() }
+        }
     }
     func surfaceOpened() { financeSurfaces += 1; handleActivity() }
     func surfaceClosed() {
@@ -544,15 +575,17 @@ final class UpOnlySession {
     }
 
     @discardableResult
-    func startImport(_ mode: ImportMode, prefill: Bool = false, accountID: UUID? = nil, portfolioID: UUID? = nil, holdingID: UUID? = nil) -> Bool {
+    func startImport(_ mode: ImportMode, prefill: Bool = false, accountID: UUID? = nil, portfolioID: UUID? = nil, holdingID: UUID? = nil, newAccount: Bool = false) -> Bool {
         guard state == .unlocked, let document else { return false }
         guard importDraft == nil else {
-            managementSection = "Add your info"
-            importMessage = "Your unfinished draft is still here. Save it or go back before starting another."
+            // Show the unfinished draft rather than silently ignoring the tap.
+            managementSection = "Add your info"; addingInMenu = false; managementInMenu = true
+            importMessage = "Your unfinished draft is still here. Save it or discard it before starting another."
             return false
         }
         importReturnSection = managementSection
         cancelImport(); importMessage = nil; importMode = mode; importTableMode = false; managementSection = "Add your info"
+        importStartsNewAccount = newAccount && mode == .bankBalances
         var batch = ImportBatchDraft(mode: mode)
         var source = ImportSourceDraft(filename: prefill ? "Current balances" : "Manual entry", bytes: Data(), grid: [])
         source.hasHeader = false
@@ -577,24 +610,19 @@ final class UpOnlySession {
     }
     func discardImport() {
         cancelImport(); importDraft = nil; importMessage = nil; managementSection = importReturnSection
-        finishHomeImport(saved: false)
+        finishHomeImport(saved: nil)
     }
-    private func finishHomeImport(saved: Bool) {
+    /// `saved` is the mode of a batch that was saved, or nil when the import was discarded.
+    private func finishHomeImport(saved: ImportMode?) {
         guard importReturnsHome else { return }
-        importReturnsHome = false; managementInMenu = false; addingInMenu = false
-        if saved { message = "Statement imported." }
+        importReturnsHome = false; managementInMenu = false; addingInMenu = false; importMessage = nil
+        if let saved { flash(saved == .statements ? "Statement imported." : saved == .bankBalances ? "Balances saved." : saved == .metals ? "Gold & silver saved." : "Holdings saved.") }
     }
     func cancelImport() {
         importTask?.cancel(); importTask = nil; importLoading = false; importRevision = UUID()
     }
-    func chooseStatements(accountID: UUID? = nil) async {
-        if importDraft?.mode != .statements { startImport(.statements, accountID: accountID) }
-        guard importDraft?.mode == .statements else { return }
-        await chooseImportFiles()
-    }
     func chooseImportFiles() async {
         guard state == .unlocked, !importLoading, !filePickerIsOpen else { focusFilePicker(); return }
-        pickerDepth += 1; defer { pickerFinished() }
         let token = sessionToken
         let panel = NSOpenPanel(); panel.allowedContentTypes = importDraft?.mode == .statements ? [.commaSeparatedText] : [.commaSeparatedText, .tabSeparatedText, .plainText]
         panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
@@ -613,11 +641,11 @@ final class UpOnlySession {
         let token = sessionToken, revision = UUID(); importRevision = revision
         importLoading = true; importMessage = "Reading files…"
         let accounts = document?.accounts ?? []
-        let importDocument = document
         let task = Task.detached(priority: .userInitiated) { () throws -> ImportBatchDraft in
             var next = draft
             guard urls.count + next.sources.filter({ !$0.grid.isEmpty }).count <= ImportBatchDraft.maxFiles else { throw ImportFailure("Choose at most 50 files.") }
-            let defaultAccount = next.sources.first?.account ?? ImportAccount()
+            // Only an account chosen before picking files applies to every file; otherwise each file is matched on its own.
+            let defaultAccount = next.sources.first { $0.grid.isEmpty && $0.account.existingID != nil }?.account ?? ImportAccount()
             if next.rows.isEmpty { next.sources.removeAll { $0.grid.isEmpty } }
             for url in urls {
                 try Task.checkCancellation()
@@ -626,17 +654,12 @@ final class UpOnlySession {
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard size <= VaultLimits.maxBatchBytes else { throw StatementError.tooLarge }
                 let bytes = try Data(contentsOf: url)
-                var source = try ImportParser.source(bytes: bytes, filename: url.lastPathComponent, mode: next.mode, pasted: url.pathExtension.lowercased() == "tsv")
-                source.account = ImportParser.account(for: source, preferred: defaultAccount, saved: accounts)
-                var rows = try ImportParser.rows(source: source, mode: next.mode)
-                if next.mode == .statements, let importDocument {
-                    for index in rows.indices where rows[index].statement.originalType.isEmpty {
-                        let input = rows[index].statement
-                        if let date = try? source.dateFormat.date(input.date) { rows[index].statement.kind = OwnerPayments.classify(input.kind, label: input.label, month: String(ImportDateFormat.today(date).prefix(7)), document: importDocument) }
-                    }
+                for var source in try ImportParser.sources(bytes: bytes, filename: url.lastPathComponent, mode: next.mode) {
+                    source.account = ImportParser.account(for: source, preferred: defaultAccount, saved: accounts)
+                    // Income, spending and company transfers are classified when the batch is checked, with the final number format.
+                    next.rows += try ImportParser.rows(source: source, mode: next.mode)
+                    next.sources.append(source); try next.checkLimits()
                 }
-                next.rows += rows
-                next.sources.append(source); try next.checkLimits()
             }
             return next
         }
@@ -654,7 +677,7 @@ final class UpOnlySession {
         importLoading = true; importMessage = "Reading pasted cells…"
         let task = Task.detached(priority: .userInitiated) { () throws -> ImportBatchDraft in
             var next = draft
-            var source = try ImportParser.source(bytes: Data(text.utf8), filename: "Pasted cells", mode: next.mode, pasted: true)
+            var source = try ImportParser.source(bytes: Data(text.utf8), filename: "Pasted cells", mode: next.mode)
             source.account = next.sources.first?.account ?? ImportAccount()
             if next.rows.isEmpty { next.sources.removeAll { $0.grid.isEmpty } }
             next.rows += try ImportParser.rows(source: source, mode: next.mode); next.sources.append(source)
@@ -670,7 +693,6 @@ final class UpOnlySession {
     }
     func saveImportTemplate() async {
         guard state == .unlocked, !filePickerIsOpen else { focusFilePicker(); return }
-        pickerDepth += 1; defer { pickerFinished() }
         let token = sessionToken, mode = importDraft?.mode ?? importMode
         let panel = NSSavePanel(); panel.allowedContentTypes = [.commaSeparatedText]; panel.nameFieldStringValue = mode.rawValue + ".csv"
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
@@ -680,7 +702,7 @@ final class UpOnlySession {
     }
     func commitImportBatch(_ draft: ImportBatchDraft) async throws {
         let coins = catalog
-        try await mutatePrepared { document in
+        try await mutatePrepared(background: false) { document in
             let review = ImportBatchProcessor.evaluate(draft, document: document, catalog: coins)
             guard !review.hasErrors, review.added > 0, let next = review.document else {
                 throw ImportFailure(review.globalError ?? "Review this batch again. Fix or exclude every flagged row before saving.")
@@ -688,27 +710,63 @@ final class UpOnlySession {
             return next
         }
         importDraft = nil; importMessage = "Your information has been saved."; managementSection = importReturnSection
-        finishHomeImport(saved: true)
+        finishHomeImport(saved: draft.mode)
         Task { await refreshPrices() }
     }
 
     func exportBackup() async {
-        guard state == .unlocked, !filePickerIsOpen else { focusFilePicker(); return }
-        pickerDepth += 1
-        defer { pickerFinished() }
+        guard state == .unlocked, !filePickerIsOpen, !exportingBackup else { focusFilePicker(); return }
         let token = sessionToken
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Up Only Backup.uponlybackup"
+        // A dated name keeps earlier backups and never collides with yesterday's.
+        panel.nameFieldStringValue = "Up Only Backup " + ImportDateFormat.today(Date()) + ".uponlybackup"
         panel.canCreateDirectories = true
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        exportingBackup = true; defer { exportingBackup = false }
         do {
             let package = try await BackupCoordinator.makePackage(store: vault, producers: [])
             guard token == sessionToken else { throw VaultError.locked }
-            try BackupCoordinator.publish(package, to: url, io: DiskFileIO())
-            message = "Encrypted backup saved. Keep your recovery code separately."
+            // Hashing and writing up to a few hundred megabytes stays off the main thread.
+            try await Task.detached(priority: .userInitiated) {
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                try BackupCoordinator.publish(package, to: url, io: DiskFileIO())
+            }.value
+            guard token == sessionToken else { return }
+            flash("Encrypted backup saved. Keep your recovery code separately.")
         } catch { if token == sessionToken { message = "Backup could not be saved. Choose a new filename and try again." } }
+    }
+    /// Replaces the recovery code after Touch ID or the Mac password. The old code stops opening this vault;
+    /// backups exported earlier keep the code they were exported with.
+    func replaceRecoveryCode(_ code: RecoveryCode) async -> Bool {
+        guard state == .unlocked else { return false }
+        let token = sessionToken
+        message = nil
+        do {
+            try await acquireWriter(token: token, background: false)
+            isBusy = true
+            defer { if token == sessionToken { isBusy = false; writerActive = false } }
+            let current = try await vault.currentSession()
+            guard token == sessionToken else { throw VaultError.locked }
+            try await vault.rotateRecovery(code, sessionID: current.sessionID)
+            guard token == sessionToken else { return false }
+            flash("Recovery code replaced. Export a new backup so it uses the new code.")
+            return true
+        } catch VaultError.cancelled { return false }
+        catch {
+            if token == sessionToken { message = "Your recovery code couldn’t be replaced. Your current code still works." }
+            return false
+        }
+    }
+    /// A success note that clears itself, so it doesn't linger on later pages.
+    func flash(_ text: String) {
+        message = text
+        let token = sessionToken
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard let self, self.sessionToken == token, self.message == text else { return }
+            self.message = nil
+        }
     }
 
     private func installLockObservers() {
@@ -716,14 +774,15 @@ final class UpOnlySession {
         observers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.startBackgroundRefresh() }
         })
+        // Lock before the observer returns, so the vault is closed before the Mac sleeps.
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
             observers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.lock() }
+                MainActor.assumeIsolated { self?.lock() }
             })
         }
         observers.append(DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.lock() } })
+        ) { [weak self] _ in MainActor.assumeIsolated { self?.lock() } })
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
             self?.handleActivity()
             return event
@@ -744,11 +803,16 @@ final class UpOnlySession {
                 var doc = VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
                 let names = (ProcessInfo.processInfo.environment["UPONLY_VERIFY_STATEMENT_COUNTERPARTIES"] ?? "").split(separator: ";").map(String.init)
                 doc.businessAccounting = [BusinessBook(id: "fixture", name: "Fixture", ownership: [.init(fromMonth: "1900-01", numerator: 1, denominator: 2)], firstMonth: "1900-01", sourceURL: "", basis: "Fixture", fetchedAt: Date(), transferCounterparties: names)]
-                var source = try ImportParser.source(bytes: Data(contentsOf: URL(fileURLWithPath: path)), filename: "statement.csv", mode: .statements)
-                var batch = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
+                // A multi-currency Wise export becomes one source per currency.
+                let sources = try ImportParser.sources(bytes: Data(contentsOf: URL(fileURLWithPath: path)), filename: "statement.csv", mode: .statements)
+                var batch = ImportBatchDraft(mode: .statements, sources: sources, rows: try sources.flatMap { try ImportParser.rows(source: $0, mode: .statements) })
                 let review = ImportBatchProcessor.evaluate(batch, document: doc)
                 guard !review.hasErrors, let saved = review.document else { throw ImportFailure("Statement validation failed.") }
-                source.account.existingID = saved.accounts[0].id; batch.sources = [source]
+                batch.sources = sources.map { source in
+                    var source = source
+                    source.account.existingID = saved.accounts.first { $0.name == source.account.name && $0.currency == source.account.currency }?.id ?? saved.accounts[0].id
+                    return source
+                }
                 let repeated = ImportBatchProcessor.evaluate(batch, document: saved)
                 guard !repeated.hasErrors, repeated.duplicates == saved.entries.count else { throw ImportFailure("Repeat import failed.") }
                 let result: [String: Any] = ["rows": batch.rows.count, "saved": saved.entries.count, "excluded": batch.rows.filter { !$0.included }.count, "duplicates": repeated.duplicates, "transfers": saved.entries.filter { $0.kind == .transfer }.count, "months": Dictionary(grouping: saved.entries, by: \.month).mapValues(\.count)]
@@ -995,7 +1059,7 @@ final class UpOnlySession {
 #if UPONLY_PERSONAL
 extension UpOnlySession {
     func refreshAccounting() async {
-        guard state == .unlocked, !isFixture, !accountingRefreshing, !isBusy else { return }
+        guard state == .unlocked, !isFixture, !accountingRefreshing else { return }
         let token = sessionToken
         accountingRefreshing = true; accountingError = nil
         defer { if token == sessionToken { accountingRefreshing = false; accountingRequest = nil } }
@@ -1003,7 +1067,6 @@ extension UpOnlySession {
             let request = Task.detached(priority: .utility) { try await AccountingAPI.fetchResult(AccountingConnection.load()) }; accountingRequest = request
             let result = try await request.value
             guard token == sessionToken, !Task.isCancelled, !request.isCancelled else { return }
-            while isBusy, token == sessionToken, !request.isCancelled { try await Task.sleep(for: .milliseconds(100)) }
             guard token == sessionToken, !request.isCancelled else { return }
             try await mutate { $0.businessAccounting = AccountingHistory.merging(result.books, into: $0.businessAccounting ?? []); OwnerPayments.reconcile(in: &$0); $0.track(.cashFlow) }
             if !result.failedSources.isEmpty { accountingError = result.failedSources.joined(separator: ", ") + " couldn’t refresh. Saved results retained." }
@@ -1014,7 +1077,7 @@ extension UpOnlySession {
         }
     }
     func refreshWise() async {
-        guard state == .unlocked, !isFixture, !wiseRefreshing, !isBusy, document?.settings.automaticWise == true else { return }
+        guard state == .unlocked, !isFixture, !wiseRefreshing, document?.settings.automaticWise == true else { return }
         let token = sessionToken
         wiseRefreshing = true; wiseMessage = nil; wiseError = nil
         defer { if token == sessionToken { wiseRefreshing = false; wiseRequest = nil } }
@@ -1039,11 +1102,6 @@ extension UpOnlySession {
             }
         }
     }
-    func setWiseEnabled(_ enabled: Bool) async {
-        wiseRequest?.cancel()
-        await perform { $0.settings.automaticWise = enabled }
-        if enabled { await refreshWise() }
-    }
 }
 #endif
 
@@ -1059,10 +1117,6 @@ extension UpOnlySession {
             guard let self else { return }
             defer { if token == self.sessionToken { self.setupProgressTask = nil } }
             while let progress = self.pendingSetupProgress, token == self.sessionToken, !Task.isCancelled {
-                if self.isBusy {
-                    do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
-                    continue
-                }
                 self.pendingSetupProgress = nil
                 do {
                     try self.validateSourceKey(progress.coinGeckoKey, prices: false)
@@ -1113,12 +1167,13 @@ extension UpOnlySession {
             return
         }
         let activeHoldings = doc.holdings.filter { $0.isActive(at: Date()) && doc.portfolio(id: $0.portfolioID)?.isActive(at: Date()) == true }
-        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices) metals=\(doc.settings.automaticMetals) fx=\(doc.settings.automaticFX) keyLength=\(doc.settings.coinGeckoKey.count) holdings=\(doc.holdings.count) active=\(activeHoldings.count) portfolios=\(doc.portfolios.count)")
+        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices) metals=\(doc.settings.automaticMetals) fx=\(doc.settings.automaticFX) keyLength=\(doc.settings.coinGeckoKey.count) holdings=\(doc.holdings.count, privacy: .private) active=\(activeHoldings.count, privacy: .private) portfolios=\(doc.portfolios.count, privacy: .private)")
         let token = sessionToken, revision = sourceRevision
         if automatic {
-            guard priceRequest == nil,
-                  (try? await BackgroundRefreshSchedule.shared.claim(vaultID: doc.vaultID, root: Config.supportDirectory, source: "history")) == true,
-                  token == sessionToken, state == .unlocked, priceRequest == nil else { return }
+            guard priceRequest == nil else { return }
+            // A reconnect retries right away; otherwise catch-up runs once per history slot.
+            let claimed = reconnected ? true : (try? await BackgroundRefreshSchedule.shared.claim(vaultID: doc.vaultID, root: Config.supportDirectory, source: "history")) == true
+            guard claimed, token == sessionToken, state == .unlocked, priceRequest == nil else { return }
         } else {
             refreshing = true
             sourceMessage = "Updating prices and checking for missed history…"
@@ -1128,10 +1183,10 @@ extension UpOnlySession {
         // Only the refresh that owns the current request clears it; a pre-empted catch-up must not clobber its replacement.
         defer { if token == sessionToken, revision == sourceRevision, priceRequest == mine { refreshing = false; priceRequest = nil; priceRequestIsAutomatic = false } }
         do {
-            let request = Task.detached(priority: automatic ? .utility : .userInitiated) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic) }
+            let request = Task.detached(priority: automatic ? .utility : .userInitiated) { try await PublicPrices.update(document: doc, reconnected: reconnected, includeCurrent: !automatic && round == 0) }
             priceRequest = request; priceRequestIsAutomatic = automatic; mine = request
             let update = try await request.value
-            log.notice("refresh result quotes=\(update.quotes.count) rates=\(update.rates.count) messages=\(update.messages.joined(separator: " | "), privacy: .public) issues=\(update.sourceIssues.values.joined(separator: " | "), privacy: .public)")
+            log.notice("refresh result quotes=\(update.quotes.count) rates=\(update.rates.count) messages=\(update.messages.joined(separator: " | "), privacy: .private) issues=\(update.sourceIssues.values.joined(separator: " | "), privacy: .private)")
             guard token == sessionToken, revision == sourceRevision, !Task.isCancelled else { log.notice("refresh result discarded: session changed or cancelled"); return }
             if !update.quotes.isEmpty || !update.rates.isEmpty || !update.coverage.isEmpty {
                 try await commitPriceUpdate(update)
@@ -1140,18 +1195,23 @@ extension UpOnlySession {
             if !automatic { sourceMessage = update.messages.isEmpty ? "Updated " + Date().formatted(date: .omitted, time: .shortened) : update.messages.joined(separator: "\n") }
             fxIssues = update.fxIssues
             if !automatic {
-                sourceIssues = update.sourceIssues
-                // A successful manual update supersedes an earlier background failure for that source.
-                for (source, issue) in [("Crypto", "crypto"), ("Metals", "metals"), ("Exchange rates", "fx")] where update.sourceIssues[issue] == nil {
-                    backgroundIssues.removeAll { $0 == source || $0.lowercased().hasPrefix(issue + " ") }
-                }
+                // Follow-up rounds only fetch history, so they add to the first round's report rather than replace it.
+                if round == 0 {
+                    sourceIssues = update.sourceIssues
+                    // A successful manual update supersedes an earlier background failure for that source.
+                    for (source, issue) in [("Crypto", "crypto"), ("Metals", "metals"), ("Exchange rates", "fx")] where update.sourceIssues[issue] == nil {
+                        backgroundIssues.removeAll { $0 == source || $0.lowercased().hasPrefix(issue + " ") }
+                    }
+                } else { sourceIssues.merge(update.sourceIssues) { $1 } }
                 // Keep going while history is still queued, instead of leaving gaps until the next hourly slot.
                 if round < 6, update.messages.contains(where: { $0.hasPrefix("More price history is queued") }) {
                     Task { [weak self] in await self?.refreshPrices(round: round + 1) }
-                } else { _ = writeDiagnostics() }
+                }
             }
         } catch {
-            log.error("refresh failed: \(String(describing: error), privacy: .public)")
+            log.error("refresh failed: \(String(describing: error), privacy: .private)")
+            // A catch-up pre-empted by a manual refresh isn't a failure.
+            if error is CancellationError || mine?.isCancelled == true { return }
             if token == sessionToken, revision == sourceRevision, !Task.isCancelled {
                 let issue = (error as? PriceError)?.localizedDescription ?? "Prices could not be saved. Your saved observations are unchanged; catch-up will retry."
                 if !automatic { sourceMessage = issue; sourceIssues = ["crypto": issue, "metals": issue, "fx": issue] }
@@ -1161,7 +1221,8 @@ extension UpOnlySession {
             }
         }
     }
-    /// A structural summary of the vault for debugging chart gaps. Names and dates only; no amounts.
+    /// A structural summary of the vault for debugging chart gaps, written only when the user asks for it.
+    /// It names accounts and holdings but has no amounts; the file is readable by this user only.
     func writeDiagnostics() -> String {
         guard let doc = document else { return "Unlock first." }
         let day = BalanceReconstruction.dayFormatter()
@@ -1193,16 +1254,20 @@ extension UpOnlySession {
         lines.append("  … \(samples.count) samples over \(days.count) days; \(completeDays) days have a complete value, \(days.count - completeDays) do not; a line is printed only when the state changes")
         lines.append("pending rebuild: " + (doc.pendingHistoryRebuild.map { day.string(from: $0.from) + " .. " + day.string(from: $0.cursor) } ?? "none"))
         let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
-        do { try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8); return "Written to " + url.path }
+        do {
+            try Data(lines.joined(separator: "\n").utf8).write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return "Written to " + url.path
+        }
         catch { return "Could not write: " + error.localizedDescription }
     }
     func commitPriceUpdate(_ update: PriceUpdate) async throws {
         try await mutatePrepared { current in try PriceHistory.applying(update, to: current, now: Date()) }
     }
     func repairExchangeRates(month: MonthKey, currencies: [String]) async {
-        guard state == .unlocked, !isBusy else { return }
+        guard state == .unlocked else { return }
         // Explicit repair takes priority over a broad background history refresh.
-        priceRequest?.cancel(); priceRequest = nil
+        priceRequest?.cancel(); priceRequest = nil; priceRequestIsAutomatic = false
         let token = sessionToken
         sourceRevision = UUID(); let revision = sourceRevision
         refreshing = true; fxIssues = [:]
@@ -1247,7 +1312,7 @@ extension UpOnlySession {
     func searchCatalog(_ query: String) async {
         guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard clean.count >= 2 else { return }
+        guard clean.count >= 2, !Task.isCancelled else { return }
         let token = sessionToken, revision = sourceRevision
         catalogRequest?.cancel()
         let request = Task { try await PublicPrices.searchCoins(clean, key: settings.automaticPrices ? settings.coinGeckoKey : "") }
@@ -1257,21 +1322,9 @@ extension UpOnlySession {
         for coin in coins { merged[coin.id] = coin }
         catalog = Array(merged.values)
     }
-    func loadCatalog() async {
-        // The public coin list needs no key; a Demo key is used when present.
-        guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
-        let token = sessionToken, revision = sourceRevision
-        do {
-            catalogRequest?.cancel()
-            let request = Task { try await PublicPrices.catalog(key: settings.automaticPrices ? settings.coinGeckoKey : "") }
-            catalogRequest = request
-            let coins = try await request.value
-            if token == sessionToken, revision == sourceRevision, !Task.isCancelled { catalog = coins }
-        } catch { if token == sessionToken, revision == sourceRevision { sourceMessage = (error as? PriceError)?.localizedDescription ?? "The coin list could not be loaded. You can enter its CoinGecko ID manually." } }
-    }
     private func resetSourceWork() {
         refreshTask?.cancel(); refreshTask = nil
-        priceRequest?.cancel(); priceRequest = nil
+        priceRequest?.cancel(); priceRequest = nil; priceRequestIsAutomatic = false
         catalogRequest?.cancel(); catalogRequest = nil
         sourceRevision = UUID(); catalog = []; refreshing = false; sourceMessage = nil
     }
@@ -1325,33 +1378,122 @@ extension UpOnlySession {
             #endif
         }
     }
-    func restoreBackup(code: String) async {
-        guard state == .newVault, !isBusy, !filePickerIsOpen else { focusFilePicker(); return }
-        pickerDepth += 1; defer { pickerFinished() }
-        let token = sessionToken
+    /// Restores a backup from the welcome screen, into an empty vault folder.
+    @discardableResult
+    func restoreBackup(code: String) async -> Bool {
+        guard state == .newVault else { return false }
+        return await chooseBackup(code: code, confirmed: true) == .restored
+    }
+    /// Restores a backup in place of the unlocked vault. A vault with records returns `.needsConfirmation` and keeps the
+    /// chosen backup, so the confirmed call doesn't ask for the folder again.
+    func restoreReplacingVault(code: String, confirmed: Bool) async -> RestoreOutcome {
+        guard state == .unlocked else { return .cancelled }
+        if confirmed, let pending = pendingRestore, pending.recovery.matches(code) {
+            return await restoreBackup(pending.package, recovery: pending.recovery, confirmed: true)
+        }
+        return await chooseBackup(code: code, confirmed: confirmed)
+    }
+    func cancelPendingRestore() { pendingRestore = nil }
+
+    private func chooseBackup(code: String, confirmed: Bool) async -> RestoreOutcome {
+        pendingRestore = nil
+        guard !isBusy, !filePickerIsOpen else { focusFilePicker(); return .cancelled }
+        // Check the code's shape before asking for a folder, so a typo doesn't cost a trip through the file dialog.
+        guard let recovery = try? RecoveryCode(canonical: code) else {
+            message = "That recovery code isn’t complete. Check every group and try again."
+            return .failed
+        }
+        let token = sessionToken, replacing = state == .unlocked
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
-        let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-        isBusy = true; defer { if token == sessionToken { isBusy = false } }
+        panel.message = "Choose the Up Only Backup folder"; panel.prompt = "Restore"
+        guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return .cancelled }
+        isBusy = true; message = nil
+        // Reading and hashing up to a few hundred megabytes stays off the main thread.
+        let package = try? await Task.detached(priority: .userInitiated) { () throws -> BackupPackage in
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            return try BackupCoordinator.read(from: url, io: DiskFileIO())
+        }.value
+        guard token == sessionToken else { return .cancelled }
+        isBusy = false
+        guard let package else { message = Self.restoreFailure(replacing: replacing); return .failed }
+        return await restoreBackup(package, recovery: recovery, confirmed: confirmed)
+    }
+    private static func restoreFailure(replacing: Bool) -> String {
+        replacing ? "Restore failed. Your current vault is unchanged." : "Restore failed. Check the backup and recovery code. An existing vault is never replaced."
+    }
+
+    /// The restore both entry points share. A code that doesn't open the backup stops here, and replacing a vault with
+    /// records asks first. Then the user authenticates and the backup is restored and opened. An unlocked vault's folder
+    /// is moved aside, never deleted; if anything fails after that, it is put back and the vault locks.
+    func restoreBackup(_ package: BackupPackage, recovery: RecoveryCode, confirmed: Bool) async -> RestoreOutcome {
+        pendingRestore = nil
+        let replacing = state == .unlocked
+        guard replacing || state == .newVault, !isBusy else { return .cancelled }
+        guard BackupCoordinator.opens(package, with: recovery) else {
+            message = "That recovery code doesn’t open this backup. Use the code that was current when it was exported."
+            return .failed
+        }
+        if replacing, !confirmed, document?.hasRecords == true {
+            pendingRestore = (package: package, recovery: recovery)
+            return .needsConfirmation
+        }
+        var token = sessionToken
+        isBusy = true; message = nil
+        defer { if token == sessionToken { isBusy = false } }
         do {
-            let package = try BackupCoordinator.read(from: url, io: DiskFileIO())
-            let recovery = try RecoveryCode(canonical: code)
+            let opened: VaultSession
+            if replacing {
+                // The vault's own authenticator (the session's live one in the app), so the restore's Keychain write uses
+                // this authentication and Touch ID stays wired.
+                try await vault.authenticator.evaluate()
+                guard token == sessionToken else { return .cancelled }
+                try await acquireWriter(token: token, background: false)
+                let aside = layout.replacedRoot(at: Date(), io: vault.io)
+                do {
+                    opened = try await vault.replace(with: package, recovery: recovery, aside: aside)
+                } catch {
+                    guard token == sessionToken else { return .failed }
+                    // A backup refused before anything moved leaves the vault open; otherwise the original is back, locked,
+                    // with unlock ready as after Lock now.
+                    if await vault.isUnlocked { writerActive = false } else { lockAndAuthenticate() }
+                    message = vault.io.fileExists(at: aside)
+                        ? "Restore failed. Your vault is in the folder “\(aside.lastPathComponent)” beside where it was."
+                        : Self.restoreFailure(replacing: true)
+                    return .failed
+                }
+                guard token == sessionToken else { return .failed }
+                // The vault already has the backup's session; clear what the replaced one left behind.
+                endSession(lockingVault: false)
+                token = sessionToken
+                publish(opened.document, freshUnlock: true)
+                flash("Backup restored. Your previous vault is in the folder “\(aside.lastPathComponent)” beside it.")
+                return .restored
+            }
             #if UPONLY_FIXTURE
             let keys: VaultKeyStoring = MemoryKeyStore()
             let auth: VaultAuthenticating = FixtureAuthenticator()
             #else
             let keys: VaultKeyStoring = KeychainVaultKeyStore()
-            let auth: VaultAuthenticating = LiveAuthenticator()
+            // Keep the session's authenticator so embedded Touch ID and "Use Mac password" stay wired after restoring.
+            let live = liveAuthenticator ?? LiveAuthenticator()
+            liveAuthenticator = live
+            let auth: VaultAuthenticating = live
             #endif
             try await auth.evaluate()
             guard token == sessionToken else { throw VaultError.locked }
             try await vault.releaseEmptyDestination()
             _ = try BackupCoordinator.restore(package: package, recovery: recovery, keys: keys, layout: layout, io: DiskFileIO(), authenticator: auth)
             vault = VaultStore(layout: layout, io: DiskFileIO(), keys: keys, authenticator: auth)
-            let opened = try await vault.unlock()
-            guard token == sessionToken else { return }
+            opened = try await vault.unlock()
+            guard token == sessionToken else { return .failed }
             publish(opened.document, freshUnlock: true)
-        } catch { if token == sessionToken { message = "Restore failed. Check the backup and recovery code. An existing vault is never replaced." } }
+            return .restored
+        } catch VaultError.cancelled { return .cancelled }
+        catch {
+            if token == sessionToken { message = Self.restoreFailure(replacing: replacing) }
+            return .failed
+        }
     }
 }
 
@@ -1461,7 +1603,7 @@ extension UpOnlySession {
                         let request = Task.detached(priority: .utility) { await BackgroundRefresh.fetch(configuration: configuration, root: root) }
                         let issues = await withTaskCancellationHandler(operation: { await request.value }, onCancel: { request.cancel() })
                         guard !Task.isCancelled else { return }
-                        self.backgroundCheckedAt = Date(); self.backgroundIssues = issues
+                        self.backgroundIssues = issues
                         if self.state == .unlocked { await self.applyBackgroundCache() }
                     }
                 } catch { self?.backgroundIssues = ["Background source configuration"] }
@@ -1470,11 +1612,21 @@ extension UpOnlySession {
         }
     }
     func configureBackground() async {
-        guard !isFixture, state == .unlocked, !isBusy, let current = document, current.settings.setupComplete else { return }
+        guard !isFixture, state == .unlocked, let current = document, current.settings.setupComplete else { return }
+        // One configuration at a time: overlapping runs would each mint a signing key. A request that arrives
+        // meanwhile runs once more afterwards with the latest document.
+        guard !configuringBackground else { reconfigureBackground = true; return }
+        configuringBackground = true
         let token = sessionToken
+        defer {
+            if token == sessionToken {
+                configuringBackground = false
+                if reconfigureBackground { reconfigureBackground = false; Task { await self.configureBackground() } }
+            }
+        }
         do {
             let saved = try await Task.detached(priority: .utility) { try BackgroundConfiguration.load() }.value
-            guard token == sessionToken, state == .unlocked, !isBusy else { return }
+            guard token == sessionToken, state == .unlocked else { return }
             let pair: (privateX963: Data, publicX963: Data)
             if let saved, saved.vaultID == current.vaultID, saved.signingPublicKey == current.backgroundSignerPublicKey {
                 pair = (saved.signingPrivateKey, saved.signingPublicKey)
@@ -1509,7 +1661,7 @@ extension UpOnlySession {
         } catch { backgroundIssues = ["Background source setup"] }
     }
     func applyBackgroundCache() async {
-        guard !isFixture, state == .unlocked, !isBusy, let current = document else { return }
+        guard !isFixture, state == .unlocked, let current = document else { return }
         let token = sessionToken
         guard backgroundCacheRequest == nil else { return }
         let root = Config.supportDirectory
@@ -1519,12 +1671,12 @@ extension UpOnlySession {
         let result = await withTaskCancellationHandler(operation: { await request.value }, onCancel: { request.cancel() })
         guard token == sessionToken, state == .unlocked, !Task.isCancelled, !request.isCancelled else { return }
         backgroundIssues = Array(Set(backgroundIssues + result.issues))
-        // A user edit can finish while the cache is read. Do not interrupt it or
-        // overwrite its draft; the next refresh can apply this unchanged cache.
-        guard !isBusy, !result.packets.isEmpty else { return }
-        do {
-            let updates = result.packets
-            try await mutatePrepared { document in try updates.reduce(document) { try BackgroundRefresh.applying($1, to: $0) } }
-        } catch { if token == sessionToken { backgroundIssues = Array(Set(backgroundIssues + ["Cached updates"])) } }
+        // Each cached update is saved on its own, so one unreadable packet can't hold back the others.
+        var failed = false
+        for update in result.packets {
+            guard token == sessionToken, state == .unlocked else { return }
+            do { try await mutatePrepared { try BackgroundRefresh.applying(update, to: $0) } } catch { failed = true }
+        }
+        if failed, token == sessionToken { backgroundIssues = Array(Set(backgroundIssues + ["Cached updates"])) }
     }
 }

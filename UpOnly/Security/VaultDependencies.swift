@@ -7,7 +7,8 @@ protocol VaultFileIO: Sendable {
     nonisolated func write(_ data: Data, to url: URL, sync: Bool) throws
     nonisolated func replaceItem(at original: URL, withItemAt temp: URL) throws
     nonisolated func installItem(at destination: URL, from staging: URL) throws
-    nonisolated func copyItem(at src: URL, to dst: URL) throws
+    /// A fresh scratch folder on the destination's volume, outside the folder that holds it.
+    nonisolated func replacementDirectory(for destination: URL) throws -> URL
     nonisolated func preserveVerifiedCopy(from src: URL, to dst: URL) throws
     nonisolated func removeItem(at url: URL) throws
     nonisolated func fileExists(at url: URL) -> Bool
@@ -59,8 +60,7 @@ nonisolated final class UnlockTiming: @unchecked Sendable {
             let record: [String: Any] = ["method": method, "milliseconds_from_authentication": milliseconds,
                                        "measured_at": Date().timeIntervalSince1970]
             guard let bytes = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) else { return }
-            try? bytes.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try? DiskFileIO().write(bytes, to: url, sync: false)
         }
     }
 }
@@ -160,10 +160,10 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         try replaceItem(at: destination, withItemAt: staging)
     }
 
-    func copyItem(at src: URL, to dst: URL) throws {
-        lock.lock(); defer { lock.unlock() }
-        guard let data = files[src.path] else { throw CocoaError(.fileNoSuchFile) }
-        files[dst.path] = data
+    func replacementDirectory(for destination: URL) throws -> URL {
+        let url = URL(fileURLWithPath: "/memory-replacement/" + UUID().uuidString, isDirectory: true)
+        try createDirectory(at: url)
+        return url
     }
 
     func preserveVerifiedCopy(from src: URL, to dst: URL) throws {
@@ -267,15 +267,22 @@ final class DiskFileIO: VaultFileIO, @unchecked Sendable {
     }
 
     func write(_ data: Data, to url: URL, sync: Bool) throws {
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: url.path
-        )
-        if sync {
-            let handle = try FileHandle(forWritingTo: url)
+        // Created 0600 from the start, so the file never exists with wider permissions, then renamed into place.
+        let temp = url.deletingLastPathComponent().appendingPathComponent("." + url.lastPathComponent + "." + UUID().uuidString)
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw VaultError.diskWriteFailed }
+        do {
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             defer { try? handle.close() }
-            try handle.synchronize()
+            try handle.write(contentsOf: data)
+            if sync { try Self.flush(fd) }
+        } catch {
+            unlink(temp.path)
+            throw error
+        }
+        guard rename(temp.path, url.path) == 0 else {
+            unlink(temp.path)
+            throw VaultError.diskWriteFailed
         }
     }
 
@@ -303,15 +310,8 @@ final class DiskFileIO: VaultFileIO, @unchecked Sendable {
         try syncDirectory(containing: destination)
     }
 
-    func copyItem(at src: URL, to dst: URL) throws {
-        if fileManager.fileExists(atPath: dst.path) {
-            let backup = dst.appendingPathExtension("replacing")
-            try fileManager.copyItem(at: src, to: backup)
-            try replaceItem(at: dst, withItemAt: backup)
-        } else {
-            try fileManager.copyItem(at: src, to: dst)
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
-        }
+    func replacementDirectory(for destination: URL) throws -> URL {
+        try fileManager.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: destination, create: true)
     }
 
     func preserveVerifiedCopy(from src: URL, to dst: URL) throws {
@@ -319,14 +319,16 @@ final class DiskFileIO: VaultFileIO, @unchecked Sendable {
         if fileManager.fileExists(atPath: temp.path) {
             try fileManager.removeItem(at: temp)
         }
+        // On APFS the copy is a clone, so no data is read or rewritten. A size check stands in for reading
+        // both files back; AES-GCM still authenticates the copy whenever it is opened.
         try fileManager.copyItem(at: src, to: temp)
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temp.path)
-        let handle = try FileHandle(forWritingTo: temp)
-        try handle.synchronize()
-        try handle.close()
-        let original = try Data(contentsOf: src)
-        let copy = try Data(contentsOf: temp)
-        guard original == copy else {
+        let fd = open(temp.path, O_RDONLY)
+        guard fd >= 0 else { throw VaultError.diskWriteFailed }
+        defer { close(fd) }
+        try Self.flush(fd)
+        let sizes = try [src, temp].map { try fileManager.attributesOfItem(atPath: $0.path)[.size] as? Int }
+        guard sizes[0] != nil, sizes[0] == sizes[1] else {
             try? fileManager.removeItem(at: temp)
             throw VaultError.diskWriteFailed
         }
@@ -368,11 +370,17 @@ final class DiskFileIO: VaultFileIO, @unchecked Sendable {
         try DiskAdvisoryLock(url: url)
     }
 
+    /// fsync leaves data in the drive's cache on macOS; F_FULLFSYNC flushes it (plain fsync where unsupported).
+    private static func flush(_ fd: CInt) throws {
+        guard fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0 else { throw VaultError.diskWriteFailed }
+    }
+
     private func syncDirectory(containing url: URL) throws {
         let fd = open(url.deletingLastPathComponent().path, O_RDONLY)
-        guard fd >= 0 else { throw VaultError.diskWriteFailed }
+        // A save panel grants the chosen item but not its folder; the item's own files were already flushed.
+        guard fd >= 0 else { if errno == EPERM || errno == EACCES { return }; throw VaultError.diskWriteFailed }
         defer { close(fd) }
-        guard fsync(fd) == 0 else { throw VaultError.diskWriteFailed }
+        try Self.flush(fd)
     }
 }
 
@@ -441,7 +449,7 @@ final class KeychainVaultKeyStore: VaultKeyStoring, @unchecked Sendable {
             .userPresence,
             &error
         ) else {
-            throw error!.takeRetainedValue() as Error
+            throw error.map { $0.takeRetainedValue() as Error } ?? VaultError.keychainUnavailable(errSecParam)
         }
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -459,11 +467,8 @@ final class KeychainVaultKeyStore: VaultKeyStoring, @unchecked Sendable {
         let added = SecItemAdd(add as CFDictionary, nil)
         if added == errSecSuccess { return }
         if added == errSecDuplicateItem {
-            var update: [String: Any] = [kSecValueData as String: key]
-            if let context {
-                update[kSecUseAuthenticationContext as String] = context
-            }
-            let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+            // Only real item attributes may be updated; the authentication context stays in the query.
+            let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: key] as CFDictionary)
             guard status == errSecSuccess else { throw VaultError.keychainUnavailable(status) }
             return
         }

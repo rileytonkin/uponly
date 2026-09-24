@@ -11,7 +11,8 @@ actor VaultStore {
     private var session: VaultSession?
     private var key: SymmetricKey?
     private var fileLock: AdvisoryLock?
-    private var barrierDepth = 0
+    /// Set when the last unlock or recovery found the current file damaged and reopened the previous generation.
+    private(set) var openedPrevious = false
 
     init(
         layout: VaultLayout,
@@ -112,15 +113,10 @@ actor VaultStore {
         try acquireProcessLock()
         try layout.ensureDirectories(io)
         guard io.fileExists(at: layout.current) else { throw VaultError.notFound }
-        let persisted = try readPersisted(layout.current)
-        let keyData = try keys.load(vaultID: persisted.vaultID, context: authenticator.keychainContext)
-        timing?.mark("key_loaded")
-        let vaultKey = try VaultCrypto.key(from: keyData)
-        let document: VaultDocument
-        do {
-            document = try VaultCrypto.reveal(persisted, key: vaultKey)
-        } catch {
-            throw VaultError.corrupt
+        let (document, vaultKey) = try openNewest { vaultID in
+            let keyData = try keys.load(vaultID: vaultID, context: authenticator.keychainContext)
+            timing?.mark("key_loaded")
+            return try VaultCrypto.key(from: keyData)
         }
         timing?.mark("vault_opened")
         return try fence.publish(ticket) {
@@ -146,10 +142,11 @@ actor VaultStore {
         } catch {
             throw VaultError.wrongRecoveryCode
         }
-        let vaultKey = try VaultCrypto.key(from: keyData)
-        let persisted = try readPersisted(layout.current)
-        let document = try VaultCrypto.reveal(persisted, key: vaultKey)
-        guard document.vaultID == wrapper.vaultID else { throw VaultError.corrupt }
+        let recovered = try VaultCrypto.key(from: keyData)
+        let (document, vaultKey) = try openNewest { vaultID in
+            guard vaultID == wrapper.vaultID else { throw VaultError.corrupt }
+            return recovered
+        }
         return try fence.publish(ticket) {
             try keys.store(vaultID: document.vaultID, key: keyData, context: authenticator.keychainContext)
             let opened = VaultSession(sessionID: UUID(), document: document, fenceTicket: ticket)
@@ -160,7 +157,6 @@ actor VaultStore {
     }
 
     func commit(_ next: VaultDocument, expectedGeneration: UInt64, sessionID: UUID) throws {
-        if barrierDepth > 0 { throw VaultError.barrierHeld }
         guard let session, let key else { throw VaultError.locked }
         guard session.sessionID == sessionID else { throw VaultError.staleSession }
         guard fence.current() == session.fenceTicket else { throw VaultError.locked }
@@ -201,19 +197,37 @@ actor VaultStore {
         }
     }
 
-    func withWriterBarrier<T>(_ body: () throws -> T) throws -> T {
-        barrierDepth += 1
-        defer { barrierDepth -= 1 }
-        return try body()
-    }
-
-    func captureBackupPackage() throws -> BackupPackage {
-        try withWriterBarrier {
-            try pinnedBackupState()
+    /// Wraps the vault key with a new recovery code once the user confirms with Touch ID or the Mac password, and
+    /// replaces the wrapper. The old wrapper isn't kept, so the old code stops opening this vault; if the write fails
+    /// it stays in place and the old code keeps working. The vault key itself doesn't change.
+    func rotateRecovery(_ recovery: RecoveryCode, sessionID: UUID) async throws {
+        guard let session, key != nil, session.sessionID == sessionID, fence.current() == session.fenceTicket else {
+            throw VaultError.locked
+        }
+        let ticket = session.fenceTicket
+        try await authenticator.evaluate()
+        // The vault may have locked while the prompt was up.
+        guard let current = self.session, let key, current.sessionID == sessionID, fence.current() == ticket else {
+            throw VaultError.locked
+        }
+        let wrapper = try VaultCrypto.wrapVaultKey(VaultCrypto.keyData(key), recovery: recovery, vaultID: current.document.vaultID)
+        let bytes = try VaultJSON.encode(wrapper)
+        let temp = layout.recovery.appendingPathExtension("tmp")
+        do {
+            try io.write(bytes, to: temp, sync: true)
+            try fence.publish(ticket) {
+                guard self.session?.sessionID == sessionID else { throw VaultError.staleSession }
+                try io.replaceItem(at: layout.recovery, withItemAt: temp)
+            }
+        } catch {
+            try? io.removeItem(at: temp)
+            if error is VaultError { throw error }
+            throw VaultError.diskWriteFailed
         }
     }
 
-    private func pinnedBackupState() throws -> BackupPackage {
+    // Runs on the actor, so no commit can interleave with the capture.
+    func captureBackupPackage() throws -> BackupPackage {
         guard io.fileExists(at: layout.current), io.fileExists(at: layout.recovery) else {
             throw VaultError.notFound
         }
@@ -250,41 +264,66 @@ actor VaultStore {
         )
     }
 
-    func deleteInboxFile(at url: URL, batchID: UUID) throws {
-        if barrierDepth > 0 { throw VaultError.barrierHeld }
-        let session = try currentSession()
-        guard session.document.acceptedBatchIDs.contains(batchID) else { throw VaultError.inboxNotCommitted }
-        let name = try SafeFileName.require(url.lastPathComponent)
-        let expected = layout.inbox.appendingPathComponent(name)
-        guard expected.standardizedFileURL.path == url.standardizedFileURL.path else {
-            throw VaultError.unsafeFilename
-        }
-        try io.removeItem(at: expected)
-    }
-
-    func pendingInboxBytes() throws -> Int {
-        try io.contentsOfDirectory(at: layout.inbox).reduce(0) { total, url in
-            total + (try io.data(at: url)).count
-        }
-    }
-
     func releaseEmptyDestination() throws {
         guard !io.fileExists(at: layout.current), session == nil else { throw VaultError.alreadyExists }
         if io.fileExists(at: layout.root) {
-            let children = try io.contentsOfDirectory(at: layout.root)
+            // A setup that failed after creating the folders leaves an empty Inbox; that is still an empty vault.
+            let children = try io.contentsOfDirectory(at: layout.root).filter {
+                $0.lastPathComponent != layout.inbox.lastPathComponent || !((try? io.contentsOfDirectory(at: layout.inbox))?.isEmpty ?? false)
+            }
             guard children.isEmpty else { throw VaultError.alreadyExists }
             try io.removeItem(at: layout.root)
         }
         fileLock?.release(); fileLock = nil
     }
 
-    func writeInbox(_ bytes: Data, name: String) throws {
-        let safe = try SafeFileName.require(name)
-        let pending = try pendingInboxBytes()
-        if pending + bytes.count > VaultLimits.maxPendingInboxBytes {
-            throw VaultError.oversizedInbox
+    /// Replaces this unlocked vault with a verified backup and opens it; the caller has just authenticated the user, so
+    /// the backup's key is saved to the Keychain with that authentication. The vault's folder is moved to `aside`, never
+    /// deleted. A refused backup or code throws before anything changes. After that the session is closed, and any
+    /// failure removes the restored copy, puts the original folder back and leaves the vault locked.
+    func replace(with package: BackupPackage, recovery: RecoveryCode, aside: URL) throws -> VaultSession {
+        guard let current = session, let currentKey = key, fence.current() == current.fenceTicket else { throw VaultError.locked }
+        try BackupCoordinator.verifyPackage(package)
+        let wrapper = try VaultJSON.decode(RecoveryWrapperFile.self, from: package.recovery)
+        let restoredKey = try VaultCrypto.key(from: VaultCrypto.unwrapVaultKey(wrapper, recovery: recovery))
+        // A backup of this same vault carries this vault's key. One that doesn't would overwrite the key this vault needs.
+        if wrapper.vaultID == current.document.vaultID, VaultCrypto.keyData(restoredKey) != VaultCrypto.keyData(currentKey) {
+            throw VaultError.backupIncoherent
         }
-        try io.write(bytes, to: layout.inbox.appendingPathComponent(safe), sync: true)
+        guard !io.fileExists(at: aside) else { throw VaultError.alreadyExists }
+        // Nothing the replaced session prepared may be saved from here, whether the backup opens or the original goes back.
+        // The authenticator stays valid: the restore's Keychain write needs it.
+        fence.bump()
+        let ticket = fence.current()
+        session = nil; key = nil
+        do {
+            try acquireProcessLock()
+            try io.installItem(at: aside, from: layout.root)
+            // The restore takes the process lock itself.
+            fileLock?.release(); fileLock = nil
+            let restored = try BackupCoordinator.restore(
+                package: package, recovery: recovery, keys: keys, layout: layout, io: io, authenticator: authenticator
+            )
+            try acquireProcessLock()
+            return try fence.publish(ticket) {
+                let opened = VaultSession(sessionID: UUID(), document: restored.document, fenceTicket: ticket)
+                self.session = opened
+                self.key = restoredKey
+                self.openedPrevious = false
+                return opened
+            }
+        } catch {
+            session = nil; key = nil
+            if io.fileExists(at: aside) { try putBack(from: aside) }
+            throw error
+        }
+    }
+
+    /// Puts back the folder `replace` moved aside. Whatever a failed restore left in its place is only a copy of the backup.
+    private func putBack(from aside: URL) throws {
+        try? acquireProcessLock()
+        if io.fileExists(at: layout.root) { try io.removeItem(at: layout.root) }
+        try io.installItem(at: layout.root, from: aside)
     }
 
     private func acquireProcessLock() throws {
@@ -293,6 +332,40 @@ actor VaultStore {
             try io.createDirectory(at: layout.root.deletingLastPathComponent())
         }
         fileLock = try io.acquireExclusiveLock(at: layout.lockFile)
+    }
+
+    /// Opens the current file. If it is damaged (rather than written by a newer version), the previous generation
+    /// is opened instead and saved back as current, and `openedPrevious` lets the caller tell the user.
+    private func openNewest(key: (UUID) throws -> SymmetricKey) throws -> (document: VaultDocument, key: SymmetricKey) {
+        openedPrevious = false
+        var vaultID: UUID?, vaultKey: SymmetricKey?
+        do {
+            let persisted = try readPersisted(layout.current)
+            vaultID = persisted.vaultID
+            let currentKey = try key(persisted.vaultID)
+            vaultKey = currentKey
+            do { return (try VaultCrypto.reveal(persisted, key: currentKey), currentKey) }
+            catch VaultError.unknownSchema { throw VaultError.unknownSchema }
+            catch { throw VaultError.corrupt }
+        } catch VaultError.corrupt {
+            guard let bytes = try? io.data(at: layout.previous),
+                  let persisted = try? VaultJSON.decode(PersistedVaultFile.self, from: bytes),
+                  persisted.format == VaultSchema.persistedFile, vaultID == nil || persisted.vaultID == vaultID else { throw VaultError.corrupt }
+            let previousKey = try vaultKey ?? key(persisted.vaultID)
+            guard let document = try? VaultCrypto.reveal(persisted, key: previousKey) else { throw VaultError.corrupt }
+            let temp = layout.current.appendingPathExtension("tmp")
+            // Keep the damaged file beside the vault rather than discarding it.
+            if let damaged = try? io.data(at: layout.current) { try? io.write(damaged, to: layout.current.appendingPathExtension("damaged"), sync: true) }
+            do {
+                try io.write(bytes, to: temp, sync: true)
+                try io.replaceItem(at: layout.current, withItemAt: temp)
+            } catch {
+                try? io.removeItem(at: temp)
+                throw VaultError.diskWriteFailed
+            }
+            openedPrevious = true
+            return (document, previousKey)
+        }
     }
 
     private func readPersisted(_ url: URL) throws -> PersistedVaultFile {

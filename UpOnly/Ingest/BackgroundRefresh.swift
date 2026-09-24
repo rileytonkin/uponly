@@ -54,6 +54,8 @@ actor BackgroundRefreshSchedule {
         var vaultID: UUID
         var attemptedAt: Date
         var failed: Bool
+        /// Consecutive failures; each doubles the retry delay.
+        var failures: Int?
     }
     private func path(_ root: URL, source: String) -> URL { root.appendingPathComponent("Background-" + source + ".schedule") }
     private func record(vaultID: UUID, root: URL, source: String) -> Record? {
@@ -63,18 +65,26 @@ actor BackgroundRefreshSchedule {
     }
     func claim(vaultID: UUID, root: URL, source: String = "banks", now: Date = Date()) throws -> Bool {
         try Task.checkCancellation()
-        if let last = record(vaultID: vaultID, root: root, source: source),
-           now >= last.attemptedAt, now.timeIntervalSince(last.attemptedAt) < Self.interval(for: source) { return false }
-        try finish(vaultID: vaultID, root: root, failed: false, source: source, now: now)
+        let last = record(vaultID: vaultID, root: root, source: source)
+        if let last, now >= last.attemptedAt {
+            // A failure is retried after a twelfth of the interval (five minutes for hourly sources), doubling up to the interval.
+            let interval = Self.interval(for: source)
+            let wait = last.failed ? min(interval, interval / 12 * Double(1 << min(max((last.failures ?? 1) - 1, 0), 12))) : interval
+            if now.timeIntervalSince(last.attemptedAt) < wait { return false }
+        }
+        try write(Record(vaultID: vaultID, attemptedAt: now, failed: false, failures: last?.failures), root: root, source: source)
         return true
     }
     func finish(vaultID: UUID, root: URL, failed: Bool, source: String = "banks", now: Date = Date()) throws {
+        let failures = failed ? (record(vaultID: vaultID, root: root, source: source)?.failures ?? 0) + 1 : nil
+        try write(Record(vaultID: vaultID, attemptedAt: now, failed: failed, failures: failures), root: root, source: source)
+    }
+    private func write(_ record: Record, root: URL, source: String) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try VaultJSON.encode(Record(vaultID: vaultID, attemptedAt: now, failed: failed)).write(to: path(root, source: source), options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path(root, source: source).path)
+        try DiskFileIO().write(VaultJSON.encode(record), to: path(root, source: source), sync: false)
     }
     func failed(vaultID: UUID, root: URL, source: String = "banks") -> Bool { record(vaultID: vaultID, root: root, source: source)?.failed == true }
-    /// Forgets the last attempt so a changed key or newly enabled source is tried straight away.
+    /// Forgets the last attempt so a changed key, a newly enabled source or an attempt cut short by going offline is tried straight away.
     func reset(vaultID: UUID, root: URL, sources: [String]) {
         for source in sources where record(vaultID: vaultID, root: root, source: source) != nil {
             try? FileManager.default.removeItem(at: path(root, source: source))
@@ -123,9 +133,7 @@ nonisolated enum BackgroundRefresh {
         let bytes = try VaultJSON.encode(BackgroundEnvelope.seal(packet, configuration: configuration))
         guard bytes.count <= 8 * 1024 * 1024 else { throw VaultError.oversizedInbox }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let url = path(packet.source, root: root)
-        try bytes.write(to: url, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try DiskFileIO().write(bytes, to: path(packet.source, root: root), sync: false)
     }
     // File IO, signature verification, decryption and decoding must never run
     // on the UI executor while the newly unlocked menu is trying to appear.
@@ -146,21 +154,35 @@ nonisolated enum BackgroundRefresh {
         }
         return Task.isCancelled ? ([], []) : (packets, issues)
     }
+    /// Claims the source's slot, fetches and seals its packet, and records the outcome. Returns false if the
+    /// source is failing. Going offline or being cancelled isn't a failed attempt: the slot is freed for the reconnect.
+    static func scheduled(_ source: String, configuration: BackgroundConfiguration, root: URL, schedule: BackgroundRefreshSchedule = .shared,
+                          fetch: () async throws -> BackgroundPacket) async -> Bool {
+        let vaultID = configuration.vaultID
+        do {
+            guard try await schedule.claim(vaultID: vaultID, root: root, source: source) else {
+                return await !schedule.failed(vaultID: vaultID, root: root, source: source)
+            }
+        } catch { return false }
+        do {
+            try save(try await fetch(), configuration: configuration, root: root)
+            try await schedule.finish(vaultID: vaultID, root: root, failed: false, source: source)
+            return true
+        } catch {
+            if PublicPrices.isOffline(error) { await schedule.reset(vaultID: vaultID, root: root, sources: [source]) }
+            else { try? await schedule.finish(vaultID: vaultID, root: root, failed: true, source: source) }
+            return false
+        }
+    }
     /// Separate envelopes preserve each source's last success if another fails.
     static func fetch(configuration: BackgroundConfiguration, root: URL) async -> [String] {
         var errors: [String] = []
         if configuration.pricesEnabled && !configuration.crypto.isEmpty {
-            do {
-                if try await BackgroundRefreshSchedule.shared.claim(vaultID: configuration.vaultID, root: root, source: "crypto") {
-                    let quotes = try await PublicPrices.quotes(ids: configuration.crypto, key: configuration.coinGeckoKey)
-                    try save(BackgroundPacket(source: "crypto", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes)), configuration: configuration, root: root)
-                    try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: false, source: "crypto")
-                }
-                if await BackgroundRefreshSchedule.shared.failed(vaultID: configuration.vaultID, root: root, source: "crypto") { errors.append("Crypto") }
-            } catch {
-                try? await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: true, source: "crypto")
-                errors.append("Crypto")
+            let ok = await scheduled("crypto", configuration: configuration, root: root) {
+                let quotes = try await PublicPrices.quotes(ids: configuration.crypto, key: configuration.coinGeckoKey)
+                return BackgroundPacket(source: "crypto", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes))
             }
+            if !ok { errors.append("Crypto") }
         }
         if configuration.fxEnabled && !configuration.currencies.isEmpty {
             do {
@@ -170,8 +192,7 @@ nonisolated enum BackgroundRefresh {
             } catch { errors.append("Exchange rates") }
         }
         if configuration.metalsEnabled && !configuration.metals.isEmpty {
-            do {
-                if try await BackgroundRefreshSchedule.shared.claim(vaultID: configuration.vaultID, root: root, source: "metals") {
+            let ok = await scheduled("metals", configuration: configuration, root: root) {
                 var quotes: [QuoteObservation] = []
                 for metal in configuration.metals {
                     try Task.checkCancellation()
@@ -179,30 +200,18 @@ nonisolated enum BackgroundRefresh {
                     quotes.append(try PriceHistory.decodeMetal(data, metal: metal, fetchedAt: Date()))
                     try await Task.sleep(for: .seconds(1.1))
                 }
-                try save(BackgroundPacket(source: "metals", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes)), configuration: configuration, root: root)
-                try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: false, source: "metals")
-                }
-                if await BackgroundRefreshSchedule.shared.failed(vaultID: configuration.vaultID, root: root, source: "metals") { errors.append("Metals") }
-            } catch {
-                try? await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: true, source: "metals")
-                errors.append("Metals")
+                return BackgroundPacket(source: "metals", fetchedAt: Date(), prices: PriceUpdate(quotes: quotes))
             }
+            if !ok { errors.append("Metals") }
         }
         #if UPONLY_PERSONAL
         if configuration.wiseEnabled {
-            do {
-                if try await BackgroundRefreshSchedule.shared.claim(vaultID: configuration.vaultID, root: root) {
-                    do {
-                        let snapshot = try await WiseAPI.fetch(WiseConnection.load())
-                        let profiles = snapshot.profiles.map { BackgroundBankProfile(profile: $0.profile, balances: $0.balances, activities: $0.activities) }
-                        try save(BackgroundPacket(source: "banks", fetchedAt: snapshot.fetchedAt, banks: profiles), configuration: configuration, root: root)
-                        try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: false)
-                    } catch {
-                        try await BackgroundRefreshSchedule.shared.finish(vaultID: configuration.vaultID, root: root, failed: true)
-                    }
-                }
-                if await BackgroundRefreshSchedule.shared.failed(vaultID: configuration.vaultID, root: root) { errors.append("Bank balances") }
-            } catch { errors.append("Bank balances") }
+            let ok = await scheduled("banks", configuration: configuration, root: root) {
+                let snapshot = try await WiseAPI.fetch(WiseConnection.load())
+                let profiles = snapshot.profiles.map { BackgroundBankProfile(profile: $0.profile, balances: $0.balances, activities: $0.activities) }
+                return BackgroundPacket(source: "banks", fetchedAt: snapshot.fetchedAt, banks: profiles)
+            }
+            if !ok { errors.append("Bank balances") }
         }
         if configuration.accountingEnabled {
             do {

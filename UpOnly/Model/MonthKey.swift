@@ -4,9 +4,12 @@ nonisolated struct MonthKey: Hashable, Comparable, Sendable, CustomStringConvert
     let year: Int
     let month: Int
 
+    /// Months outside 1...12 roll into the neighbouring years, so every key names a real month.
     init(year: Int, month: Int) {
-        self.year = year
-        self.month = month
+        var (years, index) = (month - 1).quotientAndRemainder(dividingBy: 12)
+        if index < 0 { years -= 1; index += 12 }
+        self.year = year + years
+        self.month = index + 1
     }
 
     init?(_ raw: String) {
@@ -33,47 +36,32 @@ nonisolated struct MonthKey: Hashable, Comparable, Sendable, CustomStringConvert
         (lhs.year, lhs.month) < (rhs.year, rhs.month)
     }
 
-    static func current(now: Date = Date(), calendar: Calendar = .current) -> MonthKey {
-        let parts = calendar.dateComponents([.year, .month], from: now)
+    /// The Gregorian UTC month, like every statement, sync and ownership month, whatever calendar the Mac uses.
+    static func current(now: Date = Date()) -> MonthKey {
+        let parts = UTCDay.calendar.dateComponents([.year, .month], from: now)
         return MonthKey(year: parts.year ?? 2026, month: parts.month ?? 1)
     }
 
-    static func lastComplete(now: Date = Date(), calendar: Calendar = .current) -> MonthKey {
-        current(now: now, calendar: calendar).previous
-    }
-
-    var displayTitle: String {
-        var components = DateComponents()
-        components.year = year
-        components.month = month
-        guard let date = Calendar.current.date(from: components) else { return description }
-        return Self.titleFormatter.string(from: date).uppercased()
-    }
-
     var title: String {
-        var components = DateComponents()
-        components.year = year
-        components.month = month
-        guard let date = Calendar.current.date(from: components) else { return description }
+        guard let date = UTCDay.calendar.date(from: DateComponents(year: year, month: month)) else { return description }
         return Self.titleFormatter.string(from: date)
     }
 
     var shortName: String {
-        var components = DateComponents()
-        components.year = year
-        components.month = month
-        guard let date = Calendar.current.date(from: components) else { return description }
+        guard let date = UTCDay.calendar.date(from: DateComponents(year: year, month: month)) else { return description }
         return Self.shortFormatter.string(from: date)
     }
 
-    nonisolated(unsafe) private static let titleFormatter: DateFormatter = {
+    private static let titleFormatter: DateFormatter = {
         let f = DateFormatter()
+        f.calendar = UTCDay.calendar; f.timeZone = UTCDay.timeZone
         f.dateFormat = "MMMM yyyy"
         return f
     }()
 
-    nonisolated(unsafe) private static let shortFormatter: DateFormatter = {
+    private static let shortFormatter: DateFormatter = {
         let f = DateFormatter()
+        f.calendar = UTCDay.calendar; f.timeZone = UTCDay.timeZone
         f.dateFormat = "MMMM"
         return f
     }()

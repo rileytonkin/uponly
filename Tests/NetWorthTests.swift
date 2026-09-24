@@ -332,7 +332,6 @@ struct NetWorthTests {
         let result = NetWorthCalculator.value(at: day4, scope: .allTracked, document: doc, now: day4)
         #expect(result.total == nil)
         #expect(result.lastComplete?.value == 100)
-        #expect(result.needsUpdate)
         #expect(result.missing.contains { $0.reason == "quote" })
     }
 
@@ -467,7 +466,7 @@ struct NetWorthTests {
         #expect(gap.missing.contains { $0.reason == "quote" })
     }
 
-    @Test("A deposit is labelled Change, not a return")
+    @Test("A deposit is a change in balance, not a return")
     func depositsAreChange() throws {
         let day1 = utc(2026, 9, 1)
         let day4 = utc(2026, 9, 4)
@@ -490,7 +489,6 @@ struct NetWorthTests {
         )
         let second = NetWorthCalculator.value(at: day4, scope: .banks, document: doc, now: day4)
         let change = NetWorthCalculator.change(from: first, to: second)
-        #expect(change?.kind == .change)
         #expect(change?.amount == 50)
     }
 
@@ -526,6 +524,114 @@ struct NetWorthTests {
         let current = NetWorthCalculator.value(at: day4, scope: .banks, document: doc, now: day4)
         #expect(historic.total == 100)
         #expect(current.total == 200)
+    }
+
+    @Test("Full-precision token values still add up to a total")
+    func highPrecisionValuation() throws {
+        let day = utc(2026, 9, 4)
+        var doc = document()
+        let bank = Account(name: "Checking", currency: "USD")
+        doc.accounts = [bank]
+        doc.trackedBankAccountIDs = [bank.id]
+        doc.bankBalances = [
+            BankBalanceObservation(
+                id: UUID(), accountID: bank.id, amount: PreciseDecimal(Decimal(string: "12345.67")!),
+                currency: "USD", observedAt: day, source: "manual", sourceIdentity: "checking"
+            ),
+        ]
+        let portfolio = Portfolio(name: "Tokens", createdAt: utc(2026, 8, 1))
+        doc.portfolios = [portfolio]
+        // 36 significant digits each; their sum with the balance needs 41, more than Decimal holds exactly.
+        doc = try HoldingMutations.addHolding(
+            portfolioID: portfolio.id, assetID: CanonicalAssetID("tiny-token"),
+            assetName: "Tiny", quantity: Decimal(string: "1234.567890123456789012")!, at: day, document: doc
+        )
+        doc.quotes = [
+            QuoteObservation(
+                assetID: try CanonicalAssetID("tiny-token"),
+                priceUSD: PreciseDecimal(Decimal(string: "0.000012345678901234")!),
+                providerTime: day, fetchedAt: day, provider: "coingecko"
+            ),
+        ]
+        let result = NetWorthCalculator.value(at: day, scope: .allTracked, document: doc, now: day)
+        let total = try #require(result.total)
+        #expect(total > Decimal(string: "12345.685")! && total < Decimal(string: "12345.686")!)
+        #expect(result.missing.isEmpty)
+        #expect(AssetOwnership.personalValue(at: day, scope: .allTracked, document: doc, now: day).total != nil)
+    }
+
+    @Test("A past day's balance is judged stale at that day, not today")
+    func historicalStaleness() throws {
+        let observed = utc(2026, 9, 1, hour: 9)
+        let now = utc(2026, 9, 20)
+        var doc = document()
+        let account = Account(name: "Sample bank", currency: "USD")
+        doc.accounts = [account]
+        doc.trackedBankAccountIDs = [account.id]
+        doc.bankBalances = [
+            BankBalanceObservation(
+                id: UUID(), accountID: account.id, amount: PreciseDecimal(10),
+                currency: "USD", observedAt: observed, source: "manual", sourceIdentity: "bank"
+            ),
+        ]
+        let sameDay = NetWorthCalculator.value(at: utc(2026, 9, 1, hour: 23, minute: 59), scope: .banks, document: doc, now: now)
+        #expect(sameDay.stale.isEmpty && sameDay.components.first?.isStale == false)
+        let later = NetWorthCalculator.value(at: utc(2026, 9, 5), scope: .banks, document: doc, now: now)
+        #expect(later.components.first?.isStale == true)
+    }
+
+    @Test("Rebuilding history rewrites each day in range once per scope and leaves other days alone")
+    func rebuildHistoryRange() throws {
+        let day1 = utc(2026, 9, 1)
+        var doc = document()
+        let account = Account(name: "Checking", currency: "USD")
+        doc.accounts = [account]
+        doc.trackedBankAccountIDs = [account.id]
+        doc.bankBalances = [
+            BankBalanceObservation(
+                id: UUID(), accountID: account.id, amount: PreciseDecimal(100),
+                currency: "USD", observedAt: day1, source: "manual", sourceIdentity: "checking"
+            ),
+        ]
+        func sample(_ day: Date, _ total: Decimal) -> DailyValuation {
+            DailyValuation(utcDay: UTCDay.start(of: day), scope: .banks, total: PreciseDecimal(total), isComplete: true,
+                           components: [], computedAt: day, includedAccountIDs: [], includedPortfolioIDs: [])
+        }
+        doc.dailyValuations = [sample(utc(2026, 8, 20), 1), sample(day1, 5)]
+        let rebuilt = HoldingMutations.rebuildHistory(from: day1, to: utc(2026, 9, 3), document: doc, now: utc(2026, 9, 5))
+        // Sep 1 and Sep 2, each for all assets and for banks, plus the untouched August day.
+        #expect(rebuilt.dailyValuations.count == 5)
+        #expect(rebuilt.storedValuation(day: day1, scope: .banks)?.total?.value == 100)
+        #expect(rebuilt.storedValuation(day: utc(2026, 9, 2), scope: .allTracked)?.total?.value == 100)
+        #expect(rebuilt.storedValuation(day: utc(2026, 8, 20), scope: .banks)?.total?.value == 1)
+    }
+
+    @Test("Months are Gregorian UTC months, whatever calendar or time zone the Mac uses")
+    func gregorianUTCMonths() throws {
+        let lateSeptember = utc(2026, 9, 30, hour: 23, minute: 30)
+        #expect(MonthKey.current(now: lateSeptember) == MonthKey(year: 2026, month: 9))
+        #expect(MonthKey.current(now: lateSeptember.addingTimeInterval(3600)) == MonthKey(year: 2026, month: 10))
+        // Calendar.current can't be swapped inside a test; a Japanese calendar reads this year as 8 (Reiwa),
+        // and the month must not come from it.
+        #expect(Calendar(identifier: .japanese).component(.year, from: lateSeptember) == 8)
+        #expect(MonthKey.current(now: lateSeptember).year == 2026)
+        #expect(AssetOwnership.month(at: lateSeptember) == MonthKey.current(now: lateSeptember))
+        #expect(MonthKey(year: 2026, month: 9).title.contains("2026"))
+        // Out-of-range months roll into the neighbouring year instead of naming a month that doesn't exist.
+        #expect(MonthKey(year: 2026, month: 13) == MonthKey(year: 2027, month: 1))
+        #expect(MonthKey(year: 2026, month: 0) == MonthKey(year: 2025, month: 12))
+        #expect(DashboardPeriod.interval(month: MonthKey(year: 2025, month: 13), period: .monthly, now: lateSeptember).start == utc(2026, 1, 1, hour: 0))
+    }
+
+    @Test("UTC day starts match a UTC Gregorian calendar's")
+    func utcDayArithmetic() {
+        var seconds: [TimeInterval] = [0, 0.001, -0.001, 86_399.999, 86_400, -86_400, -86_400.5, 978_307_200, 978_307_199.999,
+                                       1_000_000_000.25, 1_790_812_799.999, 4_102_444_800, -2_208_988_800]
+        seconds += stride(from: -3_000_000_000.0, to: 3_000_000_000.0, by: 7_777_777.777).map { $0 }
+        for value in seconds {
+            let date = Date(timeIntervalSince1970: value)
+            #expect(UTCDay.start(of: date) == UTCDay.calendar.startOfDay(for: date), "\(value)")
+        }
     }
 }
 
@@ -585,7 +691,7 @@ struct OwnedAssetTests {
     @Test("Company cash and crypto use historical ownership; full balances stay unchanged")
     func historicalOwnership() throws {
         var doc = document(); doc.businessAccounting = [try book()]
-        let bank = Account(name: "Agency", currency: "USD")
+        let bank = Account(name: "Agency", currency: "USD", externalProfileID: "agency")
         let personal = Account(name: "Personal", currency: "USD")
         doc.accounts = [bank, personal]
         let portfolio = Portfolio(name: "Company crypto", ownerBusinessID: "agency")
@@ -602,7 +708,7 @@ struct OwnedAssetTests {
     @Test("Historical snapshots are reweighted once, without mutating stored totals")
     func storedSnapshot() throws {
         var doc = document(); doc.businessAccounting = [try book()]
-        let account = Account(name: "Agency", currency: "USD"); doc.accounts = [account]
+        let account = Account(name: "Agency", currency: "USD", externalProfileID: "agency"); doc.accounts = [account]
         let day = try date("2024-12-31"), now = try date("2026-09-06")
         let values = [component(account.id, usd: 900)]
         doc.dailyValuations = [DailyValuation(utcDay: day, scope: .allTracked, total: PreciseDecimal(900), isComplete: true, components: values, computedAt: day, includedAccountIDs: [account.id], includedPortfolioIDs: [])]
@@ -634,6 +740,82 @@ struct OwnedAssetTests {
         doc.dailyValuations = [DailyValuation(utcDay: try date("2024-02-29"), scope: .banks, total: PreciseDecimal(100), isComplete: true, components: [], computedAt: now, includedAccountIDs: [], includedPortfolioIDs: []), DailyValuation(utcDay: try date("2024-03-01"), scope: .banks, total: PreciseDecimal(200), isComplete: true, components: [], computedAt: now, includedAccountIDs: [], includedPortfolioIDs: [])]
         #expect(DashboardPeriod.samples(in: february, scope: .banks, document: doc).count == 1)
         #expect(DashboardPeriod.samples(in: february, scope: .allTracked, document: doc).isEmpty)
+    }
+    private func statementRow(_ account: Account, _ day: String, _ amount: Decimal, currency: String = "GBP") -> Entry {
+        var entry = Entry(month: MonthKey(String(day.prefix(7)))!, kind: .expense, amount: amount, currency: currency, label: day,
+                          source: .csv, sourceRef: account.id.uuidString + ":" + day + currency)
+        entry.day = day; entry.outflow = true
+        return entry
+    }
+    private func balance(_ account: Account, _ day: String, _ amount: Decimal) throws -> BankBalanceObservation {
+        BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: account.currency,
+                               observedAt: try date(day).addingTimeInterval(3600), source: "manual", sourceIdentity: account.id.uuidString)
+    }
+    @Test("Statement history is only derived from a balance within a week of the last statement day, in the account's currency")
+    func reconstructionNeedsCoveredAnchor() throws {
+        var doc = document()
+        let monzo = Account(name: "Monzo", currency: "GBP"); doc.accounts = [monzo]
+        let now = try date("2026-09-24")
+        // A March statement and today's balance: the months between were never imported, so nothing is derived.
+        doc.entries = [statementRow(monzo, "2025-03-10", 40), statementRow(monzo, "2025-03-28", 60)]
+        doc.bankBalances = [try balance(monzo, "2026-09-20", 1000)]
+        #expect(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: now) == nil)
+        // The statement's closing balance anchors it; the later balance is left alone.
+        doc.bankBalances.append(try balance(monzo, "2025-03-31", 700))
+        #expect(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: now)?.map(\.amount.value) == [760, 700])
+        doc.entries.append(statementRow(monzo, "2025-03-25", 999, currency: "EUR"))
+        #expect(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: now)?.map(\.amount.value) == [760, 700])
+    }
+    @Test("Rebuilt history starts tracking earlier without dropping later tracking changes")
+    func reconstructionKeepsLaterTracking() throws {
+        var doc = document()
+        let monzo = Account(name: "Monzo", currency: "GBP"); doc.accounts = [monzo]
+        doc.setBankTracked(monzo.id, tracked: true, at: try date("2026-01-10"))
+        doc.setBankTracked(monzo.id, tracked: false, at: try date("2026-03-01"))
+        doc.setBankTracked(monzo.id, tracked: true, at: try date("2026-05-01"))
+        doc.entries = [statementRow(monzo, "2025-12-15", 20)]
+        doc.bankBalances = [try balance(monzo, "2025-12-20", 500)]
+        let now = try date("2026-09-20")
+        #expect(BalanceReconstruction.apply(accountIDs: [monzo.id], to: &doc, now: now) != nil)
+        #expect(doc.isBankTracked(monzo.id, at: try date("2025-12-16")))
+        #expect(!doc.isBankTracked(monzo.id, at: try date("2026-04-01")))
+        #expect(doc.isBankTracked(monzo.id, at: now))
+    }
+    @Test("Deriving the same statements again the same day changes nothing, today's row included")
+    func reconstructionIsIdempotent() throws {
+        var doc = document()
+        let monzo = Account(name: "Monzo", currency: "GBP"); doc.accounts = [monzo]
+        let anchor = try balance(monzo, "2026-09-20", 1000)
+        doc.bankBalances = [anchor]; doc.setBankTracked(monzo.id, tracked: true, at: anchor.observedAt)
+        doc.entries = [statementRow(monzo, "2026-09-18", 30), statementRow(monzo, "2026-09-21", 10)]
+        let morning = try date("2026-09-21").addingTimeInterval(9 * 3600)
+        #expect(BalanceReconstruction.apply(accountIDs: [monzo.id], to: &doc, now: morning) != nil)
+        let saved = doc
+        #expect(BalanceReconstruction.apply(accountIDs: [monzo.id], to: &doc, now: morning.addingTimeInterval(8 * 3600)) == nil)
+        #expect(doc == saved)
+    }
+    @Test("A balance dated before an account's first tracked day moves tracking back, unless it was left out in between")
+    func backdatedBalanceTracking() throws {
+        var doc = document(); let id = UUID(), january = try date("2026-01-01")
+        doc.setBankTracked(id, tracked: true, at: try date("2026-03-01"))
+        let moved = doc.backdateBankTracking(id, to: january)
+        let movedAgain = doc.backdateBankTracking(id, to: january)
+        #expect(moved && !movedAgain)
+        #expect(doc.isBankTracked(id, at: try date("2026-01-02")))
+        var excluded = document()
+        excluded.setBankTracked(id, tracked: false, at: try date("2026-02-01"))
+        excluded.setBankTracked(id, tracked: true, at: try date("2026-03-01"))
+        let movedPastExclusion = excluded.backdateBankTracking(id, to: january)
+        #expect(!movedPastExclusion)
+        #expect(!excluded.isBankTracked(id, at: try date("2026-01-02")))
+    }
+    @Test("Only a connected bank profile's name ties an account to a company; ownership labels stay short")
+    func companyByProfileNameOnly() throws {
+        var doc = document(); doc.businessAccounting = [try book()]
+        #expect(AssetOwnership.businessID(for: Account(name: "Agency", currency: "USD"), in: doc) == nil)
+        #expect(AssetOwnership.businessID(for: Account(name: "Agency · USD", currency: "USD", externalProfileID: "a"), in: doc) == "agency")
+        #expect(OwnershipPeriod(fromMonth: "2025-01", numerator: 2, denominator: 3).label == "66.67%")
+        #expect(OwnershipPeriod(fromMonth: "2025-01", numerator: 1, denominator: 2).label == "50%")
     }
 }
 
@@ -673,5 +855,82 @@ struct PurchaseLotTests {
         doc.purchases = [foreign]
         let native = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 90000, document: doc, at: utc(2026, 9, 4))
         #expect(native.costUSD == nil && native.costNative == 500 && native.costCurrency == "GBP")
+    }
+    @Test("Cost follows the quantity still held; lots covering less than is held give no gain")
+    func averageCostAndCoverage() throws {
+        var doc = document()
+        let portfolio = Portfolio(name: "Ledger", createdAt: utc(2026, 1, 1))
+        doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 2, at: utc(2026, 1, 10), document: doc)
+        let holding = try #require(doc.holdings.first)
+        doc.purchases = [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(2), paid: PreciseDecimal(60000), currency: "USD", at: utc(2026, 1, 10))]
+        // Half sold: the remaining coin carries half of what was paid.
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 1, at: utc(2026, 5, 1), document: doc)
+        let sold = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 70000, document: doc, at: utc(2026, 9, 4))
+        #expect(sold.costUSD == 30000 && sold.gainUSD == 40000 && sold.coveredQuantity == nil)
+        // Only 2 of 8 have a recorded price: report what those cost, and no gain.
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 8, at: utc(2026, 6, 1), document: doc)
+        let partial = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 560000, document: doc, at: utc(2026, 9, 4))
+        #expect(partial.costUSD == 60000 && partial.gainUSD == nil && partial.returnFraction == nil)
+        #expect(partial.coveredQuantity == 2 && partial.heldQuantity == 8)
+    }
+}
+
+@MainActor struct CashFlowTests {
+    private func document() -> VaultDocument {
+        let inbox = VaultCrypto.makeInboxKeyPair()
+        return VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
+    }
+    @Test("Reconcile makes a company's payment to you income, never money you sent it")
+    func reconcileKeepsDirection() {
+        var doc = document()
+        doc.businessAccounting = [BusinessBook(id: "studio", name: "Studio", ownership: [OwnershipPeriod(fromMonth: "2026-01", numerator: 1, denominator: 2)], firstMonth: "2026-01", sourceURL: "", basis: "", fetchedAt: Date(), transferCounterparties: ["Studio App"])]
+        let account = UUID()
+        func row(_ ref: String, outflow: Bool?) -> Entry {
+            var entry = Entry(month: MonthKey("2026-02")!, kind: .transfer, amount: 100, currency: "USD", label: "Studio App", source: .csv, sourceRef: account.uuidString + ":" + ref)
+            entry.outflow = outflow
+            return entry
+        }
+        doc.entries = [row("in", outflow: false), row("out", outflow: true), row("unknown", outflow: nil)]
+        OwnerPayments.reconcile(in: &doc)
+        #expect(doc.entries.map(\.kind) == [.income, .transfer, .transfer])
+        OwnerPayments.reconcile(in: &doc)
+        #expect(doc.entries.map(\.kind) == [.income, .transfer, .transfer])
+    }
+    @Test("Without accounting, business rows are left out of personal cash flow instead of blocking the month")
+    func businessRowsWithoutAccounting() {
+        var doc = document(); let month = MonthKey("2026-02")!
+        doc.entries = [Entry(month: month, kind: .income, amount: 100, currency: "USD", label: "Salary"),
+                       Entry(month: month, bucket: .businessCost, kind: .expense, amount: 40, currency: "USD", label: "Team lunch"),
+                       Entry(month: month, bucket: .otherBusiness, kind: .income, amount: 500, currency: "USD", label: "Client")]
+        let state = MonthlyLedger.evaluate(month, document: doc)
+        #expect(state.unavailable == nil && state.totals?.net == 100 && state.totals?.otherBusiness == 0)
+    }
+    @Test("Needs attention asks about closed months from the first recorded one, and about last month from this one")
+    func attentionClosedMonths() {
+        var doc = document(); doc.settings.tracked = [.cashFlow]
+        let current = MonthKey.current(), previous = current.previous
+        doc.entries = [Entry(month: previous, kind: .expense, amount: 10, currency: "USD", label: "Groceries"),
+                       Entry(month: current, kind: .expense, amount: 5, currency: "USD", label: "Coffee")]
+        let model = PopoverModel(); model.replace(with: doc)
+        // Viewing the open month asks whether the one just ended is complete.
+        #expect(model.month == current && model.attention(in: doc).spendingMonths == [previous])
+        #expect(DataAttention.evaluate(doc, months: [previous, current]).spendingMonths == [previous])
+        // A year view starts at the first recorded month and stops before the open one.
+        model.selectPeriod(.annual)
+        #expect(model.attention(in: doc).spendingMonths == (previous.year == current.year ? [previous] : []))
+        doc.reviewedMonths = [previous.description]; model.replace(with: doc); model.selectPeriod(.monthly)
+        #expect(model.attention(in: doc).count == 0)
+        // Nothing recorded last month: nothing to ask about yet.
+        doc.entries = [Entry(month: current, kind: .expense, amount: 5, currency: "USD", label: "Coffee")]; doc.reviewedMonths = []
+        model.replace(with: doc)
+        #expect(model.attention(in: doc).spendingMonths.isEmpty)
+    }
+    @Test("A year whose recorded months all lack rates asks for rates rather than saying nothing was recorded")
+    func periodRateGaps() {
+        var doc = document(); let month = MonthKey("2025-03")!
+        doc.entries = [Entry(month: month, kind: .expense, amount: 20, currency: "GBP", label: "Groceries")]
+        let model = PopoverModel(); model.replace(with: doc); model.select(month); model.selectPeriod(.annual)
+        #expect(model.state.totals == nil && model.state.unavailable == .exchangeRates(["GBP"]))
     }
 }

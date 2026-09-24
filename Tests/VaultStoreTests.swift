@@ -398,7 +398,7 @@ struct VaultStoreTests {
         #expect(!producer.isPaused)
     }
 
-    @Test("Coherent backup restores signers and pending envelopes")
+    @Test("Coherent backup restores signers and settings")
     func backupRestorePreservesTrust() async throws {
         let h = harness()
         var session = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
@@ -416,8 +416,6 @@ struct VaultStoreTests {
         ]
         try await h.store.commit(next, expectedGeneration: 1, sessionID: session.sessionID)
         session = try await h.store.currentSession()
-        let pending = Data("pending-envelope".utf8)
-        try await h.store.writeInbox(pending, name: "batch-1.uponlyenv")
         let producer = FixtureProducer()
         let package = try await BackupCoordinator.makePackage(store: h.store, producers: [producer])
         #expect(producer.pauseCount == 1)
@@ -438,8 +436,362 @@ struct VaultStoreTests {
         #expect(restored.document.trustedSigners.first?.highWater.first?.sequence == 4)
         #expect(restored.document.inboxPrivateKeyX963 == session.document.inboxPrivateKeyX963)
         #expect(restored.document.settings.privacyMode)
-        #expect(restored.pending.contains { $0.name == "batch-1.uponlyenv" && $0.bytes == pending })
         #expect(freshKeys.contains(vaultID: restored.document.vaultID))
+    }
+
+    @Test("Backup export creates nothing beside the chosen path, and Replace swaps only an earlier backup")
+    func backupStagingStaysInside() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("UpOnlyTest-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let io = DiskFileIO(), code = RecoveryCode.random()
+        let layout = VaultLayout(root: root.appendingPathComponent("Vault"))
+        let store = VaultStore(layout: layout, io: io, keys: MemoryKeyStore(), authenticator: FixtureAuthenticator())
+        _ = try await store.create(recovery: code, confirmation: code.canonical)
+        let package = try await BackupCoordinator.makePackage(store: store, producers: [])
+        let folder = root.appendingPathComponent("Backups")
+        try io.createDirectory(at: folder)
+        let chosen = folder.appendingPathComponent("Up Only Backup.uponlybackup")
+        try BackupCoordinator.publish(package, to: chosen, io: io)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [chosen.lastPathComponent])
+        #expect(try BackupCoordinator.read(from: chosen, io: io).manifest == package.manifest)
+        // Confirming the save panel's "Replace" swaps out the earlier backup, again without touching its folder.
+        try BackupCoordinator.publish(package, to: chosen, io: io)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == [chosen.lastPathComponent])
+        #expect(try BackupCoordinator.read(from: chosen, io: io).manifest == package.manifest)
+        // A vault, or anything else that isn't a backup, is never replaced.
+        #expect(throws: VaultError.alreadyExists) { try BackupCoordinator.publish(package, to: layout.root, io: io) }
+        #expect(try io.data(at: layout.current) == package.vault)
+    }
+
+    @Test("A damaged vault file reopens from the previous generation, which is saved back as current", arguments: ["truncated", "tampered"])
+    func previousGenerationFallback(_ damage: String) async throws {
+        let h = harness()
+        let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        var next = created.document
+        next.generation += 1
+        next.accounts = [Account(name: "Sample bank", currency: "GBP")]
+        try await h.store.commit(next, expectedGeneration: 1, sessionID: created.sessionID)
+        let good = try #require(h.io.stored(h.layout.current))
+        if damage == "truncated" {
+            try h.io.write(good.prefix(good.count / 2), to: h.layout.current, sync: true)
+        } else {
+            var file = try VaultJSON.decode(PersistedVaultFile.self, from: good)
+            file.ciphertext[file.ciphertext.startIndex] ^= 0xFF
+            try h.io.write(try VaultJSON.encode(file), to: h.layout.current, sync: true)
+        }
+        h.store.lock()
+        let reopened = try await h.store.unlock()
+        #expect(reopened.document.generation == 1 && reopened.document.accounts.isEmpty)
+        #expect(await h.store.openedPrevious)
+        #expect(try VaultJSON.decode(PersistedVaultFile.self, from: try #require(h.io.stored(h.layout.current))).generation == 1)
+        var after = reopened.document
+        after.generation += 1
+        try await h.store.commit(after, expectedGeneration: 1, sessionID: reopened.sessionID)
+        h.store.lock()
+        #expect(try await h.store.unlock().document.generation == 2)
+        #expect(await !h.store.openedPrevious)
+    }
+
+    @Test("Recovery also falls back to the previous generation")
+    func recoveryUsesPreviousGeneration() async throws {
+        let h = harness()
+        let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        var next = created.document
+        next.generation += 1
+        try await h.store.commit(next, expectedGeneration: 1, sessionID: created.sessionID)
+        try h.io.write(Data("not-a-vault".utf8), to: h.layout.current, sync: true)
+        try h.keys.delete(vaultID: created.document.vaultID)
+        h.store.lock()
+        let recovered = try await h.store.recover(h.recovery)
+        #expect(recovered.document.vaultID == created.document.vaultID && recovered.document.generation == 1)
+        #expect(await h.store.openedPrevious)
+    }
+
+    @Test("A folder left with only an empty Inbox still counts as empty for restore")
+    func emptyInboxAllowsRestore() async throws {
+        let h = harness()
+        try h.layout.ensureDirectories(h.io)
+        try await h.store.releaseEmptyDestination()
+        #expect(!h.io.fileExists(at: h.layout.root))
+        try h.layout.ensureDirectories(h.io)
+        try h.io.write(Data("x".utf8), to: h.layout.root.appendingPathComponent("other"), sync: true)
+        await #expect(throws: VaultError.alreadyExists) { try await h.store.releaseEmptyDestination() }
+    }
+
+    /// Creates a vault and saves one account in it, so it has records.
+    private func createWithAccount(_ store: VaultStore, _ recovery: RecoveryCode) async throws -> VaultSession {
+        let created = try await store.create(recovery: recovery, confirmation: recovery.canonical)
+        var next = created.document
+        next.generation += 1
+        next.accounts = [Account(name: "Sample bank", currency: "GBP")]
+        try await store.commit(next, expectedGeneration: 1, sessionID: created.sessionID)
+        return try await store.currentSession()
+    }
+
+    /// A backup of a different vault, with the code that opens it.
+    private func otherBackup() async throws -> (package: BackupPackage, code: RecoveryCode) {
+        let other = harness()
+        _ = try await createWithAccount(other.store, other.recovery)
+        let package = try await BackupCoordinator.makePackage(store: other.store, producers: [])
+        return (package, other.recovery)
+    }
+
+    @Test("A new recovery code opens the vault and later backups; the old code no longer does")
+    func rotatedRecoveryCode() async throws {
+        let h = harness()
+        let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        let next = RecoveryCode.random()
+        try await h.store.rotateRecovery(next, sessionID: created.sessionID)
+        #expect(h.auth.evaluateCount == 2)
+        #expect(await h.store.isUnlocked)
+        #expect(!h.io.fileExists(at: h.layout.recovery.appendingPathExtension("tmp")))
+        // A backup exported after the change opens with the new code only.
+        let package = try await BackupCoordinator.makePackage(store: h.store, producers: [])
+        let restoredLayout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-restore-\(UUID().uuidString)"))
+        #expect(throws: VaultError.wrongRecoveryCode) {
+            _ = try BackupCoordinator.restore(package: package, recovery: h.recovery, keys: MemoryKeyStore(), layout: restoredLayout, io: h.io)
+        }
+        let restored = try BackupCoordinator.restore(package: package, recovery: next, keys: MemoryKeyStore(), layout: restoredLayout, io: h.io)
+        #expect(restored.document.vaultID == created.document.vaultID)
+        try h.keys.delete(vaultID: created.document.vaultID)
+        h.store.lock()
+        await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await h.store.recover(h.recovery) }
+        #expect(try await h.store.recover(next).document.vaultID == created.document.vaultID)
+    }
+
+    @Test("Cancelled authentication or a failed write keeps the current recovery code", arguments: ["cancel", "write", "replace"])
+    func rotationFailureKeepsCode(_ failure: String) async throws {
+        let h = harness()
+        let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        let wrapper = try #require(h.io.stored(h.layout.recovery))
+        let next = RecoveryCode.random()
+        switch failure {
+        case "cancel": h.auth.shouldCancel = true
+        case "write": h.io.failWriteMatching = "recovery.wrapper"
+        default: h.io.failReplace = true
+        }
+        await #expect(throws: failure == "cancel" ? VaultError.cancelled : VaultError.diskWriteFailed) {
+            try await h.store.rotateRecovery(next, sessionID: created.sessionID)
+        }
+        h.auth.shouldCancel = false; h.io.failWriteMatching = nil; h.io.failReplace = false
+        #expect(h.io.stored(h.layout.recovery) == wrapper)
+        #expect(!h.io.fileExists(at: h.layout.recovery.appendingPathExtension("tmp")))
+        #expect(await h.store.isUnlocked)
+        try h.keys.delete(vaultID: created.document.vaultID)
+        h.store.lock()
+        await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await h.store.recover(next) }
+        #expect(try await h.store.recover(h.recovery).document.vaultID == created.document.vaultID)
+    }
+
+    @Test("The session replaces the recovery code; a failed save keeps the old one and says so")
+    @MainActor func sessionReplacesRecoveryCode() async throws {
+        let h = harness()
+        let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        await session.unlock()
+        h.io.failReplace = true
+        #expect(await !session.replaceRecoveryCode(RecoveryCode.random()))
+        #expect(session.message == "Your recovery code couldn’t be replaced. Your current code still works.")
+        h.io.failReplace = false
+        let next = RecoveryCode.random()
+        #expect(await session.replaceRecoveryCode(next))
+        #expect(session.state == .unlocked && !session.isBusy)
+        try h.keys.delete(vaultID: created.document.vaultID)
+        session.lock()
+        await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await h.store.recover(h.recovery) }
+        #expect(try await h.store.recover(next).document.vaultID == created.document.vaultID)
+    }
+
+    @Test("Restoring over a vault moves its folder aside and opens the backup")
+    func replaceMovesVaultAside() async throws {
+        let h = harness()
+        let current = try await createWithAccount(h.store, h.recovery)
+        let original = try #require(h.io.stored(h.layout.current))
+        let backup = try await otherBackup()
+        let now = Date()
+        let aside = h.layout.replacedRoot(at: now, io: h.io)
+        #expect(aside.lastPathComponent == h.layout.replacedName(at: now))
+        #expect(aside.deletingLastPathComponent().path == h.layout.root.deletingLastPathComponent().path)
+        let opened = try await h.store.replace(with: backup.package, recovery: backup.code, aside: aside)
+        #expect(opened.document.vaultID == backup.package.manifest.vaultID)
+        #expect(h.io.stored(h.layout.current) == backup.package.vault)
+        #expect(h.io.stored(VaultLayout(root: aside).current) == original)
+        #expect(h.io.stored(VaultLayout(root: aside).recovery) != nil)
+        // A second restore in the same minute gets its own folder.
+        #expect(h.layout.replacedRoot(at: now, io: h.io).lastPathComponent == String(h.layout.replacedName(at: now).dropLast()) + " 2)")
+        // The replaced session can't save into the restored vault.
+        var stale = current.document
+        stale.generation += 1
+        await #expect(throws: VaultError.staleSession) {
+            try await h.store.commit(stale, expectedGeneration: current.document.generation, sessionID: current.sessionID)
+        }
+        // The restored vault reopens from the Keychain; the replaced one keeps its key.
+        h.store.lock()
+        #expect(try await h.store.unlock().document.vaultID == backup.package.manifest.vaultID)
+        #expect(h.keys.contains(vaultID: current.document.vaultID))
+    }
+
+    @Test("A restore that fails after the move puts the original vault back, locked", arguments: ["write", "lock"])
+    func replaceFailurePutsVaultBack(_ failure: String) async throws {
+        let h = harness()
+        let current = try await createWithAccount(h.store, h.recovery)
+        let original = try #require(h.io.stored(h.layout.current))
+        let backup = try await otherBackup()
+        let aside = h.layout.replacedRoot(at: Date(), io: h.io)
+        // Both happen once the folder has moved: a restore write fails, or the vault locks before the backup opens.
+        if failure == "write" { h.io.failWriteMatching = ".restore-" } else { h.io.onWrite = { h.store.lock() } }
+        await #expect(throws: VaultError.self) {
+            _ = try await h.store.replace(with: backup.package, recovery: backup.code, aside: aside)
+        }
+        h.io.failWriteMatching = nil; h.io.onWrite = nil
+        #expect(!h.io.fileExists(at: aside))
+        #expect(h.io.stored(h.layout.current) == original)
+        #expect(await !h.store.isUnlocked)
+        let reopened = try await h.store.unlock()
+        #expect(reopened.document.vaultID == current.document.vaultID && reopened.document.accounts.count == 1)
+    }
+
+    @Test("A code that doesn't open the backup changes nothing")
+    func replaceRefusesWrongCode() async throws {
+        let h = harness()
+        let current = try await createWithAccount(h.store, h.recovery)
+        let original = try #require(h.io.stored(h.layout.current))
+        let backup = try await otherBackup()
+        let aside = h.layout.replacedRoot(at: Date(), io: h.io)
+        #expect(!BackupCoordinator.opens(backup.package, with: h.recovery))
+        await #expect(throws: VaultError.wrongRecoveryCode) {
+            _ = try await h.store.replace(with: backup.package, recovery: h.recovery, aside: aside)
+        }
+        #expect(!h.io.fileExists(at: aside) && h.io.stored(h.layout.current) == original)
+        #expect(try await h.store.currentSession().sessionID == current.sessionID)
+    }
+
+    @Test("Restoring from Backup & security asks first only when the vault has records")
+    @MainActor func sessionRestoreConfirmation() async throws {
+        let backup = try await otherBackup()
+        // An empty vault is replaced without asking.
+        let empty = harness()
+        _ = try await empty.store.create(recovery: empty.recovery, confirmation: empty.recovery.canonical)
+        empty.store.lock()
+        let quick = UpOnlySession(testing: empty.store, layout: empty.layout)
+        await quick.unlock()
+        #expect(await quick.restoreBackup(backup.package, recovery: backup.code, confirmed: false) == .restored)
+        #expect(quick.state == .unlocked && quick.document?.vaultID == backup.package.manifest.vaultID)
+
+        // A vault with an account asks first. A wrong code or cancelled authentication leaves it open and in place.
+        let h = harness()
+        let current = try await createWithAccount(h.store, h.recovery)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        await session.unlock()
+        #expect(await session.restoreBackup(backup.package, recovery: RecoveryCode.random(), confirmed: true) == .failed)
+        #expect(await session.restoreBackup(backup.package, recovery: backup.code, confirmed: false) == .needsConfirmation)
+        h.auth.shouldCancel = true
+        #expect(await session.restoreBackup(backup.package, recovery: backup.code, confirmed: true) == .cancelled)
+        h.auth.shouldCancel = false
+        #expect(session.state == .unlocked && session.document?.vaultID == current.document.vaultID)
+        #expect(await session.restoreBackup(backup.package, recovery: backup.code, confirmed: true) == .restored)
+        #expect(session.state == .unlocked && session.document?.vaultID == backup.package.manifest.vaultID)
+        let aside = try #require(try h.io.contentsOfDirectory(at: h.layout.root.deletingLastPathComponent()).first {
+            $0.lastPathComponent.hasPrefix(h.layout.root.lastPathComponent + " (replaced ")
+        })
+        #expect(try VaultJSON.decode(PersistedVaultFile.self, from: try #require(h.io.stored(VaultLayout(root: aside).current))).vaultID == current.document.vaultID)
+    }
+
+    private func emptyDocument() -> VaultDocument {
+        let pair = VaultCrypto.makeInboxKeyPair()
+        return VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
+    }
+
+    @Test("A later same-day rate replaces a provisional one while its UTC day is open; a settled day keeps its value")
+    func fxDayReplacement() throws {
+        var doc = emptyDocument()
+        let day = try ImportDateFormat.iso.date("2026-09-23")
+        func rate(_ value: String, fetched: TimeInterval, at time: Date? = nil, provider: String = "Frankfurter") -> FXObservation {
+            FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: value)!), providerTime: time ?? day, fetchedAt: day.addingTimeInterval(fetched), provider: provider)
+        }
+        doc = try PriceHistory.applying(PriceUpdate(rates: [rate("1.30", fetched: 300)]), to: doc, now: day.addingTimeInterval(3600))
+        doc = try PriceHistory.applying(PriceUpdate(rates: [rate("1.31", fetched: 1800, at: day.addingTimeInterval(0.5))]), to: doc, now: day.addingTimeInterval(3600))
+        #expect(doc.fx.map(\.rate.value) == [Decimal(string: "1.31")!])
+        // The next day's history backfill settles the day; nothing fetched later moves it.
+        doc = try PriceHistory.applying(PriceUpdate(rates: [rate("1.32", fetched: 86400 + 60)]), to: doc, now: day.addingTimeInterval(86400 + 3600))
+        doc = try PriceHistory.applying(PriceUpdate(rates: [rate("1.33", fetched: 2 * 86400)]), to: doc, now: day.addingTimeInterval(2 * 86400 + 3600))
+        #expect(doc.fx.map(\.rate.value) == [Decimal(string: "1.32")!])
+        // A rate the user entered is never replaced.
+        var manual = emptyDocument()
+        manual.fx = [rate("2", fetched: 60, provider: "Manual")]
+        manual = try PriceHistory.applying(PriceUpdate(rates: [rate("1.30", fetched: 600)]), to: manual, now: day.addingTimeInterval(3600))
+        #expect(manual.fx.map(\.provider) == ["Manual"])
+    }
+
+    @Test("A fetched chunk is complete once every day has a price or it ended more than three days ago")
+    func closedChunksComplete() throws {
+        let start = try ImportDateFormat.iso.date("2026-08-01"), end = start.addingTimeInterval(7 * 86400)
+        let request = PriceHistoryRequest(source: .metal, key: "asset:metal-gold-gram", identifier: PreciousMetal.gold.assetID.rawValue, start: start, end: end)
+        let weekdays = (0..<5).map { start.addingTimeInterval(Double($0) * 86400 + 86399) }
+        #expect(!PriceHistory.isComplete(request, observations: weekdays, now: end.addingTimeInterval(86400)))
+        #expect(PriceHistory.isComplete(request, observations: weekdays, now: end.addingTimeInterval(4 * 86400)))
+        #expect(PriceHistory.isComplete(request, observations: [], now: end.addingTimeInterval(4 * 86400)))
+        #expect(PriceHistory.isComplete(request, observations: (0..<7).map { start.addingTimeInterval(Double($0) * 86400) }, now: end))
+        // One unreadable point no longer discards the rest of a crypto chunk.
+        let crypto = PriceHistoryRequest(source: .crypto, key: "asset:bitcoin", identifier: "bitcoin", start: start, end: end)
+        let ms = Int(start.timeIntervalSince1970 * 1000)
+        let quotes = try PriceHistory.decodeCrypto(Data("{\"prices\":[[\(ms),1],[\(ms + 86400000),null],[\(ms + 2 * 86400000),0],[\(ms + 3 * 86400000),4]]}".utf8), request: crypto, fetchedAt: end)
+        #expect(quotes.map(\.priceUSD.value) == [1, 4])
+    }
+
+    @Test("Past days keep only each asset's last quote; today keeps every quote")
+    func quotePruning() throws {
+        let day = try ImportDateFormat.iso.date("2026-09-20"), today = day.addingTimeInterval(2 * 86400)
+        func quote(_ asset: String, _ time: Date, _ price: Decimal) throws -> QuoteObservation {
+            QuoteObservation(assetID: try CanonicalAssetID(asset), priceUSD: PreciseDecimal(price), providerTime: time, fetchedAt: time, provider: "CoinGecko")
+        }
+        var update = PriceUpdate()
+        for hour in 0..<24 { update.quotes.append(try quote("bitcoin", day.addingTimeInterval(Double(hour) * 3600), Decimal(100 + hour))) }
+        update.quotes.append(try quote("ethereum", day.addingTimeInterval(600), 5))
+        update.quotes += [try quote("bitcoin", today.addingTimeInterval(600), 1), try quote("bitcoin", today.addingTimeInterval(4200), 2)]
+        let saved = try PriceHistory.applying(update, to: emptyDocument(), now: today.addingTimeInterval(7200))
+        #expect(saved.quotes.filter { $0.assetID.rawValue == "bitcoin" }.sorted { $0.providerTime < $1.providerTime }.map(\.priceUSD.value) == [123, 1, 2])
+        #expect(saved.quotes.filter { $0.assetID.rawValue == "ethereum" }.count == 1)
+    }
+
+    @Test("Going offline frees the background slot; a real failure retries after five minutes, then backs off")
+    func offlineDoesNotBlock() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("UpOnlyTest-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let schedule = BackgroundRefreshSchedule(), signing = VaultCrypto.makeSigningKeyPair()
+        let config = BackgroundConfiguration(vaultID: UUID(), inboxPublicKey: Data(), signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: [], metals: [], pricesEnabled: true, fxEnabled: false, metalsEnabled: false, coinGeckoKey: "")
+        let offline: [Error] = [URLError(.notConnectedToInternet), URLError(.networkConnectionLost), CancellationError()]
+        for error in offline {
+            let ok = await BackgroundRefresh.scheduled("crypto", configuration: config, root: root, schedule: schedule) { throw error }
+            #expect(!ok)
+            #expect(await !schedule.failed(vaultID: config.vaultID, root: root, source: "crypto"))
+        }
+        let ok = await BackgroundRefresh.scheduled("crypto", configuration: config, root: root, schedule: schedule) { throw PriceError.unavailable }
+        let failedAt = Date()
+        #expect(!ok)
+        #expect(await schedule.failed(vaultID: config.vaultID, root: root, source: "crypto"))
+        #expect(try await !schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(240)))
+        #expect(try await schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(301)))
+        try await schedule.finish(vaultID: config.vaultID, root: root, failed: true, source: "crypto", now: failedAt.addingTimeInterval(302))
+        #expect(try await !schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(302 + 590)))
+        #expect(try await schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(302 + 601)))
+        // Current rates stop at the first connectivity error instead of recording an issue per currency.
+        await #expect(throws: URLError.self) {
+            try await PublicPrices.fx(currencies: ["EUR", "GBP"]) { _ in throw URLError(.notConnectedToInternet) }
+        }
+    }
+
+    @Test("Offline dated-rate requests stop at once and leave no cooldown; real failures still back off")
+    func offlinePerformanceFX() async throws {
+        var doc = emptyDocument()
+        doc.settings.automaticFX = true
+        let now = try ImportDateFormat.iso.date("2026-09-06"), month = MonthKey("2026-08")!
+        let offline = try await PublicPrices.performanceFX(document: doc, now: now, month: month, currencies: ["EUR", "GBP"], retry: true) { _ in throw URLError(.notConnectedToInternet) }
+        #expect(offline.coverage.isEmpty && offline.rates.isEmpty && offline.fxIssues.count == 1)
+        let failing = try await PublicPrices.performanceFX(document: doc, now: now, month: month, currencies: ["EUR", "GBP"], retry: true) { _ in throw PriceError.unavailable }
+        #expect(failing.coverage.count == 2 && failing.coverage.allSatisfy { !$0.complete })
     }
     @Test("Large encrypted vault opens and publishes its dashboard with synthetic authentication")
     @MainActor func largeVaultUnlock() async throws {
