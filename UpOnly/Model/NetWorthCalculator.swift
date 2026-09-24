@@ -763,7 +763,7 @@ nonisolated struct BankBalanceGroup: Identifiable {
 
 /// Rebuilds an account's balance history from its statements. One real balance (typed in or synced) anchors the
 /// series; every transaction with a known day moves it. Days before the earliest statement stay unknown, and a
-/// statement account is only anchored by a balance from within a week of its last statement day.
+/// statement account is only anchored by a balance from within a month of its last statement day.
 nonisolated enum BalanceReconstruction {
     static let source = "Statements"
     static func signed(_ entry: Entry) -> Decimal? {
@@ -791,7 +791,9 @@ nonisolated enum BalanceReconstruction {
         guard let lastDay = byDay.keys.max() else { return nil }
         // Wise syncs every day. Statements only cover up to their last transaction: a balance from weeks later
         // would stretch them across months nobody imported, so it can't anchor them.
-        let reach = account.externalProfileID == nil ? lastDay.addingTimeInterval(8 * 86400) : Date.distantFuture
+        // A month allows for a statement imported a week or two after it ends (Monzo's ended Aug 30 and its balance
+        // was typed in on Sep 9); a week dropped months of real history.
+        let reach = account.externalProfileID == nil ? lastDay.addingTimeInterval(31 * 86400) : Date.distantFuture
         guard let anchor = document.bankBalances.filter({ $0.accountID == accountID && $0.source != source && $0.observedAt < reach })
             .max(by: { $0.observedAt < $1.observedAt }) else { return nil }
         let anchorDay = UTCDay.start(of: anchor.observedAt)
