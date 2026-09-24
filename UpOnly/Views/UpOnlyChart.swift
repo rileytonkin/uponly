@@ -271,7 +271,7 @@ struct UpOnlyChart: View {
         }()
         return VStack(alignment: .leading, spacing: 3) {
             Text(point.detailLabel ?? point.label).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
-            Text(session.privacyMode ? "••••" : point.value.map(UpOnlyFormat.exactMoney) ?? "No recorded value")
+            Text(point.value.map { value in session.privacyMode ? session.standInFactor.map { UpOnlyFormat.exactMoney(value * $0) } ?? "••••" : UpOnlyFormat.exactMoney(value) } ?? "No recorded value")
                 .font(.system(size: 15, weight: .semibold).monospacedDigit()).foregroundStyle(.primary).lineLimit(1).minimumScaleFactor(0.7)
             if let change, let first {
                 HStack(spacing: 4) {
@@ -279,9 +279,9 @@ struct UpOnlyChart: View {
                     Text("since " + layout.visible[first].label).foregroundStyle(.secondary)
                 }.font(.system(size: 10, weight: .medium).monospacedDigit()).lineLimit(1)
             }
-            // Notes can cite amounts (a company's revenue and expenses), so privacy mode hides them too.
-            if !session.privacyMode, let note = point.note {
-                Text(note).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+            // Notes can cite amounts (a company's revenue and expenses), so privacy mode scales them too.
+            if let note = point.note, let shown = session.privacyMode ? session.standInFactor.map({ UpOnlyStandIn.scale(note, by: $0) }) : note {
+                Text(shown).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
             }
         }.padding(.horizontal, 11).padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,6 +305,8 @@ struct UpOnlyChart: View {
             let plotWidth = max(1, geometry.size.width - axisWidth - edge)
             let visible = layout.visible
             let ticks = axisTicks(plotWidth)
+            // Privacy mode's axis reads in stand-in figures, like everything else.
+            let standIn = session.standInFactor.map { NSDecimalNumber(decimal: $0).doubleValue }
             ZStack(alignment: .topLeading) {
                 Canvas { context, size in
                     // A faint line at each marked day or hour, as quiet as the value gridlines.
@@ -322,7 +324,8 @@ struct UpOnlyChart: View {
                         let zero = tick == 0 && includesZero
                         context.stroke(grid, with: .color(.primary.opacity(zero ? 0.2 : contrast == .increased ? 0.14 : 0.06)), lineWidth: 1)
                         // Privacy mode keeps the axis's shape with dots in place of the amounts, as market apps do.
-                        context.draw(Text(session.privacyMode ? "••••" : UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
+                        let label = session.privacyMode ? standIn.map { UpOnlyChartScale.label(tick * $0) } ?? "••••" : UpOnlyChartScale.label(tick)
+                        context.draw(Text(label).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
                                      at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
                     }
                     // Everything below is drawn in the plot's own coordinates, starting at the axis.
@@ -398,12 +401,12 @@ struct UpOnlyChart: View {
                 if let hovered, visible.indices.contains(hovered) {
                     let point = visible[hovered]
                     let anchor = axisWidth + x(hovered, width: plotWidth)
-                    let width: CGFloat = point.note == nil || session.privacyMode ? 136 : 176
+                    let width: CGFloat = point.note == nil || (session.privacyMode && session.standInFactor == nil) ? 136 : 176
                     // Beside the crosshair, to its right when there's room; level with the plot's emptier half so the
                     // card never covers the point.
                     let left = anchor + 14 + width <= geometry.size.width ? anchor + 14 : max(axisWidth, anchor - 14 - width)
                     // Level with the pointer, kept inside the plot.
-                    let height: CGFloat = point.note == nil || session.privacyMode ? 58 : 88
+                    let height: CGFloat = point.note == nil || (session.privacyMode && session.standInFactor == nil) ? 58 : 88
                     let top = min(max((pointer?.y ?? plotHeight / 2) - height / 2, 0), max(0, plotHeight - height))
                     hoverCard(point, index: hovered).frame(width: width, alignment: .leading)
                         .offset(x: left, y: top)

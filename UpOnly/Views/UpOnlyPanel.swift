@@ -620,8 +620,10 @@ struct UpOnlyUnlockedPanel: View {
     /// stays in privacy mode; the amounts don't.
     func changeLine(_ range: RangeChange) -> some View {
         let change = range.change
-        let previous = session.privacyMode ? "••••" : UpOnlyFormat.exactMoney(change.previous)
-        let moved = session.privacyMode ? UpOnlyFormat.hiddenMovement(change.amount, fraction: nil) : UpOnlyFormat.movement(change.amount, fraction: nil, cents: true)
+        // Privacy mode: the stand-in figures, scaled like the total above.
+        let scale = session.privacyMode ? session.standInFactor : 1
+        let previous = scale.map { UpOnlyFormat.exactMoney(change.previous * $0) } ?? "••••"
+        let moved = scale.map { UpOnlyFormat.movement(change.amount * $0, fraction: nil, cents: true) } ?? UpOnlyFormat.hiddenMovement(change.amount, fraction: nil)
         return HStack(spacing: 7) {
             if let fraction = change.fraction { UpOnlyChangeBadge(fraction: fraction) }
             else { Text(moved).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(change.amount)) }
@@ -674,7 +676,7 @@ struct UpOnlyUnlockedPanel: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(row.name).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
                         if let detail = row.detail {
-                            Text(row.detailIsAmount && session.privacyMode ? "••••" : detail).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Group { if row.detailIsAmount { UpOnlyPrivateText(detail) } else { Text(detail) } }.font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }.frame(minWidth: 96, alignment: .leading)  // a huge amount shrinks before the name disappears
                     Spacer(minLength: 8)

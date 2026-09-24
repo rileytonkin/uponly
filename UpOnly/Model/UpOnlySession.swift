@@ -65,6 +65,16 @@ final class UpOnlySession {
     private(set) var authenticationFailed = false
     @ObservationIgnored private(set) var unlockTiming: UnlockTiming?
     var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
+    /// Privacy mode's stand-in factor: amounts show scaled by it, so they look real but say nothing. Nil when figures
+    /// show as they are. Worked out once per document.
+    var standInFactor: Decimal? {
+        guard privacyMode, let document else { return nil }
+        if let cached = standInCache, cached.revision == documentRevision { return cached.factor }
+        let factor = UpOnlyStandIn.factor(total: AssetOwnership.personalValue(at: Date(), scope: .allTracked, document: document).total, vaultID: document.vaultID)
+        standInCache = (documentRevision, factor)
+        return factor
+    }
+    @ObservationIgnored private var standInCache: (revision: Int, factor: Decimal)?
     /// Hiding values takes effect at once, even while another save finishes; the saved setting follows.
     private var privacyOverride: Bool?
     @ObservationIgnored private var privacyAttempt = UUID()
