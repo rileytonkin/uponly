@@ -21,7 +21,7 @@ extension UpOnlyManagement {
                     session.startImport(.bankBalances, newAccount: true)
                 }
             } else {
-                // One list: a manual account's row updates its balance; a synced profile lists its currencies under it.
+                // One list: a manual account's row updates its balance; a synced profile's row opens its currencies.
                 ManageCard {
                     ForEach(Array(order.enumerated()), id: \.element) { index, key in
                         if let members = groups[key], let first = members.first {
@@ -33,26 +33,44 @@ extension UpOnlyManagement {
             }
         }
     }
-    /// "Sep 24 · Studio · Outside net worth": when the balance is from, who owns it, and whether it counts.
-    func accountCaption(_ members: [Account], date: Date?, synced: Bool = false) -> String {
+    /// "Synced today · Studio · Outside net worth": when the balance is from, who owns it (unless the name already
+    /// says), and whether it counts.
+    func accountCaption(_ members: [Account], date: Date?, synced: Bool = false, name: String = "") -> String {
         var parts: [String] = []
-        if let date { parts.append((synced ? "Synced " : "") + date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))) }
+        if let date { parts.append((synced ? "Synced " : "Updated ") + Self.when(date)) }
         else { parts.append(synced ? "Not synced yet" : "Balance needed") }
         if let document = session.document, let first = members.first {
             if let owner = AssetOwnership.businessID(for: first, in: document) {
-                parts.append(document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable")
+                let company = document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable"
+                if company.caseInsensitiveCompare(name) != .orderedSame { parts.append(company) }
             }
             let outside = members.filter { !document.isBankTracked($0.id, at: Date()) }.count
             if outside > 0 { parts.append(outside == members.count ? "Outside net worth" : "Partly outside net worth") }
         }
         return parts.joined(separator: " · ")
     }
-    /// A manual bank account: its balance and when it's from. The row updates the balance.
+    /// "today", "yesterday", "Sep 9", or "Sep 9, 2025" from another year.
+    static func when(_ date: Date) -> String {
+        let calendar = UTCDay.calendar, today = UTCDay.start(of: Date())
+        if calendar.isDate(date, inSameDayAs: today) { return "today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: today), calendar.isDate(date, inSameDayAs: yesterday) { return "yesterday" }
+        return calendar.component(.year, from: date) == calendar.component(.year, from: today) ? UpOnlyFormat.utcDay(date) : UpOnlyFormat.utcDate(date)
+    }
+    /// A balance in dollars at the latest saved rate, for the right-hand column every row shares.
+    func usd(_ amount: Decimal, currency: String) -> Decimal? {
+        if currency == "USD" || amount == 0 { return amount }
+        guard let rate = session.document?.fx.filter({ $0.sourceCurrency == currency && $0.targetCurrency == "USD" }).max(by: { $0.providerTime < $1.providerTime })?.rate.value else { return nil }
+        return try? MoneyInput.multiply(amount, rate, allowingRounding: true)
+    }
+    /// A manual bank account: its dollar value with its own balance under it, and when it's from. The row updates it.
     func accountRow(_ account: Account, latest: BankBalanceObservation?, divided: Bool) -> some View {
-        ManageRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt),
-                  value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) } ?? "Add balance", divided: divided,
-                  action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
-            UpOnlyBankBadge(name: account.name, size: 24)
+        let native = latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) }
+        let dollars = latest.flatMap { usd($0.amount.value, currency: account.currency) }.map(UpOnlyFormat.exactMoney)
+        return ManageRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt, name: account.name),
+                         value: account.currency == "USD" ? native ?? "Add balance" : dollars ?? native ?? "Add balance",
+                         valueDetail: account.currency == "USD" || dollars == nil ? nil : native, divided: divided,
+                         action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
+            UpOnlyBankBadge(name: account.name, size: 28)
         } menu: {
             ManageRowMenu(label: "More options for " + account.name) {
                 Button("Update balance…") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
@@ -63,10 +81,11 @@ extension UpOnlyManagement {
             }
         }
     }
-    /// A synced profile: its row, then a line per currency with money in it and one for the empty ones.
-    /// Balances come from the sync, so the options apply to the whole profile and there's nothing to update by hand.
+    /// A synced profile is one row like any account: its total in dollars, with how many currencies hold money.
+    /// Clicking it lists them. Balances come from the sync, so there's nothing to update by hand.
     @ViewBuilder func profileRows(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation], divided: Bool) -> some View {
         let name = AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first)
+        let key = first.externalProfileID ?? first.id.uuidString
         // Jars merge into their currency: one figure per currency for the whole profile.
         let byCurrency: [String: (Account, Decimal, Date?)] = members.reduce(into: [:]) { result, account in
             let observation = latest[account.id]
@@ -75,31 +94,38 @@ extension UpOnlyManagement {
                 result[account.currency] = (existing.0, existing.1 + amount, [existing.2, observation?.observedAt].compactMap { $0 }.max())
             } else { result[account.currency] = (account, amount, observation?.observedAt) }
         }
-        let funded = byCurrency.values.filter { $0.1 != 0 }.sorted { $0.1 > $1.1 }
-        let empty = byCurrency.values.filter { $0.1 == 0 }.map(\.0.currency).sorted()
-        ManageRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true), divided: divided) {
+        // Less than a cent is nothing, not "€0.00".
+        let funded = byCurrency.values.filter { abs($0.1) >= Decimal(string: "0.005")! }
+            .sorted { (usd($0.1, currency: $0.0.currency) ?? 0) > (usd($1.1, currency: $1.0.currency) ?? 0) }
+        let dollars = funded.map { usd($0.1, currency: $0.0.currency) }
+        let total = dollars.contains { $0 == nil } ? nil : dollars.compactMap { $0 }.reduce(Decimal(0), +)
+        let open = expandedProfiles.contains(key)
+        ManageRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
+                  value: total.map(UpOnlyFormat.exactMoney) ?? (funded.isEmpty ? "No money" : "Rate needed"),
+                  valueDetail: funded.count > 1 ? "\(funded.count) currencies" : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
+                  divided: divided, action: funded.count > 1 ? {
+                      withAnimation(.snappy(duration: 0.2)) { if open { expandedProfiles.remove(key) } else { expandedProfiles.insert(key) } }
+                  } : nil) {
             // Your own profile is "Wise", with Wise's logo; a company's profile keeps its own.
-            if name == "Wise" { UpOnlyBankBadge(name: name, synced: true, size: 24) }
-            else { UpOnlyProfileImage(data: first.profileImage, name: name, size: 24) }
+            if name == "Wise" { UpOnlyBankBadge(name: name, synced: true, size: 28) }
+            else { UpOnlyProfileImage(data: first.profileImage, name: name, size: 28) }
         } menu: {
             ManageRowMenu(label: "More options for " + name) {
                 ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }) { setAccountOwner(first, owner: $0) }
                 trackingToggle(members)
             }
         }
-        ForEach(funded, id: \.0.currency) { account, amount, _ in
-            HStack(spacing: 8) {
-                Text(account.currency).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                UpOnlyPrivateText(UpOnlyFormat.currencyMoney(amount, currency: account.currency)).font(UpOnlyType.row.monospacedDigit())
-            }.padding(.leading, 34).padding(.trailing, 28).padding(.bottom, 6)
-                .accessibilityElement(children: .combine)
-        }
-        if !empty.isEmpty {
-            // Which currencies hold nothing is itself an amount, so it hides with the others.
-            UpOnlyPrivateText((funded.isEmpty ? "No money in " : "Empty: ") + empty.joined(separator: ", "))
-                .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 34).padding(.bottom, 8)
+        if open {
+            VStack(spacing: 4) {
+                ForEach(funded, id: \.0.currency) { account, amount, _ in
+                    HStack(spacing: 8) {
+                        Text(account.currency).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary)
+                        Spacer(minLength: 8)
+                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(amount, currency: account.currency)).font(UpOnlyType.body.monospacedDigit())
+                    }.accessibilityElement(children: .combine)
+                }
+            }.padding(.leading, 38).padding(.trailing, 28).padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 }

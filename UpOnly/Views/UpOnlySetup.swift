@@ -117,7 +117,7 @@ struct UpOnlyFlow: Layout {
 }
 
 extension TrackedKind {
-    var title: String { switch self { case .banks: "Bank accounts"; case .crypto: "Crypto"; case .metals: "Gold & silver"; case .cashFlow: "Income & spending" } }
+    var title: String { switch self { case .banks: "Bank accounts"; case .crypto: "Crypto"; case .metals: "Metals"; case .cashFlow: "Income & spending" } }
     var summary: String { switch self { case .banks: "Your dated balances, in one place."; case .crypto: "Coins and quantities across portfolios."; case .metals: "Gold and silver."; case .cashFlow: "What comes in and what goes out." } }
     var symbol: String { switch self { case .banks: "building.columns.fill"; case .crypto: "bitcoinsign.circle.fill"; case .metals: "square.stack.3d.up.fill"; case .cashFlow: "arrow.up.arrow.down.circle.fill" } }
     var tint: Color { switch self { case .banks: UpOnlyTint.netWorth; case .crypto: UpOnlyTint.crypto; case .metals: UpOnlyTint.metals; case .cashFlow: UpOnlyTint.cashFlow } }
@@ -215,7 +215,7 @@ struct UpOnlySetup: View {
             DisclosureGroup("What providers receive", isExpanded: $showSourceDetails) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Frankfurter receives currency codes. Gold API receives metal symbols. Both see your IP address; neither receives balances, quantities or names.")
-                    Text("Crypto prices need a free CoinGecko key. You can add one any time in Manage → Prices & rates.")
+                    Text("Crypto prices need a free CoinGecko key. You can add one any time in Manage → Data sources.")
                 }.font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
             }.font(UpOnlyType.body).foregroundStyle(.secondary)
             VStack(spacing: 9) {
@@ -419,7 +419,7 @@ struct UpOnlySources: View {
                 }
             }
             if session.document?.shows(.metals) == true {
-                UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals) {
+                UpOnlySettingsCard(title: "Metal prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals) {
                     UpOnlySourceStatus(kind: .metals, savedOn: session.document?.settings.automaticMetals == true, interval: "Updates every hour",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if metals {

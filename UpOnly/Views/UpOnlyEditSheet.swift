@@ -19,6 +19,12 @@ struct UpOnlyEditSheet: View {
     @State private var saving = false
     @State private var lotQuantity = ""
     @State private var lotToRemove: PurchaseLot?
+    /// A transaction's company, when it was paid for one; and whether its day is known (manual ones used to record
+    /// only the month, and one opened for a past month starts with just that month).
+    @State private var businessID: String?
+    @State private var dayKnown = true
+    @State private var customCurrency = false
+    @FocusState private var amountFocused: Bool
     private var actionTitle: String {
         switch editor {
         case .entry: "Save transaction"
@@ -31,7 +37,6 @@ struct UpOnlyEditSheet: View {
     }
     // In Manage, Back lives top-left like every other page; the Add flow's own form keeps its header.
     private var showsOwnHeader: Bool { !session.managementInMenu || session.entryEditorInMenu }
-    private var editingMonth: Binding<MonthKey> { Binding(get: { MonthKey(entryMonth) ?? .current() }, set: { entryMonth = $0.description }) }
     /// The latest a manual rate can be dated and still price the month it was opened for. Nil when no month was given.
     private var rateCutoff: Date? {
         guard let month = MonthKey(session.entryMonthForManagement) else { return nil }
@@ -74,10 +79,18 @@ struct UpOnlyEditSheet: View {
             case .renameAccount(let account): name = account.name
             case .renamePortfolio(let portfolio): name = portfolio.name
             case .entry:
-                if session.managementInMenu, !session.entryMonthForManagement.isEmpty { entryMonth = session.entryMonthForManagement }
+                currency = defaultCurrency
+                // Opened to fill in a past month: that month, with no day until one is picked.
+                if session.managementInMenu, let month = MonthKey(session.entryMonthForManagement), month < .current() {
+                    entryMonth = month.description; dayKnown = false; date = Self.lastDay(of: month)
+                }
+                amountFocused = true
             case .editEntry(let entry):
                 kind = entry.kind.rawValue; bucket = entry.bucket.rawValue; amount = UpOnlyFormat.quantity(entry.amount)
-                currency = entry.currency; name = entry.label; entryMonth = entry.month
+                currency = entry.currency; name = entry.label; entryMonth = entry.month; businessID = entry.businessID
+                if let day = entry.day, let parsed = try? ImportDateFormat.iso.date(day) { date = parsed }
+                else { dayKnown = false; date = MonthKey(entry.month).map(Self.lastDay) ?? Date() }
+                customCurrency = !currencyChoices.contains(currency)
             case .exchangeRate:
                 currency = session.requestedRateCurrency ?? "GBP"
                 if let cutoff = rateCutoff { date = cutoff }
@@ -128,15 +141,95 @@ struct UpOnlyEditSheet: View {
                 UpOnlyNotice("This rate won’t count for " + month.title + ". Choose a date in the last 7 days of the month.")
             }
         case .entry, .editEntry:
-            Picker("Type", selection: $kind) { ForEach(entryKinds, id: \.self) { Text(kindTitle($0)).tag($0.rawValue) } }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Transaction type")
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                amountField
-                TextField("USD", text: $currency).textFieldStyle(.plain).font(.system(size: 14, weight: .medium)).frame(width: 50).accessibilityLabel("Currency")
-            }
-            field("Description", text: $name, placeholder: "What was it for?")
-            UpOnlyMonthPicker(month: editingMonth)
-            Picker("Category", selection: $bucket) { Text("Personal").tag("personal"); Text("Business").tag("otherBusiness"); Text("Business cost").tag("businessCost") }
+            transactionForm
         }
+    }
+    // MARK: Transaction
+
+    /// The amount first, signed the way the money moved, with one line on how it counts; then the details in one
+    /// card, as every add form has.
+    private var transactionForm: some View {
+        let entryKind = EntryKind(rawValue: kind) ?? .expense
+        let books = session.document?.businessAccounting ?? []
+        return VStack(spacing: 16) {
+            VStack(spacing: 10) {
+                UpOnlySymbolBadge(symbol: entryKind == .income ? "arrow.down.left" : entryKind == .refund ? "arrow.uturn.backward" : entryKind == .transfer ? "arrow.left.arrow.right" : "arrow.up.right",
+                                  tint: entryKind == .income || entryKind == .refund ? UpOnlyTint.gain : entryKind == .transfer ? .secondary : UpOnlyTint.cashFlow, size: 44)
+                UpOnlyAmountEntry(text: $amount, unit: currency.uppercased().nilIfEmpty ?? "USD", sign: kindSign(entryKind),
+                                  tint: entryKind == .income || entryKind == .refund ? UpOnlyTint.gain : .primary, label: "Amount", focused: $amountFocused)
+                Text(meaning(entryKind, books: books)).font(UpOnlyType.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: .infinity).padding(.vertical, 4)
+            ManageCard {
+                UpOnlyFormRow(label: "Type") {
+                    UpOnlyFormMenu(value: kindTitle(entryKind), label: "Transaction type") {
+                        ForEach(entryKinds, id: \.self) { choice in Button(kindTitle(choice)) { kind = choice.rawValue } }
+                    }
+                }
+                UpOnlyFormRow(label: "Description", divided: true) {
+                    TextField("What was it for?", text: $name).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                        .accessibilityLabel("Description")
+                }
+                UpOnlyFormRow(label: "Date", divided: true) {
+                    UpOnlyDateButton(date: Binding(get: { date }, set: { date = $0; dayKnown = true }), title: dayKnown ? nil : MonthKey(entryMonth)?.title)
+                }
+                UpOnlyFormRow(label: "Currency", divided: true) {
+                    UpOnlyFormMenu(value: customCurrency ? "Other" : currency.uppercased(), label: "Currency") {
+                        ForEach(currencyChoices, id: \.self) { code in Button(code) { currency = code; customCurrency = false } }
+                        Divider()
+                        Button("Other…") { customCurrency = true; currency = "" }
+                    }
+                }
+                if customCurrency {
+                    UpOnlyFormRow(label: "Code", divided: true) {
+                        TextField("e.g. CHF", text: $currency).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                            .accessibilityLabel("Currency code")
+                    }
+                }
+                // Only when there's a company it could have been for (or it already isn't yours).
+                if !books.isEmpty || bucket != Bucket.personal.rawValue {
+                    UpOnlyFormRow(label: "For", divided: true) {
+                        UpOnlyFormMenu(value: forTitle(books), label: "Who it was for") {
+                            Button("Me") { bucket = Bucket.personal.rawValue; businessID = nil }
+                            ForEach(books) { book in Button(book.name) { bucket = Bucket.businessCost.rawValue; businessID = book.id } }
+                            if books.isEmpty { Button("A business") { bucket = Bucket.businessCost.rawValue; businessID = nil } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /// How the transaction will count, in a sentence, so the type and "for" choices explain themselves.
+    private func meaning(_ kind: EntryKind, books: [BusinessBook]) -> String {
+        let month = dayKnown ? (MonthKey.current(now: date)).title : MonthKey(entryMonth)?.title ?? "this month"
+        if bucket != Bucket.personal.rawValue { return "Paid for " + (books.first { $0.id == businessID }?.name ?? "a business") + ", so it’s left out of your own spending" }
+        switch kind {
+        case .expense: return "Counts as spending in " + month
+        case .income: return "Counts as income in " + month
+        case .refund: return "Money back: lowers " + month + "’s spending"
+        case .transfer: return "Between your own accounts, so it isn’t counted"
+        }
+    }
+    private func forTitle(_ books: [BusinessBook]) -> String {
+        switch Bucket(rawValue: bucket) ?? .personal {
+        case .personal: return "Me"
+        case .businessCost: return books.first { $0.id == businessID }?.name ?? "A business"
+        case .otherBusiness, .reserve: return "A business account"
+        }
+    }
+    /// The currency last typed in by hand, else this Mac's, else dollars.
+    private var defaultCurrency: String {
+        session.document?.entries.last { $0.source == .manual }?.currency ?? Locale.current.currency?.identifier ?? "USD"
+    }
+    /// Common currencies and the ones your accounts use, most likely first.
+    private var currencyChoices: [String] {
+        var seen = Set<String>()
+        return ([defaultCurrency] + (session.document?.accounts.map(\.currency) ?? []) + ["USD", "EUR", "GBP"])
+            .map { $0.uppercased() }.filter { $0.count == 3 && seen.insert($0).inserted }
+    }
+    private static func lastDay(of month: MonthKey) -> Date {
+        let start = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) ?? Date()
+        return min(Date(), start.addingTimeInterval(-86400))
     }
     // Recorded lots for one holding, each removable. Removing a lot never changes quantities.
     private func purchasesList(_ holding: Holding) -> some View {
@@ -179,11 +272,16 @@ struct UpOnlyEditSheet: View {
     /// The transaction form's fields, checked. Adding and editing share them.
     private func validEntry() throws -> Entry {
         let label = try validName(name, what: "a description")
-        guard let month = MonthKey(entryMonth), month <= .current(), month.year >= 1900,
+        // A picked day sets the month; otherwise the month it was opened with stands.
+        let month: MonthKey? = dayKnown ? MonthKey.current(now: date) : MonthKey(entryMonth)
+        guard let month, month <= .current(), month.year >= 1900,
               let entryKind = EntryKind(rawValue: kind), let entryBucket = Bucket(rawValue: bucket) else { throw VaultError.invalidAmount }
         let value = try validAmount()
         let code = try validCurrency()
-        return Entry(month: month, bucket: entryBucket, kind: entryKind, amount: value, currency: code, label: label, source: .manual)
+        var entry = Entry(month: month, bucket: entryBucket, kind: entryKind, amount: value, currency: code, label: label, source: .manual)
+        entry.day = dayKnown ? ImportDateFormat.today(date) : nil
+        entry.businessID = entryBucket == .businessCost ? businessID : nil
+        return entry
     }
     private func save() async {
         saving = true; error = nil
@@ -231,7 +329,9 @@ struct UpOnlyEditSheet: View {
                     guard let index = doc.entries.firstIndex(where: { $0.id == original.id }) else { throw ImportFailure("This transaction no longer exists.") }
                     doc.entries[index].month = edited.month; doc.entries[index].kind = edited.kind; doc.entries[index].bucket = edited.bucket
                     doc.entries[index].amount = edited.amount; doc.entries[index].currency = edited.currency; doc.entries[index].label = edited.label
-                    if edited.bucket != .businessCost { doc.entries[index].businessID = nil }
+                    doc.entries[index].businessID = edited.businessID
+                    // A day left untouched on an entry that never had one stays unknown.
+                    if dayKnown { doc.entries[index].day = edited.day }
                 }
             }
             onSave()

@@ -41,8 +41,7 @@ struct UpOnlyImportView: View {
             if let batch = session.importDraft {
                 if usesSummary(batch) {
                     Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.bordered)
-                } else if isBalanceUpdate(batch) { inputActions }
-                else { batchHeader(batch); inputActions }
+                } else if !isBalanceUpdate(batch) { batchHeader(batch) }
                 if let message = session.importMessage { Text(message).fixedSize(horizontal: false, vertical: true).font(.callout).foregroundStyle(.secondary) }
                 if session.importLoading {
                     HStack { ProgressView().controlSize(.small); Text("Reading your files on this Mac…").fixedSize(horizontal: false, vertical: true); Spacer(); Button("Cancel reading") { session.cancelImport() } }
@@ -74,11 +73,14 @@ struct UpOnlyImportView: View {
                                 if index > 0 { Divider().opacity(0.5) }
                                 rowEditor(row, batch: batch, compact: true)
                             }
+                            if review == nil { addRowItem(batch, divided: true) }
                         }
                     } else {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(visibleRows) { row in rowEditor(row, batch: batch, compact: false) }
                     }
+                    // Another row is part of the list, not a button under it.
+                    if batch.mode != .statements, review == nil, !usesSummary(batch) { ManageCard { addRowItem(batch, divided: false) } }
                     }
                     if displayedRows(batch).count > pageSize {
                         HStack {
@@ -124,7 +126,7 @@ struct UpOnlyImportView: View {
                         Text("Update what you have").font(UpOnlyType.section)
                         ManageCard {
                             ForEach(Array(tracked.enumerated()), id: \.element) { index, mode in
-                                ManageRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All gold & silver",
+                                ManageRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All metals",
                                           caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table",
                                           divided: index > 0, chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
                                     UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 28)
@@ -151,6 +153,18 @@ struct UpOnlyImportView: View {
         .onChange(of: session.importDraft?.mode) { _, mode in session.dropZoneVisible = mode == .statements }
         .onDisappear { session.dropZoneVisible = false }
         .onChange(of: session.importRevision) { _, _ in invalidateReview(); clampPage() }
+        .onChange(of: session.importRequest) { _, request in
+            guard let request else { return }
+            session.importRequest = nil
+            switch request {
+            case .paste:
+                guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { error = "Copy some spreadsheet cells first."; return }
+                prepareExternalInput(); Task { await session.pasteImport(text) }
+            case .chooseFiles: prepareExternalInput(); Task { await session.chooseImportFiles() }
+            case .template: Task { await session.saveImportTemplate() }
+            case .discard: discard = true
+            }
+        }
         .onChange(of: session.importLoading) { _, loading in if !loading, let batch = session.importDraft, usesSummary(batch) { beginReview() } }
         .onChange(of: session.document?.generation) { _, _ in if let batch = session.importDraft, usesSummary(batch) { beginReview() } }
         .onAppear { if let batch = session.importDraft, usesSummary(batch) { beginReview() }; if let batch = session.importDraft, batch.mode != .statements, batch.rows.isEmpty, batch.sources.allSatisfy({ $0.grid.isEmpty }) { addRow() } }
@@ -357,8 +371,6 @@ struct UpOnlyImportView: View {
                     Button("Cancel review") { invalidateReview() }.buttonStyle(.bordered)
                 } else if review != nil {
                     Button("Back to editing") { invalidateReview() }.buttonStyle(.bordered)
-                } else if batch.mode != .statements {
-                    Button { addRow() } label: { Label(addRowTitle(batch.mode), systemImage: "plus") }.buttonStyle(.bordered).disabled(busy)
                 }
             }.controlSize(.small).font(UpOnlyType.body)
             // The main action, full width like the rest of the app's.
@@ -382,7 +394,7 @@ struct UpOnlyImportView: View {
         }
     }
     private func bulkTitle(_ mode: ImportMode) -> String {
-        switch mode { case .statements: "Bank statements"; case .bankBalances: "Balances"; case .holdings: "Crypto"; case .metals: "Gold & silver" }
+        switch mode { case .statements: "Bank statements"; case .bankBalances: "Balances"; case .holdings: "Crypto"; case .metals: "Metals" }
     }
     private func bulkCaption(_ mode: ImportMode) -> String {
         switch mode {
@@ -398,29 +410,20 @@ struct UpOnlyImportView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
-    /// Statements always use the summary, so these actions are for balances and holdings.
-    private var inputActions: some View {
-        Menu {
-            Button("Choose CSV files…") { prepareExternalInput(); Task { await session.chooseImportFiles() } }
-            Button("Paste from spreadsheet") {
-                guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { error = "Copy some spreadsheet cells first."; return }
-                prepareExternalInput(); Task { await session.pasteImport(text) }
-            }
-            Button("Download CSV template…") { Task { await session.saveImportTemplate() } }
-            if let batch = session.importDraft, !batch.rows.isEmpty {
-                Divider()
-                Button("Discard draft…", role: .destructive) { discard = true }
-            }
-        } label: { Label("Import options", systemImage: "doc.badge.plus") }
-            .modifier(UpOnlyPillMenu()).accessibilityLabel("Import options").disabled(busy)
-    }
     private func openMode(_ mode: ImportMode, bulk: Bool = false) {
         guard session.startImport(mode) else { return }; resetView()
         session.importTableMode = bulk
         if mode != .statements { addRow() }
     }
+    /// The list's own last row for adding another account, coin or metal.
+    private func addRowItem(_ batch: ImportBatchDraft, divided: Bool) -> some View {
+        ManageRow(title: addRowTitle(batch.mode), caption: batch.mode == .bankBalances ? "Another account and its balance" : batch.mode == .metals ? "Another metal and its weight" : "Another coin and its quantity",
+                  divided: divided, action: busy ? nil : { addRow() }) {
+            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: batch.mode == .bankBalances ? 28 : 24)
+        } menu: { EmptyView() }
+    }
     private func addRowTitle(_ mode: ImportMode) -> String {
-        switch mode { case .statements: "Add transaction"; case .bankBalances: "Add account"; case .holdings: "Add coin"; case .metals: "Add metal" }
+        switch mode { case .statements: "Add a transaction"; case .bankBalances: "Add an account"; case .holdings: "Add a coin"; case .metals: "Add a metal" }
     }
     private func sourceCard(_ source: ImportSourceDraft, mode: ImportMode) -> some View {
         VStack(alignment: .leading, spacing: 10) {

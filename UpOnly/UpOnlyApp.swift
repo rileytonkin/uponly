@@ -94,7 +94,13 @@ import Observation
         if popover.isShown { close(); return }
         guard let button = item.button else { return }
         session.checkInactivity()
+        // Lock state, the Touch ID prompt and the size are settled before the popover appears, so its first frame is
+        // the right page at the right size rather than the last one shown, snapping.
+        session.menuOpened()
         popover.behavior = session.menuStaysOpen ? .applicationDefined : .transient
+        host.view.layoutSubtreeIfNeeded()
+        let size = host.preferredContentSize
+        if size.width > 0, size.height > 0 { popover.contentSize = size }
         #if UPONLY_FIXTURE
         popover.appearance = NSApp.appearance
         #endif
@@ -107,7 +113,7 @@ import Observation
         guard !session.filePickerIsOpen else { session.focusFilePicker(); return }
         popover.performClose(nil)
     }
-    func popoverWillShow(_ notification: Notification) { session.menuOpened() }
+    func popoverWillShow(_ notification: Notification) {}
     func popoverDidClose(_ notification: Notification) { session.surfaceClosed() }
     func popoverShouldClose(_ popover: NSPopover) -> Bool { !session.filePickerIsOpen }
 }

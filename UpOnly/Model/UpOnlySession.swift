@@ -58,6 +58,9 @@ final class UpOnlySession {
         guard let document else { return nil }
         return document.accounts.first { $0.profileImage != nil && AssetOwnership.businessID(for: $0, in: document) == id }?.profileImage
     }
+    /// An import table's options, chosen from the page header's … menu and carried out by the table.
+    enum ImportRequest: Equatable { case paste, chooseFiles, template, discard }
+    var importRequest: ImportRequest?
     /// Esc asks the page showing to go back; each page that can go back watches this.
     private(set) var backRequests = 0
     /// Income & spending has a Personal or company page open (it has its own Back).
@@ -327,10 +330,14 @@ final class UpOnlySession {
             let timing = ProcessInfo.processInfo.environment["UPONLY_MEASURE_UNLOCK"] == "1"
                 ? UnlockTiming(method: passwordUnlockRequested ? "password" : authenticationContext != nil ? "touch_id" : "system") : nil
             let opened = try await vault.unlock(timing: timing)
+            let previous = await vault.openedPrevious
             guard sessionToken == token else { return }
             unlockTiming = timing
+            // Everything the lock view showed goes in the same update as the dashboard arrives, so there's one
+            // change on screen, not a dimmed dashboard and then another.
+            isBusy = false; authenticationContext = nil; passwordUnlockRequested = false
             publish(opened.document, freshUnlock: true)
-            if await vault.openedPrevious { message = Self.previousCopyNotice }
+            if previous { message = Self.previousCopyNotice }
             timing?.mark("dashboard_published")
         } catch VaultError.needsRecovery { if sessionToken == token { state = .recovery } }
         catch VaultError.cancelled { if sessionToken == token { authenticationFailed = true } }
@@ -432,7 +439,8 @@ final class UpOnlySession {
         document = nil; documentRevision += 1; hourlyCache = [:]; intraday = [:]; intradayFetchedAt = [:]; intradayReady = []
         monthModel = nil
         dashboardSelection = .all
-        showingSwitcher = false; dashboardHeight = nil; cashFlowScope = nil; dashboardTrail = []
+        // The dashboard's height stays: it's layout, not data, and the next unlock opens straight at it.
+        showingSwitcher = false; cashFlowScope = nil; dashboardTrail = []
         message = nil
         isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
         sourceIssues = [:]
@@ -775,7 +783,7 @@ final class UpOnlySession {
     private func finishHomeImport(saved: ImportMode?) {
         guard importReturnsHome else { return }
         importReturnsHome = false; managementInMenu = false; addingInMenu = false; importMessage = nil
-        if let saved { flash(saved == .statements ? "Statement imported." : saved == .bankBalances ? "Balances saved." : saved == .metals ? "Gold & silver saved." : "Holdings saved.") }
+        if let saved { flash(saved == .statements ? "Statement imported." : saved == .bankBalances ? "Balances saved." : saved == .metals ? "Metals saved." : "Holdings saved.") }
     }
     func cancelImport() {
         importTask?.cancel(); importTask = nil; importLoading = false; importRevision = UUID()
@@ -1173,6 +1181,8 @@ final class UpOnlySession {
             if preview == "security" { managementSection = "Security" }
             if ["accounts", "portfolios", "entries"].contains(preview) { managementSection = preview == "accounts" ? "Accounts" : preview == "portfolios" ? "Portfolios" : "Entries" }
             managementInMenu = isManagement
+            // Any preview's data on a Manage page, e.g. the companies' synced profiles on Accounts.
+            if let section = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_SECTION"] { managementSection = section; managementInMenu = true }
             if let file = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_FILE"] {
                 if let raw = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_MODE"], let mode = ImportMode(rawValue: raw) {
                     discardImport(); startImport(mode)

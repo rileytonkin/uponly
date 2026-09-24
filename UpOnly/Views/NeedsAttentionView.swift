@@ -49,31 +49,42 @@ struct UpOnlyDataAttention: View {
                 // The page header names the month; this starts straight at the figures.
                 spendingReview(month).frame(maxWidth: .infinity, alignment: .leading)
             }
+            // What's missing is a list of rows, each opening the form that fills it in.
             if !report.balances.isEmpty {
-                attentionCard("Balances needed", symbol: "building.columns") {
-                    ForEach(report.balances) { account in
-                        Button { session.startImport(.bankBalances, prefill: true, accountID: account.id) } label: {
-                            Label(account.name, systemImage: "plus").fixedSize(horizontal: false, vertical: true)
-                        }
+                section("Balances needed") {
+                    ForEach(Array(report.balances.enumerated()), id: \.element.id) { index, account in
+                        ManageRow(title: account.name, caption: "Add its balance", divided: index > 0, chevron: true, action: {
+                            session.startImport(.bankBalances, prefill: true, accountID: account.id)
+                        }) {
+                            if let image = account.profileImage { UpOnlyProfileImage(data: image, name: account.name, size: 28) }
+                            else { UpOnlyBankBadge(name: account.name, size: 28) }
+                        } menu: { EmptyView() }
                     }
                 }
             }
             if !report.quantities.isEmpty {
-                attentionCard("Holdings need quantities", symbol: "square.stack.3d.up") {
-                    ForEach(report.quantities) { holding in
-                        Button(holding.assetName) {
-                            let metals = session.document?.portfolio(id: holding.portfolioID)?.kind == .metals
+                section("Holdings need quantities") {
+                    ForEach(Array(report.quantities.enumerated()), id: \.element.id) { index, holding in
+                        let metals = session.document?.portfolio(id: holding.portfolioID)?.kind == .metals
+                        ManageRow(title: holding.assetName, caption: metals ? "Add its weight" : "Add its quantity", divided: index > 0, chevron: true, action: {
                             session.startImport(metals ? .metals : .holdings, prefill: true, holdingID: holding.id)
-                        }
+                        }) {
+                            if let metal = PreciousMetal.asset(holding.assetID) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
+                            else { UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: holding.assetName, size: 28) }
+                        } menu: { EmptyView() }
                     }
                 }
             }
             if report.pricesNeeded || !report.accountingNames.isEmpty || !priceIssues.isEmpty {
-                attentionCard("Prices & rates", symbol: "arrow.triangle.2.circlepath") {
-                    if !priceIssues.isEmpty { note(priceIssues.joined(separator: ", ") + " could not refresh in the background. Saved values are still shown.") }
-                    if report.pricesNeeded { note("No price or rate for today: " + report.missingPriceLabels.joined(separator: ", ") + ". Check the source is on, has its key, and has updated.") }
-                    if !report.accountingNames.isEmpty { note(report.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
-                    Button("Open Prices & rates") { session.managementSection = "Sources" }
+                section("Data sources") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !priceIssues.isEmpty { note(priceIssues.joined(separator: ", ") + " could not refresh in the background. Saved values are still shown.") }
+                        if report.pricesNeeded { note("No price or rate for today: " + report.missingPriceLabels.joined(separator: ", ") + ". Check the source is on, has its key, and has updated.") }
+                        if !report.accountingNames.isEmpty { note(report.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)
+                    ManageRow(title: "Open Data sources", divided: true, chevron: true, action: { session.managementSection = "Sources" }) {
+                        UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 28)
+                    } menu: { EmptyView() }
                 }
             }
         }.controlSize(.regular)
@@ -89,12 +100,17 @@ struct UpOnlyDataAttention: View {
                     }
                 }
                 reviewEvidence(MonthEvidence.build(month, document: doc), document: doc)
-                HStack(spacing: 8) {
-                    Button("Edit all") { session.entryMonthForManagement = month.description; session.managementSection = "Entries" }
-                    Menu("Add missing") {
-                        Button("Import statements…") { session.startImport(.statements) }
-                        Button("Add a transaction") { session.entryMonthForManagement = month.description; addEntry() }
-                    }.menuStyle(.borderedButton).fixedSize()
+                // Fixing the month is a short list, like everywhere else: see them all, or add what's missing.
+                ManageCard {
+                    ManageRow(title: "All of " + month.title + "’s transactions", chevron: true, action: {
+                        session.entryMonthForManagement = month.description; session.managementSection = "Entries"
+                    }) { UpOnlySymbolBadge(symbol: "list.bullet", tint: UpOnlyTint.cashFlow, size: 28) } menu: { EmptyView() }
+                    ManageRow(title: "Import a statement", caption: "Transactions from a CSV file", divided: true, chevron: true, action: {
+                        session.startImport(.statements)
+                    }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28) } menu: { EmptyView() }
+                    ManageRow(title: "Add a transaction", divided: true, chevron: true, action: {
+                        session.entryMonthForManagement = month.description; addEntry()
+                    }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) } menu: { EmptyView() }
                 }
                 if case .exchangeRates(let currencies)? = state.unavailable {
                     note("A dated " + currencies.joined(separator: ", ") + " exchange rate is also needed.")
@@ -225,6 +241,14 @@ struct UpOnlyDataAttention: View {
     }
     private func note(_ text: String) -> some View {
         Text(text).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+    /// A titled list, as the dashboard's sections are.
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        let rows = content()
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(UpOnlyType.section)
+            ManageCard { rows }
+        }
     }
     private func attentionCard<Content: View>(_ title: String, symbol: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {

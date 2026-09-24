@@ -99,7 +99,7 @@ extension UpOnlyUnlockedPanel {
             }
             if !portfolios.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(Set(portfolios.map(\.kind)).count > 1 ? "Crypto, gold & silver" : portfolios[0].kind == .metals ? "Gold & silver" : "Crypto").font(UpOnlyType.section)
+                    Text(Set(portfolios.map(\.kind)).count > 1 ? "Crypto & metals" : portfolios[0].kind == .metals ? "Metals" : "Crypto").font(UpOnlyType.section)
                     assetList(portfolios.map { portfolio -> AssetRow in
                         let parts = holdingValues.filter { component in document?.holdings.first { $0.id == component.id }?.portfolioID == portfolio.id }
                         return AssetRow(id: portfolio.id.uuidString, name: portfolio.name, detail: parts.isEmpty ? nil : parts.map(\.label).joined(separator: ", "),
@@ -138,8 +138,9 @@ extension UpOnlyUnlockedPanel {
         if manual, let component = single {
             options.append(("Update balance…", { showImport(session.startImport(.bankBalances, prefill: true, accountID: component.id)) }))
         }
-        return AssetRow(id: bank.id, name: bank.name, detail: native, detailIsAmount: true,
-                        value: bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"),
+        // A foreign balance sits under its dollar value, as a coin's quantity does, so the name stays on one line.
+        return AssetRow(id: bank.id, name: bank.name,
+                        value: bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"), valueDetail: native,
                         image: bank.image, bank: bank.name, synced: synced, symbol: "building.columns.fill", tint: UpOnlyTint.netWorth,
                         selected: companyFocus == .bank(ids), trailing: .none, options: options) {
             companyFocus = companyFocus == .bank(ids) ? .all : .bank(ids)
