@@ -66,9 +66,10 @@ extension UpOnlyUnlockedPanel {
         let document = session.document
         // Your share of everything, the same figure as the All assets page; its components value every row.
         let personal = document.map { AssetOwnership.personalValue(at: interval.end, scope: .allTracked, document: $0) }
-        let start = document.flatMap { rangeStart(scope: .allTracked, interval: interval, document: $0, prices: ChartPrices(document: $0)) }
+        let estimates = document.map(ChartEstimates.init)
+        let start = document.flatMap { doc in estimates.flatMap { rangeStart(scope: .allTracked, interval: interval, document: doc, estimates: $0) } }
         let rows = personal.map { selectionRows(current: $0.components, start: start, at: interval.end) } ?? []
-        let then = document.flatMap { doc in start.flatMap { AssetOwnership.personalTotal($0.components, at: $0.day, document: doc) } }
+        let then = start.flatMap { start in estimates?.personalTotal(start.components, day: start.day)?.total }
         let allChange = personal?.total.flatMap { now in then.map { PeriodChange(from: $0, to: now) } }
         // The same figure as the page it opens, which starts on all accounts.
         let month = document.flatMap { MonthlyLedger.evaluate(.current(), document: $0).totals?.net }

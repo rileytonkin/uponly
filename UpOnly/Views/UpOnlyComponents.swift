@@ -240,12 +240,12 @@ nonisolated enum WorthRange: CaseIterable {
     var seconds: TimeInterval? {
         switch self { case .week: 7 * 86400; case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .all: nil }
     }
-    /// Days between chart points: daily up to three months, weekly for a year, and for All by how long the history is.
+    /// Days between chart points: every day up to a year (at most 365 points), and for All by how long the
+    /// history is, so it too stays near a year's worth of points.
     func chartStepDays(span: TimeInterval) -> Int {
         switch self {
-        case .week, .month, .quarter: 1
-        case .year: 7
-        case .all: span <= 100 * 86400 ? 1 : span <= 800 * 86400 ? 7 : 30
+        case .week, .month, .quarter, .year: 1
+        case .all: span <= 400 * 86400 ? 1 : span <= 1100 * 86400 ? 3 : 7
         }
     }
     /// Short ranges name days ("Sep 17"); a year or more also names the year ("Sep 24, 2025").

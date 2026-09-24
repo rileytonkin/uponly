@@ -23,7 +23,7 @@ extension UpOnlyUnlockedPanel {
         let focusParts = focusedParts(allParts)
         let focusTotal = focusParts.isEmpty ? nil : AssetOwnership.sum(focusParts)
         let share = document.flatMap { doc in allParts.isEmpty ? nil : AssetOwnership.personalTotal(allParts, at: interval.end, document: doc) }
-        let series = companySeries(groupID, interval: interval)
+        let series = companySeries(groupID, interval: interval, live: focusTotal)
         let focusOptions = companyFocusOptions(bankValues: bankValues, portfolios: portfolios)
         // The same measure as the overview: today's figure against the chart's first, over whatever the page is focused on.
         let change = periodChange(series, now: focusTotal)
@@ -176,21 +176,19 @@ extension UpOnlyUnlockedPanel {
         return options.first { $0.focus == companyFocus }?.label
     }
     /// The selected account, portfolio or whole group over time, from the saved daily values of everything tracked.
-    /// Missing prices and rates take the nearest saved ones, as on the net worth chart.
-    func companySeries(_ groupID: String, interval: DateInterval) -> [UpOnlyChartPoint] {
+    /// Missing prices, rates and balances are estimated as on the net worth chart; the line ends at `live`.
+    func companySeries(_ groupID: String, interval: DateInterval, live: Decimal?) -> [UpOnlyChartPoint] {
         guard let document = session.document else { return [] }
         let companyID = groupID == "personal" ? nil : groupID
         let samples = DashboardPeriod.samples(in: interval, scope: .allTracked, document: document)
-        let prices = ChartPrices(document: document)
-        return dailySeries(samples, interval: interval) { sample in
+        let estimates = ChartEstimates(document: document)
+        return dailySeries(samples, interval: interval, live: live) { sample in
             let banks = sample.components.filter { component in
                 component.kind == .bank && (AssetOwnership.businessID(for: component, in: document) ?? "personal") == groupID
             }
             let parts = focusedParts(banks + companyHoldings(sample.components, companyID: companyID))
             guard !parts.isEmpty else { return nil }
-            let day = prices.filled(parts, day: sample.utcDay)
-            guard day.complete, let total = AssetOwnership.sum(day.components) else { return nil }
-            return (total, day.estimated.isEmpty ? nil : "Estimated with " + day.estimated.joined(separator: ", "))
+            return estimates.total(parts, day: sample.utcDay).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
         }
     }
 }

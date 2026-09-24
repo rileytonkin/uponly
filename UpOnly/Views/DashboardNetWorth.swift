@@ -12,33 +12,36 @@ extension UpOnlyUnlockedPanel {
         /// Every part where the range starts, for each All assets row's own change. Only worked out there.
         var start: (day: Date, components: [ValuationComponent])? = nil
         /// Prices for the holdings table's changes over the range.
-        var prices: ChartPrices? = nil
+        var estimates: ChartEstimates? = nil
         /// Any saved history for this scope, even outside the range, so the range can still be changed.
         var hasHistory = false
         /// Profit against what was paid, over the holdings with recorded purchases.
         var allTime: (gain: Decimal, cost: Decimal, covered: Int, total: Int)? = nil
+        /// Each holding's cost and gain, worked out once for the All-time line and the holdings table.
+        var performance: [UUID: HoldingPerformance] = [:]
     }
     func worthSnapshot() -> WorthSnapshot {
         let interval = selectedInterval
         guard let document = session.document else { return WorthSnapshot(interval: interval) }
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
         let valuation = AssetOwnership.personalValue(at: interval.end, scope: scope, document: document)
-        let prices = ChartPrices(document: document)
-        // A coin or currency without a saved price that day takes its nearest one, and the hover says which. A day
-        // that still can't be valued in full is left out, rather than drawn low.
-        let points = dailySeries(samples, interval: interval) { sample in
-            let day = prices.filled(sample.components, day: sample.utcDay)
-            guard day.complete, let total = AssetOwnership.personalTotal(day.components, at: sample.utcDay, document: document) else { return nil }
-            return (total, day.estimated.isEmpty ? nil : "Estimated with " + day.estimated.joined(separator: ", "))
+        let estimates = ChartEstimates(document: document)
+        // Whatever a saved day lacks (a price, a rate, a balance, a company's share that month) is estimated from the
+        // nearest saved values and named on hover, so the line never dips or cuts across for want of one.
+        let points = dailySeries(samples, interval: interval, live: valuation.total) { sample in
+            estimates.personalTotal(sample.components, day: sample.utcDay).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
         }
         // A company's holdings count at your share in the total, so profit on cost is only summed for personal portfolios.
         let personal = Set(document.portfolios.filter { ($0.ownerBusinessID ?? "").isEmpty }.map(\.id))
         let portfolioOf = Dictionary(document.holdings.map { ($0.id, $0.portfolioID) }, uniquingKeysWith: { first, _ in first })
-        let owned = valuation.components.filter { $0.kind == .holding && portfolioOf[$0.id].map(personal.contains) == true }
+        let holdings = valuation.components.filter { $0.kind == .holding }
+        let performance = Dictionary(holdings.map { ($0.id, HoldingPerformance.summary(holdingID: $0.id, valueUSD: $0.usdValue?.value, document: document, at: interval.end)) },
+                                     uniquingKeysWith: { first, _ in first })
+        let owned = holdings.filter { $0.usdValue != nil && portfolioOf[$0.id].map(personal.contains) == true }
         return WorthSnapshot(interval: interval, valuation: valuation, points: points, change: periodChange(points, now: valuation.total),
-                             start: scope == .allTracked ? rangeStart(scope: scope, interval: interval, document: document, prices: prices) : nil,
-                             prices: prices, hasHistory: !samples.isEmpty || document.dailyValuations.contains { $0.scope == scope },
-                             allTime: HoldingPerformance.scope(owned, document: document, at: interval.end))
+                             start: scope == .allTracked ? rangeStart(scope: scope, interval: interval, document: document, estimates: estimates) : nil,
+                             estimates: estimates, hasHistory: !samples.isEmpty || document.dailyValuations.contains { $0.scope == scope },
+                             allTime: HoldingPerformance.total(owned.compactMap { performance[$0.id] }), performance: performance)
     }
     var worthContent: some View {
         let snapshot = worthSnapshot()
@@ -204,11 +207,11 @@ extension UpOnlyUnlockedPanel {
                 // Metals read by name ("Gold"), coins by ticker ("BTC"); the full name is on hover.
                 ticker: metalKind?.name ?? (symbol.isEmpty ? holding.assetName : symbol), name: metalKind != nil ? symbol : holding.assetName,
                 price: quantity.flatMap { q in value.flatMap { UpOnlyFormat.unitPrice(quantity: q, valueUSD: $0, metal: metal) } },
-                change: snapshot.prices?.priceChange(holding.assetID, since: snapshot.interval.start, now: date),
+                change: snapshot.estimates?.priceChange(holding.assetID, since: snapshot.interval.start, now: date),
                 value: value,
                 valueText: value.map(UpOnlyFormat.exactMoney) ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"),
                 quantity: quantity.map { UpOnlyFormat.quantityText($0, symbol: symbol.isEmpty ? holding.assetName : symbol, metal: metal) },
-                caption: UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: component.id, valueUSD: value, document: document, at: date), metal: metal))
+                caption: UpOnlyFormat.performance(snapshot.performance[component.id] ?? HoldingPerformance.summary(holdingID: component.id, valueUSD: value, document: document, at: date), metal: metal))
         }
         switch effectiveHoldingSort {
         case .value: return lines.sorted { ($0.value ?? -1) > ($1.value ?? -1) }

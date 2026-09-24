@@ -127,9 +127,11 @@ nonisolated enum UpOnlyChartAxis {
 /// What the chart derives from its points, worked out once when the points arrive rather than on every hover.
 nonisolated struct UpOnlyChartLayout {
     var visible: [UpOnlyChartPoint]
-    /// Stretches of consecutive points that have a value. Monthly charts keep a missing month as a gap; daily history
-    /// draws one line across a day with no value, since what was held didn't vanish that day.
+    /// Stretches of points that have a value. Monthly charts keep a missing month as a gap; daily history runs across
+    /// up to `bridge` days without a value, since what was held didn't vanish, but leaves a longer gap as a gap rather
+    /// than drawing a straight line across it.
     var runs: [[Int]]
+    static let bridge = 7
     var scale: UpOnlyChartScale
     var markers: Bool
     /// Points carrying an axis label, or nil to label from every point's `label`.
@@ -144,10 +146,11 @@ nonisolated struct UpOnlyChartLayout {
             let chosen = points.firstIndex { $0.id == selected }
             visible = Array(points[min(first, chosen ?? first)...max(last, chosen ?? last)])
         }
-        var runs: [[Int]] = [], run: [Int] = []
+        var runs: [[Int]] = [], run: [Int] = [], empty = 0
         for index in visible.indices {
-            if visible[index].value != nil { run.append(index) }
-            else if !run.isEmpty, !bridgesGaps { runs.append(run); run = [] }
+            guard visible[index].value != nil else { empty += 1; continue }
+            if !run.isEmpty, empty > (bridgesGaps ? Self.bridge : 0) { runs.append(run); run = [] }
+            run.append(index); empty = 0
         }
         if !run.isEmpty { runs.append(run) }
         let values = visible.compactMap(\.value)
@@ -192,8 +195,8 @@ struct UpOnlyChart: View {
     private let plotHeight: CGFloat = 120
     /// Room past the last point for the largest marker, so it isn't clipped at the right edge.
     private let edge: CGFloat = 6
-    /// `bridgesGaps` is for daily history: the line runs across a day without a value. Off for monthly charts, which
-    /// keep a missing month as a gap.
+    /// `bridgesGaps` is for daily history: straight segments, running across a few days without a value. Off for
+    /// monthly charts, which are gently smoothed and keep a missing month as a gap.
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
          tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false) {
         self.points = points; self.includesZero = includesZero; self.selected = selected; self.tint = tint; self.onSelect = onSelect
@@ -223,6 +226,8 @@ struct UpOnlyChart: View {
         guard let first = pts.first else { return path }
         path.move(to: first)
         guard pts.count > 1 else { return path }
+        // Daily history is dense enough to draw as it is: straight segments never invent a peak or a hook.
+        if bridgesGaps { for point in pts.dropFirst() { path.addLine(to: point) }; return path }
         // The admin Earnings chart's line tension (REPORTING_LINE_TENSION = 0.08): a barely softened line whose
         // handles are clamped vertically so it never invents a peak or dip between real observations.
         let tension: CGFloat = 0.08
@@ -284,22 +289,24 @@ struct UpOnlyChart: View {
     }
     private var historyChart: some View {
         GeometryReader { geometry in
-            // The plot starts at the left edge and the value axis sits on the right, as in market apps.
+            // The value axis sits on the left and the plot runs from it to the right edge.
             let plotWidth = max(1, geometry.size.width - axisWidth - edge)
             let visible = layout.visible
             ZStack(alignment: .topLeading) {
                 Canvas { context, size in
                     for tick in layout.scale.ticks where !layout.runs.isEmpty {
                         let yy = y(Decimal(tick))
-                        var grid = Path(); grid.move(to: CGPoint(x: 0, y: yy)); grid.addLine(to: CGPoint(x: plotWidth + edge, y: yy))
+                        var grid = Path(); grid.move(to: CGPoint(x: axisWidth, y: yy)); grid.addLine(to: CGPoint(x: axisWidth + plotWidth + edge, y: yy))
                         // Gridlines at 4.5% (the admin's rgba(255,255,255,0.045)); the zero line a little firmer on cash-flow charts.
                         let zero = tick == 0 && includesZero
                         context.stroke(grid, with: .color(.primary.opacity(zero ? 0.2 : contrast == .increased ? 0.14 : 0.06)), lineWidth: 1)
                         // Privacy mode keeps the axis's shape with dots in place of the amounts, as market apps do.
                         context.draw(Text(session.privacyMode ? "••••" : UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
-                                     at: CGPoint(x: plotWidth + edge + 5, y: yy), anchor: .leading)
+                                     at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
                     }
-                    let plot = context
+                    // Everything below is drawn in the plot's own coordinates, starting at the axis.
+                    var plot = context
+                    plot.translateBy(x: axisWidth, y: 0)
                     let zeroY = includesZero ? y(0) : plotHeight - 6
                     let loss = UpOnlyTint.loss
                     let solidStyle = StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
@@ -369,18 +376,18 @@ struct UpOnlyChart: View {
                 }.frame(height: plotHeight).accessibilityHidden(true)
                 if let hovered, visible.indices.contains(hovered) {
                     let point = visible[hovered]
-                    let anchor = x(hovered, width: plotWidth)
+                    let anchor = axisWidth + x(hovered, width: plotWidth)
                     let width: CGFloat = point.note == nil || session.privacyMode ? 136 : 176
                     // Beside the crosshair, to its right when there's room; level with the plot's emptier half so the
                     // card never covers the point.
-                    let left = anchor + 14 + width <= geometry.size.width ? anchor + 14 : max(0, anchor - 14 - width)
+                    let left = anchor + 14 + width <= geometry.size.width ? anchor + 14 : max(axisWidth, anchor - 14 - width)
                     let low = point.value.map { y($0) > plotHeight / 2 } ?? true
                     hoverCard(point, index: hovered).frame(width: width, alignment: .leading)
                         .frame(width: width, height: plotHeight, alignment: low ? .top : .bottom)
                         .offset(x: left)
                         .allowsHitTesting(false)
                 }
-                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight)
+                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight).offset(x: axisWidth)
                     .onContinuousHover { phase in
                         switch phase { case .active(let location): hovered = nearest(location.x, width: plotWidth); case .ended: hovered = nil }
                     }
@@ -393,7 +400,7 @@ struct UpOnlyChart: View {
                             .foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.5)).fixedSize()
                             .position(x: tick.center, y: 6)
                     }
-                }.frame(width: plotWidth, height: 14).offset(y: plotHeight + 6)
+                }.frame(width: plotWidth, height: 14).offset(x: axisWidth, y: plotHeight + 6)
             }
         }.frame(height: plotHeight + 20)
             .onChange(of: points) { hovered = nil }

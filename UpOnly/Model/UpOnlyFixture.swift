@@ -33,7 +33,6 @@ enum UpOnlyFixture {
             doc = try HoldingMutations.addHolding(portfolioID: sample.id, assetID: PreciousMetal.gold.assetID, assetName: "Gold", quantity: PreciousMetal.gramsPerTroyOunce, at: start, document: doc)
         }
         var scopes: [ValuationScope] = [.allTracked]
-        if account != nil { scopes.append(.banks) }
         if let portfolio { scopes.append(.portfolio(portfolio.id)) }
         if let metalPortfolio { scopes.append(.portfolio(metalPortfolio.id)) }
         for day in 0...90 {

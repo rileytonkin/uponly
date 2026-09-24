@@ -10,10 +10,6 @@ struct StaleValuation: Sendable, Equatable {
     var asOf: Date
 }
 
-struct BalanceChange: Sendable, Equatable {
-    var amount: Decimal
-}
-
 struct ValuationResult: Sendable, Equatable {
     var at: Date
     var scope: ValuationScope
@@ -54,15 +50,6 @@ nonisolated enum NetWorthCalculator {
             return result(from: stored, at: date)
         }
         return compute(at: date, scope: scope, document: document, now: now, historical: isHistorical)
-    }
-
-    static func change(from: ValuationResult, to: ValuationResult) -> BalanceChange? {
-        guard from.scope == to.scope,
-              from.includedAccountIDs == to.includedAccountIDs,
-              from.includedPortfolioIDs == to.includedPortfolioIDs,
-              let a = from.total, let b = to.total else { return nil }
-        guard let amount = try? MoneyInput.add(b, -a, allowingRounding: true) else { return nil }
-        return BalanceChange(amount: amount)
     }
 
     static func sample(from result: ValuationResult) -> DailyValuation? {
@@ -499,6 +486,7 @@ nonisolated enum HoldingMutations {
     /// Recompute stored daily values from a day in the past, after a backdated quantity or balance.
     static func rebuildHistory(from start: Date, to end: Date? = nil, document: VaultDocument, now: Date) -> VaultDocument {
         var next = document
+        next.dropUnstoredValuations()
         let scopes = next.valuationScopes
         let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-2200 * 86400))
         let last = min(UTCDay.start(of: now), end.map { UTCDay.start(of: $0) } ?? UTCDay.start(of: now))
@@ -877,38 +865,53 @@ extension HoldingPerformance {
     /// Profit against what was paid, over the holdings whose purchases cover what's held now. `covered` of `total`
     /// holdings count; nil when none has a recorded cost. Only holdings valued in USD today are considered.
     static func scope(_ components: [ValuationComponent], document: VaultDocument, at date: Date) -> (gain: Decimal, cost: Decimal, covered: Int, total: Int)? {
-        let holdings = components.filter { $0.kind == .holding && $0.usdValue != nil }
+        total(components.filter { $0.kind == .holding && $0.usdValue != nil }.map { summary(holdingID: $0.id, valueUSD: $0.usdValue?.value, document: document, at: date) })
+    }
+    /// The same from summaries already worked out, one per holding valued in USD.
+    static func total(_ summaries: [HoldingPerformance]) -> (gain: Decimal, cost: Decimal, covered: Int, total: Int)? {
         var gain = Decimal(0), cost = Decimal(0), covered = 0
-        for component in holdings {
-            let summary = summary(holdingID: component.id, valueUSD: component.usdValue?.value, document: document, at: date)
+        for summary in summaries {
             guard let paid = summary.costUSD, let profit = summary.gainUSD else { continue }
             gain += profit; cost += paid; covered += 1
         }
-        return covered > 0 ? (gain, cost, covered, holdings.count) : nil
+        return covered > 0 ? (gain, cost, covered, summaries.count) : nil
     }
 }
 
-/// Prices and rates for history. A saved day that lacks a coin's price or a currency's rate takes the nearest
-/// observation within `window` of it (the earlier one wins a tie), so a chart counts everything held that day instead
-/// of dipping whenever one price wasn't saved. A day that still can't be valued is left out.
-nonisolated struct ChartPrices {
-    static let window: TimeInterval = 30 * 86400
-    private var quotes: [String: [(time: Date, value: Decimal)]] = [:]
-    private var rates: [String: [(time: Date, value: Decimal)]] = [:]
+/// Everything a chart needs to value a saved day in full. A saved day can lack a coin's price or a currency's rate
+/// (not saved that day), an account's balance (none recorded yet), or a company's ownership share (not recorded for
+/// that month). Leaving such a day out, or counting only what has a value, is what made charts dip, jump or cut
+/// straight across months. Each gap is estimated from the nearest saved values instead, and named, so the hover can
+/// say what was estimated. The saved days themselves are never changed.
+nonisolated struct ChartEstimates {
+    /// How far from a saved value a price, rate or balance may be carried when there is nothing on the other side.
+    static let window: TimeInterval = 90 * 86400
+    /// A saved value this close is used as it is, rather than drawn between its neighbours.
+    static let near: TimeInterval = 3 * 86400
+    typealias Series = [(time: Date, value: Decimal)]
+    private var quotes: [String: Series] = [:]
+    private var rates: [String: Series] = [:]
+    private var balances: [UUID: [(time: Date, value: Decimal, currency: String)]] = [:]
     private var assets: [UUID: CanonicalAssetID] = [:]
+    /// Each account's or holding's company ("" for yours), worked out once rather than per day.
+    private var owners: [UUID: String] = [:]
+    private var books: [String: BusinessBook] = [:]
     init(document: VaultDocument) {
         for quote in document.quotes { quotes[quote.assetID.rawValue, default: []].append((quote.providerTime, quote.priceUSD.value)) }
         for key in quotes.keys { quotes[key]?.sort { $0.time < $1.time } }
         for rate in document.fx where rate.targetCurrency == "USD" { rates[rate.sourceCurrency, default: []].append((rate.providerTime, rate.rate.value)) }
         for key in rates.keys { rates[key]?.sort { $0.time < $1.time } }
+        for balance in document.bankBalances { balances[balance.accountID, default: []].append((balance.observedAt, balance.amount.value, balance.currency)) }
+        for key in balances.keys { balances[key]?.sort { $0.time < $1.time } }
         assets = Dictionary(document.holdings.map { ($0.id, $0.assetID) }, uniquingKeysWith: { first, _ in first })
+        for account in document.accounts { owners[account.id] = AssetOwnership.businessID(for: account, in: document) ?? "" }
+        let portfolioOwner = Dictionary(document.portfolios.map { ($0.id, $0.ownerBusinessID ?? "") }, uniquingKeysWith: { first, _ in first })
+        for holding in document.holdings { owners[holding.id] = portfolioOwner[holding.portfolioID] ?? "" }
+        books = Dictionary((document.businessAccounting ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
-    /// The observation nearest `moment` within the window, and when it was made.
-    static func nearest(_ series: [(time: Date, value: Decimal)], to moment: Date) -> (time: Date, value: Decimal)? {
-        guard !series.isEmpty else { return nil }
-        var low = 0, high = series.count
-        while low < high { let mid = (low + high) / 2; if series[mid].time <= moment { low = mid + 1 } else { high = mid } }
-        let before = low > 0 ? series[low - 1] : nil, after = low < series.count ? series[low] : nil
+    /// The observation nearest `moment` within `window`, the earlier one on a tie.
+    static func nearest(_ series: Series, to moment: Date, within window: TimeInterval = window) -> (time: Date, value: Decimal)? {
+        let (before, after) = neighbours(series, moment)
         let pick: (time: Date, value: Decimal)?
         switch (before, after) {
         case let (b?, a?): pick = moment.timeIntervalSince(b.time) <= a.time.timeIntervalSince(moment) ? b : a
@@ -919,28 +922,91 @@ nonisolated struct ChartPrices {
         guard let pick, abs(pick.time.timeIntervalSince(moment)) <= window else { return nil }
         return pick
     }
-    /// The day's components with each missing price or rate taken from the nearest saved one, the names of what was
-    /// filled that way, and whether every part now has a value (a missing balance can't be filled).
+    /// A price or rate for a moment: a saved one within `near`; otherwise a straight line between the saved ones on
+    /// either side, however far apart; otherwise the nearest within `window`. Returns the dates it came from.
+    static func estimate(_ series: Series, at moment: Date) -> (value: Decimal, from: Date, to: Date?)? {
+        if let close = nearest(series, to: moment, within: near) { return (close.value, close.time, nil) }
+        let (before, after) = neighbours(series, moment)
+        if let before, let after {
+            let span = after.time.timeIntervalSince(before.time)
+            let part = Decimal(moment.timeIntervalSince(before.time) / span)
+            return (before.value + (after.value - before.value) * part, before.time, after.time)
+        }
+        return nearest(series, to: moment).map { ($0.value, $0.time, nil) }
+    }
+    private static func neighbours(_ series: Series, _ moment: Date) -> (before: (time: Date, value: Decimal)?, after: (time: Date, value: Decimal)?) {
+        var low = 0, high = series.count
+        while low < high { let mid = (low + high) / 2; if series[mid].time <= moment { low = mid + 1 } else { high = mid } }
+        return (low > 0 ? series[low - 1] : nil, low < series.count ? series[low] : nil)
+    }
+    private static func source(_ found: (value: Decimal, from: Date, to: Date?), _ noun: String) -> String {
+        found.to.map { " between its " + dayName(found.from) + " and " + dayName($0) + " " + noun + "s" } ?? " at its " + dayName(found.from) + " " + noun
+    }
+    /// The day's components with each missing price, rate or balance estimated, the names of what was estimated, and
+    /// whether every part now has a value.
     func filled(_ components: [ValuationComponent], day: Date) -> (components: [ValuationComponent], estimated: [String], complete: Bool) {
         let moment = UTCDay.start(of: day).addingTimeInterval(12 * 3600)
         var result: [ValuationComponent] = [], estimated: [String] = [], complete = true
         for component in components {
             guard component.missing != nil || component.usdValue == nil else { result.append(component); continue }
-            let found: (time: Date, value: Decimal)?
+            var copy = component, note: String?
             switch (component.kind, component.missing) {
-            case (.holding, "quote"?): found = assets[component.id].flatMap { id in quotes[id.rawValue].flatMap { Self.nearest($0, to: moment) } }
-            case (.bank, "fx"?): found = rates[component.currency].flatMap { Self.nearest($0, to: moment) }
-            default: found = nil
+            case (.holding, "quote"?):
+                if let amount = component.nativeAmount?.value, let id = assets[component.id], let series = quotes[id.rawValue], let found = Self.estimate(series, at: moment),
+                   let usd = try? MoneyInput.multiply(amount, found.value, allowingRounding: true) {
+                    copy.usdValue = PreciseDecimal(usd); copy.quoteTime = found.from; note = component.label + Self.source(found, "price")
+                }
+            case (.bank, "fx"?):
+                if let amount = component.nativeAmount?.value, let series = rates[component.currency], let found = Self.estimate(series, at: moment),
+                   let usd = try? MoneyInput.multiply(amount, found.value, allowingRounding: true) {
+                    copy.usdValue = PreciseDecimal(usd); copy.fxTime = found.from; note = component.label + Self.source(found, "rate")
+                }
+            case (.bank, "balance"?):
+                // No balance recorded yet on this day: the first one recorded after it, within the window.
+                if let later = balances[component.id]?.first(where: { $0.time > moment && $0.time.timeIntervalSince(moment) <= Self.window }),
+                   let rate = later.currency == "USD" ? Decimal(1) : rates[later.currency].flatMap({ Self.estimate($0, at: moment)?.value }),
+                   let usd = try? MoneyInput.multiply(later.value, rate, allowingRounding: true) {
+                    copy.nativeAmount = PreciseDecimal(later.value); copy.usdValue = PreciseDecimal(usd)
+                    note = component.label + " at its " + Self.dayName(later.time) + " balance"
+                }
+            default: break
             }
-            guard let found, let amount = component.nativeAmount?.value,
-                  let usd = try? MoneyInput.multiply(amount, found.value, allowingRounding: true) else { result.append(component); complete = false; continue }
-            var copy = component
-            copy.usdValue = PreciseDecimal(usd); copy.missing = nil
-            if component.kind == .holding { copy.quoteTime = found.time } else { copy.fxTime = found.time }
-            result.append(copy)
-            estimated.append(component.label + " at its " + ChartPrices.dayName(found.time) + (component.kind == .holding ? " price" : " rate"))
+            guard let note else { result.append(component); complete = false; continue }
+            copy.missing = nil
+            result.append(copy); estimated.append(note)
         }
         return (result, estimated, complete)
+    }
+    /// A day's full total, every part estimated where it must be. Nil when a part still can't be valued.
+    func total(_ components: [ValuationComponent], day: Date) -> (total: Decimal, estimated: [String])? {
+        let day = filled(components, day: day)
+        guard day.complete, let total = AssetOwnership.sum(day.components) else { return nil }
+        return (total, day.estimated)
+    }
+    /// Your share of a day: a company's parts at its ownership that month, or at the nearest month recorded when
+    /// that one isn't. Nil when a part still can't be valued or a company has no ownership recorded at all.
+    func personalTotal(_ components: [ValuationComponent], day: Date) -> (total: Decimal, estimated: [String])? {
+        let filled = filled(components, day: day)
+        guard filled.complete else { return nil }
+        var estimated = filled.estimated, total = Decimal.zero
+        let month = AssetOwnership.month(at: day).description
+        for (owner, parts) in Dictionary(grouping: filled.components, by: { owners[$0.id] ?? "" }) {
+            guard let full = AssetOwnership.sum(parts) else { return nil }
+            var share = full
+            if !owner.isEmpty {
+                guard let book = books[owner] else { return nil }
+                var ownership = book.ownership(at: month)
+                if ownership == nil, let first = book.ownership.min(by: { $0.fromMonth < $1.fromMonth }) {
+                    ownership = first
+                    estimated.append(book.name + " at your " + (MonthKey(first.fromMonth)?.title ?? first.fromMonth) + " share of " + first.label)
+                }
+                guard let ownership, let portion = try? ownership.portion(full) else { return nil }
+                share = portion
+            }
+            guard let next = try? MoneyInput.add(total, share, allowingRounding: true) else { return nil }
+            total = next
+        }
+        return (total, estimated)
     }
     /// A coin or metal's price now against its price nearest `start`, as a fraction; nil without both.
     func priceChange(_ assetID: CanonicalAssetID, since start: Date, now: Date) -> Decimal? {

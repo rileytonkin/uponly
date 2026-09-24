@@ -972,6 +972,10 @@ final class UpOnlySession {
                     BusinessBook(id: "agency", name: "Agency", ownership: [.init(fromMonth: first, numerator: 1, denominator: 3), .init(fromMonth: MonthKey.current().previous.description, numerator: 1, denominator: 2)], firstMonth: first, sourceURL: "https://docs.google.com/spreadsheets/d/synthetic/edit", basis: "Actual revenue less operating expenses, before all owner payouts.", months: months, fetchedAt: Date())]
             }
             if preview == "networth-companies" {
+                // A company whose share is only recorded from this month, as when its sheet starts late.
+                if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_OWNERSHIP_GAP"] == "1" {
+                    fixture.businessAccounting?[0].ownership = [.init(fromMonth: MonthKey.current().description, numerator: 1, denominator: 2)]
+                }
                 let start = Date().addingTimeInterval(-90 * 86400)
                 for (name, owner, currency, balance) in [("Agency", "agency", "USD", Decimal(30000)), ("Studio", "studio", "GBP", Decimal(1000)), ("Studio", "studio", "USD", Decimal(4000))] {
                     let account = Account(name: name + " · " + currency, currency: currency, ownerBusinessID: owner, externalProfileID: owner)
@@ -1281,6 +1285,16 @@ extension UpOnlySession {
         let days = Dictionary(grouping: samples) { UTCDay.start(of: $0.utcDay) }
         let completeDays = days.values.filter { $0.contains(where: \.isComplete) }.count
         lines.append("  … \(samples.count) samples over \(days.count) days; \(completeDays) days have a complete value, \(days.count - completeDays) do not; a line is printed only when the state changes")
+        // Why a chart would have to estimate or leave out a day: a company's share not recorded for the month, or
+        // a part with no value even after estimating.
+        lines.append("companies:")
+        for book in doc.businessAccounting ?? [] {
+            lines.append("  \(book.name) first=\(book.firstMonth) ownership=" + book.ownership.sorted { $0.fromMonth < $1.fromMonth }.map { $0.fromMonth + " " + $0.label }.joined(separator: ", "))
+        }
+        let estimates = ChartEstimates(document: doc)
+        let exact = samples.filter { AssetOwnership.personalTotal($0.components, at: $0.utcDay, document: doc) != nil }.count
+        let valued = samples.filter { estimates.personalTotal($0.components, day: $0.utcDay) != nil }.count
+        lines.append("  chart: \(exact) samples valued as saved, \(valued - exact) estimated, \(samples.count - valued) left out")
         lines.append("pending rebuild: " + (doc.pendingHistoryRebuild.map { day.string(from: $0.from) + " .. " + day.string(from: $0.cursor) } ?? "none"))
         let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
         do {

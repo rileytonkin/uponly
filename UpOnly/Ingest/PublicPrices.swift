@@ -335,6 +335,7 @@ nonisolated enum PriceHistory {
             touch(key.day, carry: 7)
         }
         next.priceHistoryCoverage = coalesced((next.priceHistoryCoverage ?? []) + update.coverage)
+        next.dropUnstoredValuations()
         let scopes = next.valuationScopes
         // A backfill can improve an existing partial-day valuation. Recompute only affected days.
         for day in changedDays.sorted() {

@@ -488,8 +488,8 @@ struct NetWorthTests {
             )
         )
         let second = NetWorthCalculator.value(at: day4, scope: .banks, document: doc, now: day4)
-        let change = NetWorthCalculator.change(from: first, to: second)
-        #expect(change?.amount == 50)
+        #expect(first.includedAccountIDs == second.includedAccountIDs)
+        #expect(second.total.map { $0 - (first.total ?? 0) } == 50)
     }
 
     @Test("Two FX dates keep their own rates")
@@ -593,17 +593,18 @@ struct NetWorthTests {
                 currency: "USD", observedAt: day1, source: "manual", sourceIdentity: "checking"
             ),
         ]
-        func sample(_ day: Date, _ total: Decimal) -> DailyValuation {
-            DailyValuation(utcDay: UTCDay.start(of: day), scope: .banks, total: PreciseDecimal(total), isComplete: true,
+        func sample(_ day: Date, _ total: Decimal, scope: ValuationScope = .allTracked) -> DailyValuation {
+            DailyValuation(utcDay: UTCDay.start(of: day), scope: scope, total: PreciseDecimal(total), isComplete: true,
                            components: [], computedAt: day, includedAccountIDs: [], includedPortfolioIDs: [])
         }
-        doc.dailyValuations = [sample(utc(2026, 8, 20), 1), sample(day1, 5)]
+        doc.dailyValuations = [sample(utc(2026, 8, 20), 1), sample(day1, 5), sample(utc(2026, 8, 20), 1, scope: .banks)]
         let rebuilt = HoldingMutations.rebuildHistory(from: day1, to: utc(2026, 9, 3), document: doc, now: utc(2026, 9, 5))
-        // Sep 1 and Sep 2, each for all assets and for banks, plus the untouched August day.
-        #expect(rebuilt.dailyValuations.count == 5)
-        #expect(rebuilt.storedValuation(day: day1, scope: .banks)?.total?.value == 100)
+        // Sep 1 and Sep 2 for all assets, plus the untouched August day. Bank-only values are no longer kept.
+        #expect(rebuilt.dailyValuations.count == 3)
+        #expect(rebuilt.storedValuation(day: day1, scope: .allTracked)?.total?.value == 100)
         #expect(rebuilt.storedValuation(day: utc(2026, 9, 2), scope: .allTracked)?.total?.value == 100)
-        #expect(rebuilt.storedValuation(day: utc(2026, 8, 20), scope: .banks)?.total?.value == 1)
+        #expect(rebuilt.storedValuation(day: utc(2026, 8, 20), scope: .allTracked)?.total?.value == 1)
+        #expect(!rebuilt.dailyValuations.contains { $0.scope == .banks })
     }
 
     @Test("Months are Gregorian UTC months, whatever calendar or time zone the Mac uses")
@@ -935,60 +936,107 @@ struct PurchaseLotTests {
     }
 }
 
-struct ChartPricesTests {
+struct ChartEstimatesTests {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
-    private func component(_ id: UUID, kind: ValuationComponent.Kind, value: Decimal?, quoteTime: Date? = nil, currency: String = "USD", amount: Decimal = 1, missing: String? = nil) -> ValuationComponent {
-        ValuationComponent(id: id, kind: kind, label: kind == .holding ? "Bitcoin" : "Savings", currency: currency, nativeAmount: PreciseDecimal(amount), usdValue: value.map(PreciseDecimal.init),
+    private func component(_ id: UUID, kind: ValuationComponent.Kind, value: Decimal?, quoteTime: Date? = nil, currency: String = "USD", amount: Decimal? = 1, missing: String? = nil) -> ValuationComponent {
+        ValuationComponent(id: id, kind: kind, label: kind == .holding ? "Bitcoin" : "Savings", currency: currency, nativeAmount: amount.map(PreciseDecimal.init), usdValue: value.map(PreciseDecimal.init),
                            quoteTime: quoteTime, fxTime: nil, isStale: false, missing: missing)
     }
     private func day(_ offset: Double) -> Date { UTCDay.start(of: now).addingTimeInterval(offset * 86400) }
+    private func emptyDocument() -> VaultDocument {
+        VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+    }
     @Test("The nearest observation within the window wins, the earlier one on a tie")
     func nearest() {
-        let series: [(time: Date, value: Decimal)] = [(day(-10), 1), (day(-4), 2), (day(2), 3)]
-        #expect(ChartPrices.nearest(series, to: day(-5))?.value == 2)
-        #expect(ChartPrices.nearest(series, to: day(-1))?.value == 2)   // three days back against three days on
-        #expect(ChartPrices.nearest(series, to: day(1))?.value == 3)
-        #expect(ChartPrices.nearest(series, to: day(-45))?.value == nil)   // more than 30 days from anything
-        #expect(ChartPrices.nearest(series, to: day(40))?.value == nil)
-        #expect(ChartPrices.nearest([], to: now) == nil)
+        let series: ChartEstimates.Series = [(day(-10), 1), (day(-4), 2), (day(2), 3)]
+        #expect(ChartEstimates.nearest(series, to: day(-5))?.value == 2)
+        #expect(ChartEstimates.nearest(series, to: day(-1))?.value == 2)   // three days back against three days on
+        #expect(ChartEstimates.nearest(series, to: day(1))?.value == 3)
+        #expect(ChartEstimates.nearest(series, to: day(-120))?.value == nil)   // more than 90 days from anything
+        #expect(ChartEstimates.nearest(series, to: day(-45), within: 30 * 86400)?.value == nil)
+        #expect(ChartEstimates.nearest([], to: now) == nil)
     }
-    @Test("A day without a saved price or rate takes the nearest one and says so; a missing balance can't be filled")
+    @Test("A price is used as saved when close, drawn between its neighbours when not, carried when one-sided")
+    func estimate() {
+        let series: ChartEstimates.Series = [(day(-100), 100), (day(0), 200)]
+        let close = ChartEstimates.estimate(series, at: day(-2))
+        #expect(close?.value == 200 && close?.to == nil)
+        let between = ChartEstimates.estimate(series, at: day(-25))
+        #expect(between?.value == 175 && between?.from == day(-100) && between?.to == day(0))
+        #expect(ChartEstimates.estimate(series, at: day(60))?.value == 200)    // after the last, within 90 days
+        #expect(ChartEstimates.estimate(series, at: day(-200)) == nil)        // before the first, too far
+    }
+    @Test("A saved day's missing price, rate or balance is estimated and named; nothing to go on leaves it incomplete")
     func filled() throws {
-        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+        var doc = emptyDocument()
         let portfolio = Portfolio(name: "Ledger", createdAt: day(-400))
         doc.portfolios = [portfolio]
         doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 2, at: day(-300), document: doc)
         let coin = try #require(doc.holdings.first)
+        let account = Account(name: "Savings", currency: "EUR")
+        doc.accounts = [account]
         doc.quotes = [QuoteObservation(assetID: coin.assetID, priceUSD: PreciseDecimal(50000), providerTime: day(-3), fetchedAt: day(-3), provider: "CoinGecko")]
         doc.fx = [FXObservation(sourceCurrency: "EUR", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: "1.1")!), providerTime: day(-2), fetchedAt: day(-2), provider: "ECB")]
-        let prices = ChartPrices(document: doc)
-        let bank = UUID()
-        let parts = [component(coin.id, kind: .holding, value: nil, amount: 2, missing: "quote"), component(bank, kind: .bank, value: nil, currency: "EUR", amount: 100, missing: "fx")]
-        let result = prices.filled(parts, day: day(-1))
+        doc.bankBalances = [BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(200), currency: "EUR", observedAt: day(3), source: "manual", sourceIdentity: "savings")]
+        let estimates = ChartEstimates(document: doc)
+        let parts = [component(coin.id, kind: .holding, value: nil, amount: 2, missing: "quote"), component(UUID(), kind: .bank, value: nil, currency: "EUR", amount: 100, missing: "fx"),
+                     component(account.id, kind: .bank, value: nil, currency: "EUR", amount: nil, missing: "balance")]
+        let result = estimates.filled(parts, day: day(-1))
         #expect(result.complete)
-        #expect(result.components.map { $0.usdValue?.value } == [100000, 110])
+        #expect(result.components.map { $0.usdValue?.value } == [100000, 110, 220])
         #expect(result.components.allSatisfy { $0.missing == nil })
-        #expect(result.estimated.count == 2 && result.estimated[0].hasPrefix("Bitcoin at its ") && result.estimated[0].hasSuffix(" price"))
-        #expect(AssetOwnership.sum(result.components) == 100110)
-        // A part with its own value is left alone, and a missing balance leaves the day incomplete.
-        let balance = prices.filled([component(bank, kind: .bank, value: 5), component(UUID(), kind: .bank, value: nil, missing: "balance")], day: day(-1))
-        #expect(!balance.complete && balance.components[0].usdValue?.value == 5 && balance.estimated.isEmpty)
-        // Nothing within 30 days: still incomplete.
-        #expect(!prices.filled(parts, day: day(-60)).complete)
+        #expect(result.estimated.count == 3 && result.estimated[0].hasPrefix("Bitcoin at its ") && result.estimated[2].hasSuffix(" balance"))
+        // A part with its own value is left alone.
+        let own = estimates.filled([component(account.id, kind: .bank, value: 5)], day: day(-1))
+        #expect(own.complete && own.components[0].usdValue?.value == 5 && own.estimated.isEmpty)
+        // Nothing within 90 days on either side: still incomplete.
+        #expect(!estimates.filled(parts, day: day(-120)).complete)
+    }
+    @Test("Your share uses a company's nearest recorded ownership for a month without one, and says so")
+    func companyShare() throws {
+        var doc = emptyDocument()
+        let account = Account(name: "Studio", currency: "USD", ownerBusinessID: "studio")
+        doc.accounts = [account]
+        doc.businessAccounting = [BusinessBook(id: "studio", name: "Studio", ownership: [OwnershipPeriod(fromMonth: "2026-09", numerator: 1, denominator: 2)], firstMonth: "2026-09", sourceURL: "", basis: "", fetchedAt: now)]
+        let estimates = ChartEstimates(document: doc)
+        let mine = component(UUID(), kind: .bank, value: 100)
+        let studio = component(account.id, kind: .bank, value: 1000)
+        let before = try #require(estimates.personalTotal([mine, studio], day: try date("2026-03-15")))
+        #expect(before.total == 600 && before.estimated.count == 1 && before.estimated[0].contains("Studio"))
+        let during = try #require(estimates.personalTotal([mine, studio], day: try date("2026-09-15")))
+        #expect(during.total == 600 && during.estimated.isEmpty)
+        // A company with no ownership recorded at all can't be shared out.
+        doc.businessAccounting = []
+        #expect(ChartEstimates(document: doc).personalTotal([mine, studio], day: now) == nil)
+    }
+    @Test("Daily history runs across a short gap and breaks at a long one; monthly charts break at any gap")
+    func bridging() {
+        func points(_ values: [Decimal?]) -> [UpOnlyChartPoint] {
+            values.enumerated().map { UpOnlyChartPoint(id: "\($0.offset)", label: "\($0.offset)", value: $0.element) }
+        }
+        let short = points([1, nil, nil, 2, 3])
+        #expect(UpOnlyChartLayout(points: short, includesZero: false, bridgesGaps: true).runs.count == 1)
+        #expect(UpOnlyChartLayout(points: short, includesZero: false).runs.count == 2)
+        let long = points([1] + Array(repeating: nil, count: UpOnlyChartLayout.bridge + 1) + [2])
+        #expect(UpOnlyChartLayout(points: long, includesZero: false, bridgesGaps: true).runs.count == 2)
     }
     @Test("A coin's move over the range compares its latest price with the one nearest the start")
     func priceChange() throws {
-        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+        var doc = emptyDocument()
         let bitcoin = try CanonicalAssetID("bitcoin")
         func quote(_ offset: Double, _ price: Decimal) -> QuoteObservation {
             QuoteObservation(assetID: bitcoin, priceUSD: PreciseDecimal(price), providerTime: day(offset), fetchedAt: day(offset), provider: "CoinGecko")
         }
         doc.quotes = [quote(-31, 80), quote(-29, 100), quote(-1, 110), quote(0, 120)]
-        let prices = ChartPrices(document: doc)
-        #expect(prices.priceChange(bitcoin, since: day(-30), now: now) == Decimal(string: "0.5"))   // -31 and -29 tie; the earlier wins
-        #expect(prices.priceChange(bitcoin, since: day(-28), now: now) == Decimal(string: "0.2"))
-        #expect(prices.priceChange(bitcoin, since: day(-200), now: now) == nil)
-        #expect(prices.priceChange(try CanonicalAssetID("ethereum"), since: day(-7), now: now) == nil)
+        let estimates = ChartEstimates(document: doc)
+        #expect(estimates.priceChange(bitcoin, since: day(-30), now: now) == Decimal(string: "0.5"))   // -31 and -29 tie; the earlier wins
+        #expect(estimates.priceChange(bitcoin, since: day(-28), now: now) == Decimal(string: "0.2"))
+        #expect(estimates.priceChange(bitcoin, since: day(-200), now: now) == nil)
+        #expect(estimates.priceChange(try CanonicalAssetID("ethereum"), since: day(-7), now: now) == nil)
+    }
+    private func date(_ text: String) throws -> Date {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = UTCDay.timeZone; formatter.dateFormat = "yyyy-MM-dd"
+        return try #require(formatter.date(from: text))
     }
     @Test("All-time profit sums the holdings whose purchases cover what's held, and counts the rest")
     func allTimeProfit() throws {

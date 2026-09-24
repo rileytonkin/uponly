@@ -133,8 +133,13 @@ struct VaultDocument: Codable, Sendable, Equatable {
         }
     }
 
-    /// Every scope a daily value is stored for.
-    var valuationScopes: [ValuationScope] { [.allTracked, .banks] + portfolios.map { .portfolio($0.id) } }
+    /// Every scope a daily value is stored for. Bank balances alone aren't shown anywhere, so they aren't stored.
+    var valuationScopes: [ValuationScope] { [.allTracked] + portfolios.map { .portfolio($0.id) } }
+    /// Drops saved daily values for scopes no longer stored (bank balances alone, from older versions). They are
+    /// derived, never shown, and roughly doubled the vault's history; the next rebuild or price update clears them.
+    mutating func dropUnstoredValuations() {
+        if dailyValuations.contains(where: { $0.scope == .banks }) { dailyValuations.removeAll { $0.scope == .banks } }
+    }
 
     func storedValuation(day: Date, scope: ValuationScope) -> DailyValuation? {
         let start = UTCDay.start(of: day)
