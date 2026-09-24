@@ -752,7 +752,7 @@ struct OwnedAssetTests {
         BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: account.currency,
                                observedAt: try date(day).addingTimeInterval(3600), source: "manual", sourceIdentity: account.id.uuidString)
     }
-    @Test("Statement history is only derived from a balance within a week of the last statement day, in the account's currency")
+    @Test("Statement history is only derived from a balance within a month of the last statement day, in the account's currency")
     func reconstructionNeedsCoveredAnchor() throws {
         var doc = document()
         let monzo = Account(name: "Monzo", currency: "GBP"); doc.accounts = [monzo]
@@ -766,6 +766,10 @@ struct OwnedAssetTests {
         #expect(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: now)?.map(\.amount.value) == [760, 700])
         doc.entries.append(statementRow(monzo, "2025-03-25", 999, currency: "EUR"))
         #expect(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: now)?.map(\.amount.value) == [760, 700])
+        // A statement ending Aug 30 with the balance typed in on Sep 9: that balance anchors the whole statement.
+        doc.entries = [statementRow(monzo, "2026-01-02", 100), statementRow(monzo, "2026-08-30", 50)]
+        doc.bankBalances = [try balance(monzo, "2026-09-09", 1000)]
+        #expect(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: now)?.map(\.amount.value) == [1050, 1000])
     }
     @Test("Rebuilt history starts tracking earlier without dropping later tracking changes")
     func reconstructionKeepsLaterTracking() throws {
