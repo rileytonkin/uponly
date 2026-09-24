@@ -218,33 +218,35 @@ struct PersonalAccountGroup: Identifiable {
 }
 /// How much net worth history the chart shows. The headline value is always today's.
 nonisolated enum WorthRange: CaseIterable {
-    case week, month, quarter, year, all
+    case day, week, month, year, all
     /// The segment above the chart.
     var title: String {
-        switch self { case .week: "1W"; case .month: "1M"; case .quarter: "3M"; case .year: "1Y"; case .all: "All" }
+        switch self { case .day: "24H"; case .week: "7D"; case .month: "30D"; case .year: "12M"; case .all: "All" }
     }
-    /// "No saved values in the past year", and the range's spoken name.
+    /// "No saved values in the past 12 months", and the range's spoken name.
     var phrase: String {
-        switch self { case .week: "past week"; case .month: "past month"; case .quarter: "past 3 months"; case .year: "past year"; case .all: "all time" }
+        switch self { case .day: "past 24 hours"; case .week: "past 7 days"; case .month: "past 30 days"; case .year: "past 12 months"; case .all: "all time" }
     }
     var spokenTitle: String { phrase.prefix(1).uppercased() + String(phrase.dropFirst()) }
-    /// " in the past year", or nothing for All: "No saved values in the past year."
+    /// " in the past 12 months", or nothing for All: "No saved values in the past 12 months."
     var within: String { self == .all ? "" : " in the " + phrase }
-    /// What a change is measured against, as on the admin dashboard: "vs $4,304.28 prev 1M".
+    /// What a change is measured against, as on the admin dashboard: "vs $4,304.28 prev 30D".
     var previous: String { self == .all ? "at start" : "prev " + title }
     /// Whole months the company figures cover, ending with the current month. Nil for All: every reported month.
     var months: Int? {
-        switch self { case .week, .month: 1; case .quarter: 3; case .year: 12; case .all: nil }
+        switch self { case .day, .week, .month: 1; case .year: 12; case .all: nil }
     }
     /// How far back a rolling range reaches. All starts at the first saved value instead.
     var seconds: TimeInterval? {
-        switch self { case .week: 7 * 86400; case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .all: nil }
+        switch self { case .day: 86400; case .week: 7 * 86400; case .month: 30 * 86400; case .year: 365 * 86400; case .all: nil }
     }
+    /// 24 hours is drawn hour by hour from the prices saved through the day; the rest from saved daily values.
+    var hourly: Bool { self == .day }
     /// Days between chart points: every day up to a year (at most 365 points), and for All by how long the
     /// history is, so it too stays near a year's worth of points.
     func chartStepDays(span: TimeInterval) -> Int {
         switch self {
-        case .week, .month, .quarter, .year: 1
+        case .day, .week, .month, .year: 1
         case .all: span <= 400 * 86400 ? 1 : span <= 1100 * 86400 ? 3 : 7
         }
     }
@@ -275,11 +277,43 @@ nonisolated enum DashboardChart {
         }
         return result
     }
-    /// X-axis labels: only the first and last stops, so the axis says the span and the hover says the day.
-    static func endLabels(_ days: [Date], range: WorthRange) -> [String?] {
-        days.indices.map { index in
-            guard index == 0 || index == days.count - 1 else { return nil }
-            return range.showsYear ? UpOnlyFormat.utcDate(days[index]) : UpOnlyFormat.utcDay(days[index])
+    /// X-axis marks, one where each period starts, named briefly: every day over 7 days ("Thu"), Mondays over 30
+    /// ("Sep 7"), month starts over 12 months ("Oct", with January as its year, "2026"), and for All months or years
+    /// by how long the history is. The chart labels as many as fit, evenly spaced, each over a faint line.
+    static func axisMarks(_ days: [Date], range: WorthRange) -> [String?] {
+        guard let first = days.first, let last = days.last else { return [] }
+        let span = last.timeIntervalSince(first)
+        enum Unit { case day, week, month, year }
+        let unit: Unit = switch range {
+        case .day, .week: .day
+        case .month: .week
+        case .year: .month
+        case .all: span > 3 * 365 * 86400 ? .year : span > 100 * 86400 ? .month : span > 14 * 86400 ? .week : .day
+        }
+        let calendar = UTCDay.calendar
+        return days.indices.map { index in
+            let day = days[index], parts = calendar.dateComponents([.year, .month, .day, .weekday], from: day)
+            // A period starts at this point when it's the first day of it, or the first point since the last one.
+            let previous = index > 0 ? calendar.dateComponents([.year, .month], from: days[index - 1]) : nil
+            switch unit {
+            case .day: return UpOnlyFormat.weekday(day)
+            case .week: return parts.weekday == 2 ? UpOnlyFormat.utcDay(day) : nil
+            case .month:
+                let starts = previous.map { $0.month != parts.month || $0.year != parts.year } ?? (parts.day == 1)
+                return starts ? (parts.month == 1 ? UpOnlyFormat.year(day) : UpOnlyFormat.monthName(day)) : nil
+            case .year:
+                let starts = previous.map { $0.year != parts.year } ?? (parts.month == 1 && parts.day == 1)
+                return starts ? UpOnlyFormat.year(day) : nil
+            }
+        }
+    }
+    /// Marks every six hours of a 24-hour chart, in the Mac's time zone: "6 AM", "12 PM", "6 PM", and the weekday
+    /// at midnight.
+    static func hourMarks(_ moments: [Date], calendar: Calendar = .current) -> [String?] {
+        moments.map { moment in
+            let hour = calendar.component(.hour, from: moment)
+            guard hour % 6 == 0, calendar.component(.minute, from: moment) == 0 else { return nil }
+            return hour == 0 ? UpOnlyFormat.localWeekday(moment, calendar: calendar) : UpOnlyFormat.localHour(moment, calendar: calendar)
         }
     }
     /// Whether a chart's line ends at or above where it starts, for the green-up / red-down colour. Nil with fewer

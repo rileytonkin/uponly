@@ -182,13 +182,17 @@ extension UpOnlyUnlockedPanel {
         let companyID = groupID == "personal" ? nil : groupID
         let samples = DashboardPeriod.samples(in: interval, scope: .allTracked, document: document)
         let estimates = ChartEstimates(document: document)
-        return dailySeries(samples, interval: interval, live: live) { sample in
-            let banks = sample.components.filter { component in
+        func figure(_ components: [ValuationComponent], day: Date, at moment: Date?) -> (Decimal, String?)? {
+            let banks = components.filter { component in
                 component.kind == .bank && (AssetOwnership.businessID(for: component, in: document) ?? "personal") == groupID
             }
-            let parts = focusedParts(banks + companyHoldings(sample.components, companyID: companyID))
+            let parts = focusedParts(banks + companyHoldings(components, companyID: companyID))
             guard !parts.isEmpty else { return nil }
-            return estimates.total(parts, day: sample.utcDay).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
+            return estimates.total(parts, day: day, at: moment).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
         }
+        if worthRange.hourly {
+            return hourlySeries(scope: .allTracked, interval: interval, key: "group \(groupID) \(companyFocus)", live: live) { figure($0.components, day: $0.at, at: $0.at) }
+        }
+        return dailySeries(samples, interval: interval, live: live) { figure($0.components, day: $0.utcDay, at: nil) }
     }
 }
