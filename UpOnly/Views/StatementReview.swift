@@ -41,7 +41,8 @@ struct UpOnlyImportView: View {
             if let batch = session.importDraft {
                 if usesSummary(batch) {
                     Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.bordered)
-                } else { batchHeader(batch); inputActions }
+                } else if isBalanceUpdate(batch) { inputActions }
+                else { batchHeader(batch); inputActions }
                 if let message = session.importMessage { Text(message).fixedSize(horizontal: false, vertical: true).font(.callout).foregroundStyle(.secondary) }
                 if session.importLoading {
                     HStack { ProgressView().controlSize(.small); Text("Reading your files on this Mac…").fixedSize(horizontal: false, vertical: true); Spacer(); Button("Cancel reading") { session.cancelImport() } }
@@ -54,16 +55,30 @@ struct UpOnlyImportView: View {
                     }
                 }
                 if !batch.rows.isEmpty {
-                    if !usesSummary(batch) && batch.rows.count > 1 { rowActions(batch) }
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(displayedRows(batch).dropFirst(page * pageSize).prefix(pageSize))) { row in
-                            ImportRowEditor(row: rowBinding(row), mode: batch.mode, accounts: accounts, portfolios: portfolios, coins: coins,
-                                            usesDebitCredit: batch.sources.first(where: { $0.id == row.sourceID }).map { $0.mapping[.debit] != nil || $0.mapping[.credit] != nil } ?? false,
-                                            sourceName: batch.sources.filter { !$0.grid.isEmpty }.count > 1 ? batch.sources.first(where: { $0.id == row.sourceID })?.filename ?? "" : "", state: review?.states[row.id], selected: selection.contains(row.id),
-                                            manual: batch.sources.first(where: { $0.id == row.sourceID })?.grid.isEmpty == true, selectable: !usesSummary(batch),
-                                            select: { if selection.contains(row.id) { selection.remove(row.id) } else { selection.insert(row.id) } },
-                                            remove: { invalidateReview(); session.importDraft?.rows.removeAll { $0.id == row.id }; clampPage() }).disabled(busy)
+                    // Updating existing balances is one list of rows; anything else keeps a card per row.
+                    let compact = isBalanceUpdate(batch)
+                    if !usesSummary(batch) && batch.rows.count > 1 && !compact { rowActions(batch) }
+                    let visibleRows = Array(displayedRows(batch).dropFirst(page * pageSize).prefix(pageSize))
+                    if compact {
+                        // One date for every balance, as they're usually all read on the same day.
+                        HStack {
+                            Text("As of").font(UpOnlyType.body).foregroundStyle(.secondary)
+                            Spacer()
+                            UpOnlyDateButton(date: Binding(get: { batch.rows.first.flatMap { try? ImportDateFormat.iso.date($0.bank.date) } ?? Date() }, set: { date in
+                                invalidateReview()
+                                for index in session.importDraft?.rows.indices ?? 0..<0 { session.importDraft?.rows[index].bank.date = ImportDateFormat.today(date) }
+                            }))
                         }
+                        ManageCard {
+                            ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, row in
+                                if index > 0 { Divider().opacity(0.5) }
+                                rowEditor(row, batch: batch, compact: true)
+                            }
+                        }
+                    } else {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(visibleRows) { row in rowEditor(row, batch: batch, compact: false) }
+                    }
                     }
                     if displayedRows(batch).count > pageSize {
                         HStack {
@@ -89,40 +104,38 @@ struct UpOnlyImportView: View {
                 }
                 if !mappingChanged.isEmpty { Text("Apply your column mapping before reviewing.").fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.secondary) }
             } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    Menu {
-                        ForEach(orderedModes, id: \.self) { mode in
-                            Button(mode.title) { openMode(mode, bulk: true) }
-                        }
-                    } label: { Label("Import or paste…", systemImage: "doc.on.clipboard") }
-                        .menuStyle(.borderedButton).fixedSize().accessibilityIdentifier("BulkImportOptions")
+                // Several at once, as lists in the home style: bring something in, or update what's tracked.
+                if let message = session.importMessage {
+                    Label(message, systemImage: "checkmark.circle.fill").font(UpOnlyType.body).foregroundStyle(UpOnlyTint.cashFlow).fixedSize(horizontal: false, vertical: true)
                 }
-                if let message = session.importMessage { Label(message, systemImage: "checkmark.circle.fill").fixedSize(horizontal: false, vertical: true).foregroundStyle(UpOnlyTint.cashFlow) }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 14)], spacing: 14) {
-                    ForEach(orderedModes, id: \.self) { mode in
-                        VStack(alignment: .leading, spacing: 16) {
-                        Button { openMode(mode) } label: {
-                        VStack(alignment: .leading, spacing: 16) {
-                            UpOnlySymbolBadge(symbol: mode.kind.symbol, tint: mode.kind.tint, size: 40)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(mode.title).fixedSize(horizontal: false, vertical: true).font(.system(size: 16, weight: .semibold))
-                                Text(modeDescription(mode)).fixedSize(horizontal: false, vertical: true).font(.system(size: 12)).foregroundStyle(.secondary)
-                            }
-                            Label(mode == .statements ? "Choose statements" : "Add manually", systemImage: "arrow.right").font(.system(size: 12, weight: .medium)).foregroundStyle(mode.kind.tint)
-                        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                        }.buttonStyle(.bordered)
-                        if mode != .statements, session.document?.hasData(mode.kind) == true {
-                            Button(mode == .bankBalances ? "Update existing balances" : mode == .holdings ? "Update existing quantities" : "Update existing weights") { session.startImport(mode, prefill: true); resetView() }
-                                .buttonStyle(.bordered).font(.system(size: 11)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Bring in").font(UpOnlyType.section)
+                    ManageCard {
+                        ForEach(Array(orderedModes.enumerated()), id: \.element) { index, mode in
+                            ManageRow(title: bulkTitle(mode), caption: bulkCaption(mode), divided: index > 0, chevron: true, action: { openMode(mode, bulk: mode != .statements) }) {
+                                UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 28)
+                            } menu: { EmptyView() }
                         }
-                        }.padding(UpOnlyLayout.inset).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-                            .overlay(RoundedRectangle(cornerRadius: UpOnlyLayout.radius).strokeBorder(Color.primary.opacity(0.06)))
+                    }
+                }
+                let tracked = orderedModes.filter { $0 != .statements && session.document?.hasData($0.kind) == true }
+                if !tracked.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Update what you have").font(UpOnlyType.section)
+                        ManageCard {
+                            ForEach(Array(tracked.enumerated()), id: \.element) { index, mode in
+                                ManageRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All gold & silver",
+                                          caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table",
+                                          divided: index > 0, chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
+                                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 28)
+                                } menu: { EmptyView() }
+                            }
+                        }
                     }
                 }
             }
             if let batch = session.importDraft, batch.mode != .statements || !batch.rows.isEmpty || busy { importFooter(batch) }
-        }.padding(UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
         }.background(Color(nsColor: .windowBackgroundColor))
         }
         }
@@ -144,93 +157,111 @@ struct UpOnlyImportView: View {
         .onDisappear { invalidateReview() }
     }
     private func importOverview(_ batch: ImportBatchDraft) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             if batch.sources.allSatisfy({ $0.grid.isEmpty }) {
-                Button("Choose CSV files…") { Task { await session.chooseImportFiles() } }
-                    .buttonStyle(.glassProminent).disabled(busy)
-                Text("or drop CSVs here").font(.system(size: 12)).foregroundStyle(.secondary)
+                ManageEmptyState(title: batch.mode == .statements ? "Choose your statements" : "Choose a file",
+                                 detail: "Pick CSV files, or drop them here. You’ll check them before anything is saved.",
+                                 symbol: "doc.text.fill", tint: batch.mode.kind.tint, actionTitle: "Choose CSV files…") { Task { await session.chooseImportFiles() } }
+                    .disabled(busy)
             } else {
+                // Each file is a card: the account it's for (with its bank's logo), and for a statement, today's balance.
                 ForEach(batch.sources.filter { !$0.grid.isEmpty }) { source in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            if batch.mode == .statements, !batch.rows.isEmpty {
-                            Menu { accountChoices(source) } label: {
-                                Text(source.account.name.isEmpty ? "Choose account" : accountTitle(source.account.name, source.account.currency)).lineLimit(1)
-                            }.modifier(UpOnlyPillMenu()).accessibilityLabel("Statement account")
-                            } else { Text(source.filename).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle).help(source.filename) }
+                    let statement = batch.mode == .statements && !batch.rows.isEmpty
+                    ManageCard {
+                        HStack(spacing: 10) {
+                            UpOnlyBankBadge(name: statement ? source.account.name : source.filename, size: 28)
+                            if statement {
+                                Menu { accountChoices(source) } label: {
+                                    HStack(spacing: 4) {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(source.account.name.isEmpty ? "Choose account" : accountTitle(source.account.name, source.account.currency))
+                                                .font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+                                            Text(source.filename).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                        }
+                                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                                    }.contentShape(Rectangle())
+                                }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                                    .accessibilityLabel("Statement account").help(source.filename)
+                            } else {
+                                Text(source.filename).font(UpOnlyType.row.weight(.medium)).lineLimit(1).truncationMode(.middle).help(source.filename)
+                            }
                             Spacer(minLength: 0)
-                            Menu {
+                            ManageRowMenu(label: "File options") {
                                 Button("Add CSV files…") { Task { await session.chooseImportFiles() } }
                                 Button("Remove file", role: .destructive) {
                                     invalidateReview(); session.importDraft?.sources.removeAll { $0.id == source.id }
                                     session.importDraft?.rows.removeAll { $0.sourceID == source.id }; beginReview()
                                 }
-                            } label: { Image(systemName: "ellipsis") }
-                                .modifier(UpOnlyPillMenu()).accessibilityLabel("File options")
-                        }.disabled(busy)
-                        if batch.mode == .statements, !batch.rows.isEmpty { Text(source.filename).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(source.filename) }
-                        if batch.mode == .statements, !batch.rows.isEmpty, editingStatementAccount != source.id {
-                            // One real balance anchors the history rebuilt from these transactions.
-                            HStack(spacing: 8) {
-                                Text("Balance now").font(.system(size: 12)).foregroundStyle(.secondary)
-                                UpOnlyValueField("0.00", text: sourceBinding(source, \.balance)).textFieldStyle(.roundedBorder).frame(width: 110)
-                                    .accessibilityLabel("Current balance for " + (source.account.name.isEmpty ? source.filename : source.account.name))
-                                Text(source.account.currency).font(.system(size: 12)).foregroundStyle(.secondary)
-                                Spacer(minLength: 0)
                             }
+                        }.padding(.vertical, 8).disabled(busy)
+                        if statement, editingStatementAccount != source.id {
+                            // One real balance anchors the history rebuilt from these transactions.
+                            Divider().opacity(0.5)
+                            HStack(spacing: 8) {
+                                Text("Balance now").font(UpOnlyType.body).foregroundStyle(.secondary)
+                                Spacer(minLength: 8)
+                                UpOnlyValueField("Optional", text: sourceBinding(source, \.balance)).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                                    .font(UpOnlyType.row.monospacedDigit()).frame(width: 110)
+                                    .accessibilityLabel("Current balance for " + (source.account.name.isEmpty ? source.filename : source.account.name))
+                                Text(source.account.currency).font(UpOnlyType.body).foregroundStyle(.secondary)
+                            }.padding(.vertical, 9).help("Lets Up Only work out the balance on every day these transactions cover.")
                         }
                         if editingStatementAccount == source.id {
-                            UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
-                            HStack(spacing: 8) {
-                                TextField("Account name", text: Binding(get: { source.account.name }, set: { value in var account = source.account; account.name = value; setStatementAccount(source, account) })).textFieldStyle(.roundedBorder)
-                                TextField("Currency", text: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) })).frame(width: 52).textFieldStyle(.roundedBorder)
-                                Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.bordered)
-                            }
+                            Divider().opacity(0.5)
+                            VStack(alignment: .leading, spacing: 8) {
+                                UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
+                                HStack(spacing: 8) {
+                                    TextField("Account name", text: Binding(get: { source.account.name }, set: { value in var account = source.account; account.name = value; setStatementAccount(source, account) })).textFieldStyle(.roundedBorder)
+                                    TextField("Currency", text: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) })).frame(width: 52).textFieldStyle(.roundedBorder)
+                                    Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.bordered)
+                                }
+                            }.padding(.vertical, 9)
                         }
                     }
                 }
                 if batch.rows.isEmpty {
-                    Text("This file has no transactions.").font(.system(size: 13)).foregroundStyle(.secondary)
-                    Button("Choose CSV files…") {
+                    Text("This file has no transactions.").font(UpOnlyType.body).foregroundStyle(.secondary)
+                    primaryAction("Choose other files…") {
                         session.importDraft?.sources.removeAll { !$0.grid.isEmpty }
                         Task { await session.chooseImportFiles() }
-                    }.buttonStyle(.glassProminent).disabled(busy)
+                    }.disabled(busy)
                 } else if let review {
-                    if !coveredPeriod.isEmpty { Text(coveredPeriod).font(.system(size: 14, weight: .medium)) }
+                    if !coveredPeriod.isEmpty { Text(coveredPeriod).font(UpOnlyType.section) }
                     if let source = batch.sources.first(where: { review.needsAccount.contains($0.id) }) {
                         // The account is what's missing, so choosing one is the next step, not fixing rows.
                         Text("Which account are these transactions from?").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        Menu { accountChoices(source) } label: { Text("Choose an account for " + source.filename).lineLimit(1).truncationMode(.middle) }
-                            .menuStyle(.button).buttonStyle(.glassProminent).accessibilityLabel("Choose an account for " + source.filename)
+                        Menu { accountChoices(source) } label: { Text("Choose an account").frame(maxWidth: .infinity) }
+                            .menuStyle(.button).buttonStyle(.glassProminent).controlSize(.large).accessibilityLabel("Choose an account for " + source.filename)
                     } else if review.hasErrors || !mappingChanged.isEmpty {
-                        Text(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        Button("Fix rows") {
+                        UpOnlyNotice(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.", style: .warning)
+                        primaryAction("Fix rows") {
                             problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
-                        }.buttonStyle(.glassProminent)
+                        }
                     } else if review.learnedDays > 0 && review.readyRows == 0 {
-                        Text("Dates added for \(review.learnedDays.formatted()) saved transactions").font(.system(size: 14, weight: .medium))
-                        Text("Balance history will be rebuilt when you save.").font(.system(size: 12)).foregroundStyle(.secondary)
-                        Button("Save and rebuild history") { Task { await save() } }
-                            .buttonStyle(.glassProminent).disabled(busy || editingStatementAccount != nil)
+                        Text("Dates added for \(review.learnedDays.formatted()) saved transactions").font(UpOnlyType.section)
+                        Text("Balance history will be rebuilt when you save.").font(UpOnlyType.body).foregroundStyle(.secondary)
+                        primaryAction("Save and rebuild history") { Task { await save() } }.disabled(busy || editingStatementAccount != nil)
                     } else if review.added == 0 {
-                        Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(.system(size: 14, weight: .medium))
-                        Button("Done") { session.discardImport() }.buttonStyle(.glassProminent)
+                        Text(batch.mode == .statements ? "Nothing new: every transaction here is already saved." : "Already up to date.").font(UpOnlyType.body).foregroundStyle(.secondary)
+                        primaryAction("Done") { session.discardImport() }
                     } else {
                         if batch.mode != .statements {
-                            ForEach(batch.rows.filter { if case .ready = review.states[$0.id] { return true }; return false }) { row in
-                                VStack(alignment: .leading, spacing: 3) {
+                            // What will be saved, as a list: each account with its logo and new balance, or each holding.
+                            let ready = batch.rows.filter { if case .ready = review.states[$0.id] { return true }; return false }
+                            ManageCard {
+                                ForEach(Array(ready.enumerated()), id: \.element.id) { index, row in
                                     if batch.mode == .bankBalances {
-                                        Text(row.bank.account.name).font(UpOnlyType.row.weight(.medium))
-                                        HStack(spacing: 4) {
-                                            UpOnlyPrivateText(balanceText(row, in: batch))
-                                            Text(row.bank.account.currency + " · " + row.bank.date)
-                                        }.font(UpOnlyType.body).foregroundStyle(.secondary)
+                                        ManageRow(title: row.bank.account.name, caption: row.bank.account.currency + " · " + row.bank.date,
+                                                  value: balanceText(row, in: batch) + " " + row.bank.account.currency, divided: index > 0) {
+                                            UpOnlyBankBadge(name: row.bank.account.name, size: 24)
+                                        } menu: { EmptyView() }
                                     } else {
-                                        Text(row.holding.portfolioName).font(UpOnlyType.row.weight(.medium))
-                                        Text(review.states[row.id]?.displayText(privacy: session.privacyMode) ?? "").font(UpOnlyType.body).foregroundStyle(.secondary)
+                                        ManageRow(title: row.holding.assetName.isEmpty ? row.holding.portfolioName : row.holding.assetName,
+                                                  caption: row.holding.portfolioName + " · " + (review.states[row.id]?.displayText(privacy: session.privacyMode) ?? ""), divided: index > 0) {
+                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 24)
+                                        } menu: { EmptyView() }
                                     }
-                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                }
                             }
                         }
                         let excluded = batch.rows.filter { !$0.included }.count
@@ -239,18 +270,20 @@ struct UpOnlyImportView: View {
                         if !skipped.isEmpty { Text(skipped).font(UpOnlyType.caption).foregroundStyle(.secondary) }
                         let count = review.readyRows
                         // Only the file itself, or a balance, is new: say so rather than "Import 0 transactions".
-                        if count == 0 { Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(.system(size: 14, weight: .medium)) }
-                        Button(count == 0 ? "Save" : batch.mode == .statements ? "Import \(count.formatted()) \(count == 1 ? "transaction" : "transactions")" : "Save \(count.formatted()) \(count == 1 ? "update" : "updates")") { Task { await save() } }
-                            .buttonStyle(.glassProminent).disabled(busy || editingStatementAccount != nil)
+                        if count == 0 { Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(UpOnlyType.section) }
+                        primaryAction(count == 0 ? "Save" : batch.mode == .statements ? "Import \(count.formatted()) \(count == 1 ? "transaction" : "transactions")" : "Save \(count.formatted()) \(count == 1 ? "update" : "updates")") { Task { await save() } }
+                            .disabled(busy || editingStatementAccount != nil)
                     }
                 } else if !busy, editingStatementAccount == nil {
-                    Button("Review") { beginReview() }.buttonStyle(.bordered)
+                    primaryAction("Review") { beginReview() }
+                } else if busy {
+                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                 }
             }
             if let message = error ?? session.importMessage, !session.importLoading {
                 Text(message).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-        }.padding(UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
     }
     @ViewBuilder private func accountChoices(_ source: ImportSourceDraft) -> some View {
         // One currency's part of a split file can only go to an account in that currency.
@@ -278,6 +311,25 @@ struct UpOnlyImportView: View {
         let source = batch.sources.first { $0.id == row.sourceID }
         return (try? (source?.numberFormat ?? .point).decimal(row.bank.balance, typed: source?.isManual ?? true)).map { readBack($0, fraction: 2...18) } ?? row.bank.balance
     }
+    private func rowEditor(_ row: ImportDraftRow, batch: ImportBatchDraft, compact: Bool) -> some View {
+        ImportRowEditor(row: rowBinding(row), mode: batch.mode, accounts: accounts, portfolios: portfolios, coins: coins,
+                        usesDebitCredit: batch.sources.first(where: { $0.id == row.sourceID }).map { $0.mapping[.debit] != nil || $0.mapping[.credit] != nil } ?? false,
+                        sourceName: batch.sources.filter { !$0.grid.isEmpty }.count > 1 ? batch.sources.first(where: { $0.id == row.sourceID })?.filename ?? "" : "", state: review?.states[row.id], selected: selection.contains(row.id),
+                        manual: batch.sources.first(where: { $0.id == row.sourceID })?.grid.isEmpty == true, selectable: !usesSummary(batch), compact: compact,
+                        select: { if selection.contains(row.id) { selection.remove(row.id) } else { selection.insert(row.id) } },
+                        remove: { invalidateReview(); session.importDraft?.rows.removeAll { $0.id == row.id }; clampPage() }).disabled(busy)
+    }
+    /// New balances for accounts that already exist, typed in: a list to fill in, not a form per account.
+    private func isBalanceUpdate(_ batch: ImportBatchDraft) -> Bool {
+        batch.mode == .bankBalances && batch.rows.count > 1 && batch.rows.allSatisfy { row in
+            row.bank.account.existingID != nil && batch.sources.first(where: { $0.id == row.sourceID })?.grid.isEmpty == true
+        }
+    }
+    /// The page's one main action: full width, prominent.
+    private func primaryAction(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Text(title).frame(maxWidth: .infinity) }
+            .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(.defaultAction)
+    }
     private var coveredPeriod: String {
         guard let firstText = coveredMonths.first, let lastText = coveredMonths.last,
               let first = MonthKey(firstText), let last = MonthKey(lastText) else { return "" }
@@ -287,8 +339,7 @@ struct UpOnlyImportView: View {
     private func importFooter(_ batch: ImportBatchDraft) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if usesSummary(batch) {
-                Button("Check corrections") { beginReview() }.buttonStyle(.glassProminent)
-                    .disabled(busy || !mappingChanged.isEmpty)
+                primaryAction("Check corrections") { beginReview() }.disabled(busy || !mappingChanged.isEmpty)
             } else {
             if let review {
                 UpOnlyFlow(spacing: 12) {
@@ -309,14 +360,15 @@ struct UpOnlyImportView: View {
                 } else if batch.mode != .statements {
                     Button { addRow() } label: { Label(addRowTitle(batch.mode), systemImage: "plus") }.buttonStyle(.bordered).disabled(busy)
                 }
-                if let review {
-                    Button("Save reviewed changes") { Task { await save() } }.buttonStyle(.glassProminent)
-                        .disabled(busy || review.hasErrors || review.added == 0 || !mappingChanged.isEmpty)
-                } else if !batch.rows.isEmpty {
-                    Button("Review changes") { beginReview() }.buttonStyle(.glassProminent)
-                        .disabled(busy || batch.rows.isEmpty || !mappingChanged.isEmpty)
-                }
-            }.controlSize(.regular).font(.system(size: 12))
+            }.controlSize(.small).font(UpOnlyType.body)
+            // The main action, full width like the rest of the app's.
+            if let review {
+                primaryAction("Save reviewed changes") { Task { await save() } }
+                    .disabled(busy || review.hasErrors || review.added == 0 || !mappingChanged.isEmpty)
+            } else if !batch.rows.isEmpty {
+                primaryAction("Review changes") { beginReview() }
+                    .disabled(busy || batch.rows.isEmpty || !mappingChanged.isEmpty)
+            }
             }
         }.padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -329,12 +381,15 @@ struct UpOnlyImportView: View {
             return ImportMode.allCases.firstIndex(of: lhs)! < ImportMode.allCases.firstIndex(of: rhs)!
         }
     }
-    private func modeDescription(_ mode: ImportMode) -> String {
+    private func bulkTitle(_ mode: ImportMode) -> String {
+        switch mode { case .statements: "Bank statements"; case .bankBalances: "Balances"; case .holdings: "Crypto"; case .metals: "Gold & silver" }
+    }
+    private func bulkCaption(_ mode: ImportMode) -> String {
         switch mode {
-        case .statements: "Your income and spending, from CSV files."
-        case .bankBalances: "What’s in each account, as of a date."
-        case .metals: "Your gold and silver weights."
-        case .holdings: "The coins you own, wherever you keep them."
+        case .statements: "CSV files from your bank, several at once"
+        case .bankBalances: "Paste or import a table of accounts"
+        case .holdings: "Paste or import coins and quantities"
+        case .metals: "Paste or import weights"
         }
     }
     private func batchHeader(_ batch: ImportBatchDraft) -> some View {
@@ -370,11 +425,11 @@ struct UpOnlyImportView: View {
     private func sourceCard(_ source: ImportSourceDraft, mode: ImportMode) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label(source.filename, systemImage: source.grid.isEmpty ? "square.and.pencil" : "doc.text").fixedSize(horizontal: false, vertical: true).font(.headline)
+                Label(source.filename, systemImage: source.grid.isEmpty ? "square.and.pencil" : "doc.text").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.section)
                 Spacer()
                 let count = session.importDraft?.rows.filter { $0.sourceID == source.id }.count ?? 0
                 Text("\(count) \(count == 1 ? "row" : "rows")").fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.secondary)
-                Button { invalidateReview(); session.importDraft?.rows.removeAll { $0.sourceID == source.id }; session.importDraft?.sources.removeAll { $0.id == source.id }; mappingChanged.remove(source.id); clampPage() } label: { Image(systemName: "xmark.circle") }.buttonStyle(.bordered).help("Remove this source and its rows").accessibilityLabel("Remove " + source.filename)
+                Button { invalidateReview(); session.importDraft?.rows.removeAll { $0.sourceID == source.id }; session.importDraft?.sources.removeAll { $0.id == source.id }; mappingChanged.remove(source.id); clampPage() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain).help("Remove this source and its rows").accessibilityLabel("Remove " + source.filename)
             }
             if let review {
                 let rows = session.importDraft?.rows.filter { $0.sourceID == source.id } ?? []
@@ -426,7 +481,7 @@ struct UpOnlyImportView: View {
                     }.padding(.top, 8)
                 }.font(.callout)
             }
-        }.padding(14).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).disabled(busy)
+        }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface()).disabled(busy)
     }
     private func rowActions(_ batch: ImportBatchDraft) -> some View {
         UpOnlyFlow {

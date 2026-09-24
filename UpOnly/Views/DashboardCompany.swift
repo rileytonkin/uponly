@@ -31,8 +31,8 @@ extension UpOnlyUnlockedPanel {
         let showProfit = companyChart == .profit && companyID != nil
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                // The page title already says "Bank balances"; the eyebrow only names a focused account or a company's total.
-                if let title = companyFocusTitle(focusOptions) ?? (companyID == nil ? nil : "Total assets") {
+                // The title already names the page; the eyebrow only names a focused account or portfolio.
+                if let title = companyFocusTitle(focusOptions) {
                     eyebrow(title).frame(minHeight: 22, alignment: .leading)
                 }
                 if let focusTotal {
@@ -46,18 +46,6 @@ extension UpOnlyUnlockedPanel {
             if partOwner, let share, companyFocus == .all, focusTotal != nil {
                 UpOnlyValueRow(label: "Your share of assets" + (ownership.map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
             }
-            if companyID != nil, let book {
-                let totals = rangeTotals(book)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .top, spacing: 12) {
-                        companyFigure("Net revenue", totals.revenue)
-                        companyFigure("Expenses", totals.expenses.map { -$0 })
-                        companyFigure(partOwner ? "Your profit" : "Profit / loss", partOwner ? totals.share : totals.profit, signed: true)
-                    }
-                    // Say which months the figures cover: missing months would otherwise pass for a full range.
-                    Text(totals.caption).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            } else if companyID != nil { Text("Accounting unavailable for this period").font(UpOnlyType.body).foregroundStyle(.secondary) }
             // One chart. Assets shows the selected account, portfolio or everything; Profit / loss shows the accounting months.
             if hasAssetChart || companyID != nil {
                 VStack(alignment: .leading, spacing: 8) {
@@ -83,14 +71,25 @@ extension UpOnlyUnlockedPanel {
                         }
                     }
                     if showProfit {
-                        UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow)
+                        // The accounting figures belong with their chart, not above the assets.
+                        if let book {
+                            let totals = rangeTotals(book)
+                            HStack(alignment: .top, spacing: 12) {
+                                companyFigure("Net revenue", totals.revenue)
+                                companyFigure("Expenses", totals.expenses.map { -$0 })
+                                companyFigure(partOwner ? "Your profit" : "Profit / loss", partOwner ? totals.share : totals.profit, signed: true)
+                            }.padding(.top, 4)
+                            UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow)
+                            // Which months the figures cover, when some are missing.
+                            if let caption = totals.caption { Text(caption).font(UpOnlyType.caption).foregroundStyle(.secondary) }
+                        } else { Text("Accounting unavailable for this period").font(UpOnlyType.body).foregroundStyle(.secondary) }
                     } else if hasAssetChart {
                         UpOnlyChart(points: series, tint: trendTint(series), bridgesGaps: true)
                     } else { Text("No history yet for this selection.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
                 }.padding(.top, 6)
             }
-            // Breakdown: one USD line per bank. Choosing a row focuses the chart and headline on it; the pencil on a
-            // manual account updates its balance. Currency detail stays on Manage → Bank accounts.
+            // Breakdown: one USD line per bank, with its logo. Choosing a row focuses the chart and headline on it; a
+            // typed-in balance updates from a right-click or the + above. Currency detail stays on Manage → Accounts.
             let banks = document.map { BankBalanceGroup.banks(bankValues, document: $0) } ?? []
             if !banks.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -133,16 +132,16 @@ extension UpOnlyUnlockedPanel {
         let single = bank.components.count == 1 ? bank.components.first : nil
         let manual = single.flatMap { component in document?.accounts.first { $0.id == component.id } }.map { $0.externalProfileID == nil } ?? false
         let native = single.flatMap { component in manual && component.currency != "USD" ? component.nativeAmount.map { UpOnlyFormat.currencyMoney($0.value, currency: component.currency) } : nil }
-        // Every row keeps the same trailing slot, so the amounts line up.
-        var trailing = AssetRow.Trailing.space
+        // Clicking a bank focuses the chart on it; updating a typed-in balance is a right-click (or the + above).
+        let synced = single.flatMap { component in document?.accounts.first { $0.id == component.id } }.map { $0.externalProfileID != nil } ?? (single == nil)
+        var options: [(title: String, action: () -> Void)] = []
         if manual, let component = single {
-            trailing = .button(symbol: "square.and.pencil", label: "Update " + component.label + " balance", action: {
-                showImport(session.startImport(.bankBalances, prefill: true, accountID: component.id))
-            })
+            options.append(("Update balance…", { showImport(session.startImport(.bankBalances, prefill: true, accountID: component.id)) }))
         }
         return AssetRow(id: bank.id, name: bank.name, detail: native, detailIsAmount: true,
                         value: bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"),
-                        image: bank.image, symbol: "building.columns.fill", tint: UpOnlyTint.netWorth, selected: companyFocus == .bank(ids), trailing: trailing) {
+                        image: bank.image, bank: bank.name, synced: synced, symbol: "building.columns.fill", tint: UpOnlyTint.netWorth,
+                        selected: companyFocus == .bank(ids), trailing: .none, options: options) {
             companyFocus = companyFocus == .bank(ids) ? .all : .bank(ids)
         }
     }

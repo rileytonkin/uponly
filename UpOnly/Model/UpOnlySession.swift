@@ -1088,7 +1088,7 @@ final class UpOnlySession {
             }
             if preview == "failed-rates" { fixture.settings.automaticFX = true; fxIssues = ["CHF": "Couldn’t get the CHF → USD rate. Try again or add a dated rate."] }
             if preview == "missing-balances" { fixture.bankBalances = []; fixture.dailyValuations = [] }
-            if preview.hasPrefix("performance") || preview == "networth-companies" {
+            if preview.hasPrefix("performance") || preview == "networth-companies" || preview == "update-balances" {
                 var months: [BusinessMonth] = []
                 var cursor = MonthKey.current().previous
                 for index in 0..<48 {
@@ -1101,7 +1101,7 @@ final class UpOnlySession {
                     BusinessBook(id: "studio", name: "Studio", ownership: [.init(fromMonth: first, numerator: 1, denominator: 1)], firstMonth: first, sourceURL: "https://docs.google.com/spreadsheets/d/synthetic/edit", basis: "Net proceeds less operating expenses, before owner draws.", months: months.map { var copy = $0; copy.profitUSD = (try? OwnershipPeriod(fromMonth: first, numerator: 1, denominator: 3).portion(copy.profitUSD)) ?? 0; copy.revenueUSD = copy.profitUSD + 4000; return copy }, fetchedAt: Date(), warning: preview == "performance-missing" ? "The accounting sheet reports a failed check." : nil),
                     BusinessBook(id: "agency", name: "Agency", ownership: [.init(fromMonth: first, numerator: 1, denominator: 3), .init(fromMonth: MonthKey.current().previous.description, numerator: 1, denominator: 2)], firstMonth: first, sourceURL: "https://docs.google.com/spreadsheets/d/synthetic/edit", basis: "Actual revenue less operating expenses, before all owner payouts.", months: months, fetchedAt: Date())]
             }
-            if preview == "networth-companies" {
+            if preview == "networth-companies" || preview == "update-balances" {
                 // A company whose share is only recorded from this month, as when its sheet starts late.
                 if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_OWNERSHIP_GAP"] == "1" {
                     fixture.businessAccounting?[0].ownership = [.init(fromMonth: MonthKey.current().description, numerator: 1, denominator: 2)]
@@ -1141,6 +1141,9 @@ final class UpOnlySession {
             if ["networth", "networth-companies", "worth-missing-rates", "missing-balances", "missing-prices"].contains(preview), fixture.showsNetWorth { destination = 1 }
             if preview == "import" { startImport(tracked.contains(.banks) ? .bankBalances : tracked.contains(.crypto) ? .holdings : .metals, prefill: true) }
             if preview == "add-info" { managementSection = "Add your info" }
+            // Several at once: the chooser, and a table updating every balance.
+            if preview == "bulk-import" { managementInMenu = true; managementSection = "Add your info"; importTableMode = true }
+            if preview == "update-balances" { startImport(.bankBalances, prefill: true); managementInMenu = true; importTableMode = true }
             if preview == "manual-bank" { managementSection = "Accounts"; startImport(.bankBalances) }
             if preview == "manual-crypto" { managementSection = "Portfolios"; startImport(.holdings) }
             if preview == "manual-metals" { managementSection = "Precious metals"; startImport(.metals) }
@@ -1164,7 +1167,7 @@ final class UpOnlySession {
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_AUTH_CANCEL"] == "1", let authenticator = vault.authenticator as? FixtureAuthenticator {
                 authenticator.shouldCancel = true
             }
-            let isManagement = ["accounts", "portfolios", "entries", "import", "tracking", "preferences", "security", "metals", "add-info", "manual-bank", "manual-crypto", "manual-metals", "statements"].contains(preview)
+            let isManagement = ["accounts", "portfolios", "entries", "import", "tracking", "preferences", "security", "metals", "add-info", "manual-bank", "manual-crypto", "manual-metals", "statements", "bulk-import", "update-balances"].contains(preview)
             if preview == "tracking" { managementSection = "Manage" }
             if preview == "preferences" { managementSection = "Sources" }
             if preview == "security" { managementSection = "Security" }

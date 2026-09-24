@@ -189,6 +189,47 @@ struct UpOnlyPrivacyButton: View {
     }
 }
 
+/// Logos of banks people use, bundled with the app like the coins' (none is fetched), matched from an account's name.
+nonisolated enum BankLogos {
+    /// Name words or phrases, and the logo each means.
+    static let names: [(match: String, logo: String)] = [
+        ("monzo", "monzo"), ("wise", "wise"), ("transferwise", "wise"), ("kast", "kast"), ("onesafe", "onesafe"), ("revolut", "revolut"),
+        ("starling", "starling"), ("n26", "n26"), ("chase", "chase"), ("bank of america", "bank-of-america"), ("wells fargo", "wells-fargo"),
+        ("citi", "citi"), ("citibank", "citi"), ("capital one", "capital-one"), ("amex", "american-express"), ("american express", "american-express"),
+        ("schwab", "schwab"), ("vanguard", "vanguard"), ("barclays", "barclays"), ("hsbc", "hsbc"), ("lloyds", "lloyds"), ("halifax", "halifax"),
+        ("nationwide", "nationwide"), ("anz", "anz"), ("nab", "nab"), ("ubs", "ubs"), ("mercury", "mercury"), ("brex", "brex"), ("paypal", "paypal"),
+        ("payoneer", "payoneer"), ("coinbase", "coinbase"), ("kraken", "kraken"), ("binance", "binance"), ("ally", "ally"), ("sofi", "sofi"),
+        ("chime", "chime"), ("bunq", "bunq"), ("nubank", "nubank"), ("bancolombia", "bancolombia"), ("dbs", "dbs"), ("ocbc", "ocbc"), ("td", "td"),
+        ("bmo", "bmo"), ("goldman sachs", "goldman-sachs"), ("marcus", "goldman-sachs"), ("morgan stanley", "morgan-stanley"),
+        ("interactive brokers", "interactive-brokers"), ("ibkr", "interactive-brokers"), ("robinhood", "robinhood"), ("trading 212", "trading-212"),
+        ("monese", "monese"), ("metro bank", "metro-bank"), ("deutsche bank", "deutsche-bank"), ("bnp", "bnp-paribas"), ("credit agricole", "credit-agricole"),
+        ("stripe", "stripe"), ("emirates nbd", "emirates-nbd"), ("standard chartered", "standard-chartered"), ("macquarie", "macquarie"),
+    ]
+    /// The logo for an account called `name`; a synced account comes from Wise.
+    static func logo(for name: String, synced: Bool = false) -> String? {
+        if synced { return "wise" }
+        let lower = name.lowercased()
+        let words = lower.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        let joined = " " + words.joined(separator: " ") + " "
+        return names.first { joined.contains(" " + $0.match + " ") }?.logo
+    }
+}
+/// A bank at a glance: its logo when it's one the app knows, else a picture (a Wise profile's), else the bank symbol.
+struct UpOnlyBankBadge: View {
+    var name: String
+    var synced = false
+    var image: Data? = nil
+    var size: CGFloat = 24
+    var body: some View {
+        if let logo = BankLogos.logo(for: name, synced: synced), let picture = NSImage(named: "BankLogos/" + logo) {
+            Image(nsImage: picture).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+                .accessibilityHidden(true)
+        } else if let image { UpOnlyProfileImage(data: image, name: name, size: size) }
+        else { UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: size) }
+    }
+}
+
 /// Replace the text, not merely its pixels, so hidden values are absent from accessibility.
 struct UpOnlyPrivateText: View {
     @Environment(UpOnlySession.self) private var session
@@ -249,9 +290,10 @@ struct UpOnlyRowButtonStyle: ButtonStyle {
         @Environment(\.isEnabled) private var isEnabled
         var body: some View {
             configuration.label.background {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? UpOnlyTint.netWorth.opacity(0.1) : hovering && isEnabled ? Color.primary.opacity(0.045) : .clear)
-                    .padding(.horizontal, -6)
+                // Inset inside the card: clear of its edges and of the lines between rows.
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? UpOnlyTint.netWorth.opacity(0.1) : hovering && isEnabled ? Color.primary.opacity(0.05) : .clear)
+                    .padding(.horizontal, -7).padding(.vertical, 3)
             }.onHover { hovering = $0 }
         }
     }
