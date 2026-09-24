@@ -644,6 +644,59 @@ extension PublicPrices {
         let ratio = NSDecimalNumber(decimal: close / reference).doubleValue
         return ratio > 0.85 && ratio < 1.15
     }
+    /// Prices through the last day, week or month for the finer charts, oldest first. Binance's candles when the coin's
+    /// pair checks out against `reference` (today's saved price); gold through PAXG, a token backed by an ounce of
+    /// gold, scaled to the saved spot price; otherwise CoinGecko's own chart. Nothing for other metals.
+    static func intraday(_ asset: CanonicalAssetID, symbol: String?, reference: Decimal?, range: WorthRange, now: Date, coinGeckoKey: String) async throws -> ChartEstimates.Series {
+        guard let seconds = range.seconds, let step = range.intradayStep, let interval = range.candleInterval else { return [] }
+        let start = now.addingTimeInterval(-seconds - step)
+        let limit = String(Int(seconds / step) + 2)
+        func candles(_ pair: String) async throws -> ChartEstimates.Series {
+            let data = try await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: interval), URLQueryItem(name: "startTime", value: String(Int64(start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "limit", value: limit)])
+            return try decodeCandles(data, now: now)
+        }
+        if let metal = PreciousMetal.asset(asset) {
+            guard metal == .gold, let reference, reference > 0 else { return [] }
+            let ounces = try await candles("PAXGUSDT")
+            guard let last = ounces.last?.value, last > 0 else { return [] }
+            // The token's shape, at the saved spot price's level: PAXG trades a little off spot.
+            let scale = reference / (last / PreciousMetal.gramsPerTroyOunce)
+            guard NSDecimalNumber(decimal: scale).doubleValue > 0.85, NSDecimalNumber(decimal: scale).doubleValue < 1.15 else { return [] }
+            return ounces.map { ($0.time, $0.value / PreciousMetal.gramsPerTroyOunce * scale) }
+        }
+        if let symbol, let pair = binancePair(symbol), let reference, reference > 0, let series = try? await candles(pair), let last = series.last?.value {
+            let ratio = NSDecimalNumber(decimal: last / reference).doubleValue
+            if ratio > 0.85 && ratio < 1.15 { return series }
+        }
+        let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + asset.rawValue + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(now.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: coinGeckoKey)
+        return try decodeChartPrices(data, now: now)
+    }
+    /// Binance candles as prices through time: each candle's open at its start, and the last one's latest close now.
+    static func decodeCandles(_ data: Data, now: Date) throws -> ChartEstimates.Series {
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[Any]], rows.count <= 1000 else { throw PriceError.invalidResponse }
+        var series: ChartEstimates.Series = []
+        for row in rows {
+            guard row.count >= 5, let open = (row[0] as? NSNumber)?.doubleValue, let text = row[1] as? String,
+                  let price = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), MoneyInput.isFinite(price), price > 0 else { continue }
+            let time = Date(timeIntervalSince1970: open / 1000)
+            guard time <= now else { continue }
+            series.append((time, price))
+        }
+        if let last = rows.last, last.count >= 5, let text = last[4] as? String, let close = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), close > 0 {
+            series.append((now, close))
+        }
+        return series.sorted { $0.time < $1.time }
+    }
+    /// CoinGecko's chart points (every five minutes over a day, hourly over longer), oldest first.
+    static func decodeChartPrices(_ data: Data, now: Date) throws -> ChartEstimates.Series {
+        let response = try JSONDecoder().decode(PriceHistory.CryptoHistory.self, from: data)
+        guard response.prices.count <= 30000 else { throw PriceError.invalidResponse }
+        return response.prices.compactMap { pair -> (time: Date, value: Decimal)? in
+            guard pair.count == 2, let millis = pair[0], let price = pair[1], MoneyInput.isFinite(price), price > 0 else { return nil }
+            let time = Date(timeIntervalSince1970: NSDecimalNumber(decimal: millis).doubleValue / 1000)
+            return time <= now.addingTimeInterval(300) ? (time, price) : nil
+        }.sorted { $0.time < $1.time }
+    }
     /// Tickers of the 250 largest coins (CoinGecko, September 2026), for finding long history when today's market
     /// list hasn't been fetched in the same update.
     static let knownSymbols: [String: String] = [

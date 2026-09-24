@@ -230,6 +230,10 @@ struct UpOnlyUnlockedPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
+        // The shorter ranges fetch finer prices while they show; the chart uses saved prices until they arrive.
+        .task(id: worthRange.intradayStep == nil || !isWorthPage ? "" : worthRange.title) {
+            if worthRange.intradayStep != nil, isWorthPage { await session.loadIntraday(worthRange) }
+        }
     }
     /// One title for every page: the switcher box and the name of what's showing. Cash flow's drill-ins keep a Back.
     @ViewBuilder var navigationHeader: some View {
@@ -493,29 +497,75 @@ struct UpOnlyUnlockedPanel: View {
                              detailLabel: UpOnlyFormat.utcDate(sampleDays[index] ?? days[index]), note: figures[index]?.1, date: sampleDays[index], axisLabel: labels[index])
         }
     }
-    /// The past 24 hours hour by hour, each valued as the app would have shown it then (the latest prices, rates and
-    /// balances saved by that hour), ending at `live`. `key` names the page, for reusing the hours until the next one.
-    func hourlySeries(scope: ValuationScope, interval: DateInterval, key: String, live: Decimal?, _ value: (ValuationResult) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
+    /// The past 24 hours hour by hour, each as the app would have shown it then (the latest prices, rates and
+    /// balances saved by that hour): from exactly 24 hours ago, then on each hour. Reused until the next hour.
+    func hourlyBase(scope: ValuationScope, interval: DateInterval) -> [(moment: Date, components: [ValuationComponent])] {
         guard let document = session.document else { return [] }
+        let key = "\(scope)|\(session.documentRevision)|\(Int(interval.end.timeIntervalSince1970 / 3600))"
+        if let cached = session.hourlyCache[key] { return cached }
+        var moments = [interval.start]
+        if var hour = Calendar.current.nextDate(after: interval.start, matching: DateComponents(minute: 0, second: 0), matchingPolicy: .nextTime) {
+            while hour < interval.end.addingTimeInterval(-60) { moments.append(hour); hour = hour.addingTimeInterval(3600) }
+        }
+        let base = moments.map { (moment: $0, components: NetWorthCalculator.value(at: $0, scope: scope, document: document, now: $0).components) }
+        if session.hourlyCache.count > 24 { session.hourlyCache = [:] }
+        session.hourlyCache[key] = base
+        return base
+    }
+    /// The 24-hour chart hour by hour from saved prices, ending at `live`: what it shows until finer prices arrive.
+    func hourlySeries(scope: ValuationScope, interval: DateInterval, live: Decimal?, _ value: ([ValuationComponent], Date) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
         let calendar = Calendar.current
-        let cacheKey = key + "|\(session.documentRevision)|\(Int(interval.end.timeIntervalSince1970 / 3600))"
-        var points: [UpOnlyChartPoint]
-        if let cached = session.hourlyCache[cacheKey] { points = cached }
-        else {
-            // From exactly 24 hours ago, then on each hour, so the axis can mark every six hours.
-            var moments = [interval.start]
-            if var hour = calendar.nextDate(after: interval.start, matching: DateComponents(minute: 0, second: 0), matchingPolicy: .nextTime) {
-                while hour < interval.end.addingTimeInterval(-60) { moments.append(hour); hour = hour.addingTimeInterval(3600) }
+        let base = hourlyBase(scope: scope, interval: interval)
+        let marks = DashboardChart.hourMarks(base.map(\.moment), calendar: calendar)
+        var points = base.indices.map { index in
+            let moment = base[index].moment, figure = value(base[index].components, moment)
+            return UpOnlyChartPoint(id: "h" + String(Int(moment.timeIntervalSince1970)), label: UpOnlyFormat.localTime(moment, calendar: calendar), value: figure?.0,
+                                    detailLabel: UpOnlyFormat.localMoment(moment, calendar: calendar), note: figure?.1, date: moment, axisLabel: marks[index])
+        }
+        if let live { points.append(UpOnlyChartPoint(id: "now", label: "Now", value: live, detailLabel: "Now", date: interval.end)) }
+        return points
+    }
+    /// The shorter ranges drawn finely: every 15 minutes over 24 hours, hourly over 7 days, every four hours over 30.
+    /// A coin or gold takes its price at each step from intraday history; balances, rates and quantities are as
+    /// recorded by then. Nil until intraday prices have arrived for something in `liveComponents`.
+    func intradaySeries(scope: ValuationScope, interval: DateInterval, samples: [DailyValuation], liveComponents: [ValuationComponent], live: Decimal?,
+                        _ value: ([ValuationComponent], Date) -> (Decimal, String?)?) -> [UpOnlyChartPoint]? {
+        guard let step = worthRange.intradayStep, let document = session.document else { return nil }
+        let assetOf = Dictionary(document.holdings.map { ($0.id, $0.assetID.rawValue) }, uniquingKeysWith: { first, _ in first })
+        let prices = Dictionary(liveComponents.compactMap { component -> (String, ChartEstimates.Series)? in
+            guard component.kind == .holding, let asset = assetOf[component.id], let series = session.intraday[worthRange.title + "|" + asset] else { return nil }
+            return (asset, series)
+        }, uniquingKeysWith: { first, _ in first })
+        guard !prices.isEmpty else { return nil }
+        // What was held and recorded at each step: hour by hour over 24 hours, day by day (each saved day's close) over
+        // longer, and today as it stands.
+        var base: [(moment: Date, components: [ValuationComponent])] = worthRange == .day
+            ? hourlyBase(scope: scope, interval: interval)
+            : samples.map { (UTCDay.start(of: $0.utcDay).addingTimeInterval(86400 - 1), $0.components) }
+        base.append((interval.end, liveComponents))
+        base.sort { $0.moment < $1.moment }
+        // Steps on the Mac's clock, so midnights and Mondays fall on them.
+        let calendar = Calendar.current
+        var moments: [Date] = []
+        var moment = calendar.startOfDay(for: interval.start)
+        while moment < interval.start { moment = moment.addingTimeInterval(step) }
+        while moment < interval.end.addingTimeInterval(-60) { moments.append(moment); moment = moment.addingTimeInterval(step) }
+        let marks = DashboardChart.localMarks(moments, range: worthRange, calendar: calendar)
+        var cursor = 0
+        var points: [UpOnlyChartPoint] = moments.indices.map { index in
+            let moment = moments[index]
+            while cursor + 1 < base.count, base[cursor + 1].moment <= moment { cursor += 1 }
+            let components = base[cursor].components.map { component -> ValuationComponent in
+                guard component.kind == .holding, let asset = assetOf[component.id], let series = prices[asset], let quantity = component.nativeAmount?.value,
+                      let price = ChartEstimates.latest(series, at: moment), let usd = try? MoneyInput.multiply(quantity, price, allowingRounding: true) else { return component }
+                var priced = component; priced.usdValue = PreciseDecimal(usd); priced.missing = nil; priced.quoteTime = moment
+                return priced
             }
-            let marks = DashboardChart.hourMarks(moments, calendar: calendar)
-            points = moments.indices.map { index in
-                let moment = moments[index]
-                let figure = value(NetWorthCalculator.value(at: moment, scope: scope, document: document, now: moment))
-                return UpOnlyChartPoint(id: "h" + String(Int(moment.timeIntervalSince1970)), label: UpOnlyFormat.localHour(moment, calendar: calendar), value: figure?.0,
-                                        detailLabel: UpOnlyFormat.localMoment(moment, calendar: calendar), note: figure?.1, date: moment, axisLabel: marks[index])
-            }
-            if session.hourlyCache.count > 24 { session.hourlyCache = [:] }
-            session.hourlyCache[cacheKey] = points
+            let figure = value(components, moment)
+            return UpOnlyChartPoint(id: "i" + String(Int(moment.timeIntervalSince1970)),
+                                    label: worthRange == .day ? UpOnlyFormat.localTime(moment, calendar: calendar) : UpOnlyFormat.localMoment(moment, calendar: calendar), value: figure?.0,
+                                    detailLabel: worthRange == .day ? UpOnlyFormat.localMinute(moment, calendar: calendar) : UpOnlyFormat.localMoment(moment, calendar: calendar),
+                                    note: figure?.1, date: moment, axisLabel: marks[index])
         }
         if let live { points.append(UpOnlyChartPoint(id: "now", label: "Now", value: live, detailLabel: "Now", date: interval.end)) }
         return points

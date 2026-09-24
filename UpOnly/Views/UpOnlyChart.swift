@@ -480,13 +480,21 @@ enum UpOnlyFormat {
     static func localHour(_ date: Date, calendar: Calendar = .current) -> String { plain(localFormatter("j", calendar).string(from: date)) }
     static func localWeekday(_ date: Date, calendar: Calendar = .current) -> String { localFormatter("EEE", calendar).string(from: date) }
     static func localMoment(_ date: Date, calendar: Calendar = .current) -> String { plain(localFormatter("MMMdj", calendar).string(from: date)) }
+    /// "10:15 AM", "Sep 24, 10:15 AM" and "Sep 7" on the Mac's clock, for the finer charts.
+    static func localTime(_ date: Date, calendar: Calendar = .current) -> String { plain(localFormatter("jmm", calendar).string(from: date)) }
+    static func localMinute(_ date: Date, calendar: Calendar = .current) -> String { plain(localFormatter("MMMdjmm", calendar).string(from: date)) }
+    static func localDay(_ date: Date, calendar: Calendar = .current) -> String { localFormatter("MMMd", calendar).string(from: date) }
     private static func plain(_ text: String) -> String { text.replacingOccurrences(of: "\u{202F}", with: " ") }
+    /// Made once per template and time zone: a fine chart labels a couple of hundred points.
     private static func localFormatter(_ template: String, _ calendar: Calendar) -> DateFormatter {
-        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US")
-        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
-        formatter.setLocalizedDateFormatFromTemplate(template)
-        return formatter
+        localFormatters.formatter(template + "|" + calendar.timeZone.identifier) {
+            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US")
+            formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate(template)
+            return formatter
+        }
     }
+    private static let localFormatters = FormatterCache()
     /// "Sep": the month's own abbreviation, not the first three letters of its name.
     static func monthName(_ month: MonthKey) -> String {
         guard let date = UTCDay.calendar.date(from: DateComponents(year: month.year, month: month.month, day: 15)) else { return month.description }
@@ -608,4 +616,16 @@ enum UpOnlyTint {
     static let loss = Color(nsColor: .systemRed)
     /// Gain for up, loss for down, and quiet for no change.
     static func signed(_ value: Decimal) -> Color { value > 0 ? gain : value < 0 ? loss : .secondary }
+}
+
+/// Date formatters by key, shared across threads.
+final class FormatterCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var formatters: [String: DateFormatter] = [:]
+    func formatter(_ key: String, make: () -> DateFormatter) -> DateFormatter {
+        lock.lock(); defer { lock.unlock() }
+        if let formatter = formatters[key] { return formatter }
+        let formatter = make(); formatters[key] = formatter
+        return formatter
+    }
 }

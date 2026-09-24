@@ -242,6 +242,15 @@ nonisolated enum WorthRange: CaseIterable {
     }
     /// 24 hours is drawn hour by hour from the prices saved through the day; the rest from saved daily values.
     var hourly: Bool { self == .day }
+    /// Finer steps for the shorter ranges, drawn from intraday price history when it has been fetched: 15 minutes
+    /// over 24 hours, an hour over 7 days, four hours over 30.
+    var intradayStep: TimeInterval? {
+        switch self { case .day: 15 * 60; case .week: 3600; case .month: 4 * 3600; case .year, .all: nil }
+    }
+    /// Binance's candle size for `intradayStep`.
+    var candleInterval: String? {
+        switch self { case .day: "15m"; case .week: "1h"; case .month: "4h"; case .year, .all: nil }
+    }
     /// Days between chart points: every day up to a year (at most 365 points), and for All by how long the
     /// history is, so it too stays near a year's worth of points.
     func chartStepDays(span: TimeInterval) -> Int {
@@ -309,11 +318,20 @@ nonisolated enum DashboardChart {
     }
     /// Marks every six hours of a 24-hour chart, in the Mac's time zone: "6 AM", "12 PM", "6 PM", and the weekday
     /// at midnight.
-    static func hourMarks(_ moments: [Date], calendar: Calendar = .current) -> [String?] {
+    static func hourMarks(_ moments: [Date], calendar: Calendar = .current) -> [String?] { localMarks(moments, range: .day, calendar: calendar) }
+    /// Marks for the finer charts, on the Mac's clock: every six hours over 24 hours (the weekday at midnight), each
+    /// midnight over 7 days ("Thu"), each Monday over 30 ("Sep 7").
+    static func localMarks(_ moments: [Date], range: WorthRange, calendar: Calendar = .current) -> [String?] {
         moments.map { moment in
-            let hour = calendar.component(.hour, from: moment)
-            guard hour % 6 == 0, calendar.component(.minute, from: moment) == 0 else { return nil }
-            return hour == 0 ? UpOnlyFormat.localWeekday(moment, calendar: calendar) : UpOnlyFormat.localHour(moment, calendar: calendar)
+            let parts = calendar.dateComponents([.hour, .minute, .weekday], from: moment)
+            guard parts.minute == 0, let hour = parts.hour else { return nil }
+            switch range {
+            case .day:
+                guard hour % 6 == 0 else { return nil }
+                return hour == 0 ? UpOnlyFormat.localWeekday(moment, calendar: calendar) : UpOnlyFormat.localHour(moment, calendar: calendar)
+            case .week: return hour == 0 ? UpOnlyFormat.localWeekday(moment, calendar: calendar) : nil
+            default: return hour == 0 && parts.weekday == 2 ? UpOnlyFormat.localDay(moment, calendar: calendar) : nil
+            }
         }
     }
     /// Whether a chart's line ends at or above where it starts, for the green-up / red-down colour. Nil with fewer

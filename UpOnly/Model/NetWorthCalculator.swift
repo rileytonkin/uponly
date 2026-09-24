@@ -924,6 +924,11 @@ nonisolated struct ChartEstimates {
         guard let pick, abs(pick.time.timeIntervalSince(moment)) <= window else { return nil }
         return pick
     }
+    /// The latest observation at or before `moment`, or the first when `moment` comes before them all.
+    static func latest(_ series: Series, at moment: Date) -> Decimal? {
+        let (before, after) = neighbours(series, moment)
+        return before?.value ?? after?.value
+    }
     /// A price or rate for a moment: a saved one within `near`; otherwise a straight line between the saved ones on
     /// either side, however far apart; otherwise the nearest within `window`. Returns the dates it came from.
     static func estimate(_ series: Series, at moment: Date) -> (value: Decimal, from: Date, to: Date?)? {
