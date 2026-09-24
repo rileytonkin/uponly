@@ -459,6 +459,10 @@ enum UpOnlyFormat {
         let arrow = value > 0 ? "▲ " : value < 0 ? "▼ " : ""
         return text + "  " + arrow + (oneDecimal.string(from: NSDecimalNumber(decimal: abs(value))) ?? "0.0") + "%"
     }
+    /// The same move with the amount hidden, "−•••••  ▼ 3.9%": the percentage says how things moved, not how much you hold.
+    static func hiddenMovement(_ amount: Decimal, fraction: Decimal?) -> String {
+        (amount < 0 ? "−" : amount > 0 ? "+" : "") + "•••••" + (fraction.map { "  " + arrowPercent($0) } ?? "")
+    }
     /// "▲ 2.1%" for a price change: arrow, no sign, one decimal.
     static func arrowPercent(_ fraction: Decimal) -> String {
         let value = rounded(fraction * 100, scale: 1)

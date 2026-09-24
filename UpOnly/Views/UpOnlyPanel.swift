@@ -104,11 +104,8 @@ private struct UpOnlyPanelKeyboard: NSViewRepresentable {
 struct UpOnlyUnlockedPanel: View {
     @Environment(UpOnlySession.self) var session
     var model: PopoverModel
-    @State var scope: ValuationScope = .allTracked
     @State var detail: String?
-    @State var companySelection: CompanySelection?
-    /// The company page a portfolio was opened from, so the portfolio's Back returns there.
-    @State var portfolioReturn: CompanySelection?
+    @State var showingSwitcher = false
     @State var worthRange: WorthRange = .year
     @State var holdingSort: HoldingSort = .value
     /// How a portfolio's holdings table is ordered.
@@ -119,6 +116,37 @@ struct UpOnlyUnlockedPanel: View {
     @State var companyChart: CompanyChart = .balance
     @State var companyFocus: CompanyFocus = .all
     enum CompanyChart { case balance, profit }
+    /// The net worth scope of the current selection: a portfolio, or everything (bank groups have their own page).
+    var scope: ValuationScope {
+        get { if case .portfolio(let id) = session.dashboardSelection { return .portfolio(id) }; return .allTracked }
+        nonmutating set { if case .portfolio(let id) = newValue { select(.portfolio(id)) } else { select(.all) } }
+    }
+    /// Switches what the dashboard shows. A bank group's page reads its company's accounting, so the cash-flow
+    /// scope follows it there and back.
+    func select(_ selection: UpOnlySession.DashboardSelection) {
+        detail = nil; companyFocus = .all; showingSwitcher = false
+        if case .bankGroup(let id) = selection { model.selectScope(id == "personal" ? .personal : .business(id)) }
+        else if case .bankGroup = session.dashboardSelection { model.selectScope(.all) }
+        session.dashboardSelection = selection
+    }
+    /// The bank group page being shown, with today's accounts in it.
+    var resolvedCompany: CompanySelection? {
+        guard case .bankGroup(let id) = session.dashboardSelection, let document = session.document else { return nil }
+        let components = NetWorthCalculator.value(at: Date(), scope: .allTracked, document: document).components
+        let group = BankBalanceGroup.groups(components, document: document).first { $0.id == id }
+            ?? BankBalanceGroup(id: id, name: id == "personal" ? "Bank balances" : model.books.first { $0.id == id }?.name ?? "Company",
+                                image: nil, businessID: id == "personal" ? nil : id, components: [])
+        return CompanySelection(group: group)
+    }
+    /// The switcher's title: what the page below is about.
+    var selectionTitle: String {
+        switch session.dashboardSelection {
+        case .all: "All assets"
+        case .cashFlow: "Income & spending"
+        case .portfolio(let id): session.document?.portfolio(id: id)?.name ?? "Portfolio"
+        case .bankGroup(let id): id == "personal" ? "Bank balances" : model.books.first { $0.id == id }?.name ?? "Company"
+        }
+    }
     /// Net worth is always today's value; the range only sets how much history the chart shows.
     /// Cash flow keeps the month, year or all-time selector.
     var isWorthPage: Bool { !(session.destination == 0 && shows(.cashFlow)) }
@@ -151,58 +179,60 @@ struct UpOnlyUnlockedPanel: View {
         return !document.accounts.isEmpty || !document.entries.isEmpty || !document.holdings.isEmpty || !(document.businessAccounting ?? []).isEmpty
     }
     var body: some View {
-        // The banner only shows on the overview, so it is only worked out there.
-        let attention = companySelection == nil && detail == nil && selectedPortfolio == nil ? attentionItems : []
+        let company = showingSwitcher ? nil : resolvedCompany
+        // The banner only shows on the overview and cash flow, so it is only worked out there.
+        let attention = !showingSwitcher && company == nil && detail == nil && selectedPortfolio == nil ? attentionItems : []
         return VStack(spacing: 0) {
             navigationHeader.padding(.top, 14).padding(.bottom, 16)
-            if !attention.isEmpty { attentionBanner(attention).padding(.bottom, 16) }
-            if let companySelection { companyContent(companySelection) }
-            else if !hasData, shows(.cashFlow) || showsNetWorth { addFirstData }
-            else if session.destination == 0 && shows(.cashFlow) { monthContent }
-            else if showsNetWorth { worthContent }
-            else { addFirstData }
-            if let message = session.message {
-                Text(message).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10).padding(.bottom, 10)
+            if showingSwitcher { switcherPage }
+            else {
+                if !attention.isEmpty { attentionBanner(attention).padding(.bottom, 16) }
+                if let company { companyContent(company) }
+                else if !hasData, shows(.cashFlow) || showsNetWorth { addFirstData }
+                else if session.destination == 0 && shows(.cashFlow) { monthContent }
+                else if showsNetWorth { worthContent }
+                else { addFirstData }
+                if let message = session.message {
+                    Text(message).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10).padding(.bottom, 10)
+                }
             }
         }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 16)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
-        .onChange(of: session.document?.settings.tracked) { _, _ in scope = .allTracked; detail = nil }
+        // Returning from Manage or Add to a bank group's page: its accounting scope comes back with it.
+        .onAppear { if case .bankGroup(let id) = session.dashboardSelection { model.selectScope(id == "personal" ? .personal : .business(id)) } }
+        .onChange(of: session.document?.settings.tracked) { _, _ in select(showsNetWorth || !shows(.cashFlow) ? .all : .cashFlow) }
         .onChange(of: session.document?.portfolios) { _, _ in
-            if case .portfolio(let id) = scope, session.document?.portfolio(id: id)?.isArchived != false { scope = .allTracked; portfolioReturn = nil }
+            if case .portfolio(let id) = session.dashboardSelection, session.document?.portfolio(id: id)?.isArchived != false { select(.all) }
         }
     }
+    /// One title for every page: the switcher box and the name of what's showing. Cash flow's drill-ins keep a Back.
     @ViewBuilder var navigationHeader: some View {
-        if let selection = companySelection {
-            UpOnlyPageHeader(title: companyName(selection), backLabel: "Back to net worth", profileImage: selection.group.image) {
-                model.selectScope(selection.previousScope); companySelection = nil
-            }
-        } else if let portfolio = selectedPortfolio {
-            UpOnlyPageHeader(title: portfolio.name, backLabel: portfolioReturn.map { "Back to " + companyName($0) } ?? "Back to net worth") {
-                scope = .allTracked
-                if let company = portfolioReturn { portfolioReturn = nil; openCompany(company.group) }
-            }
-        } else if let detail {
+        if let detail, !showingSwitcher {
             UpOnlyPageHeader(title: detail == "personal" ? "Personal" : selectedBusiness?.book.name ?? "Company",
-                             backLabel: "Back to cash flow") { self.detail = nil }
+                             backLabel: "Back to income & spending") { self.detail = nil }
         } else {
             HStack(spacing: 8) {
-                if shows(.cashFlow) && showsNetWorth {
-                    Picker("Dashboard section", selection: Binding(get: { session.destination }, set: { session.destination = $0; detail = nil })) {
-                        Text("Net worth").tag(1)
-                        Text("Cash flow").tag(0)
-                    }.pickerStyle(.segmented).controlSize(.regular).font(UpOnlyType.body).labelsHidden().fixedSize()
-                } else if shows(.cashFlow) { destination("Cash flow", value: 0) }
-                else if showsNetWorth { destination("Net worth", value: 1) }
-                Spacer(minLength: 0)
+                switcherTitle
+                Spacer(minLength: 8)
                 addButton
                 dashboardActions
             }.frame(minHeight: 32)
         }
     }
-    func companyName(_ selection: CompanySelection) -> String {
-        model.books.first { $0.id == selection.group.businessID }?.name ?? selection.group.name
+    var switcherTitle: some View {
+        Button { showingSwitcher.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: showingSwitcher ? "xmark" : "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary).frame(width: 26, height: 26)
+                    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                Text(selectionTitle).font(.system(size: 20, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+            }.contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
+            .accessibilityIdentifier("DashboardSwitcher").keyboardShortcut("k", modifiers: .command)
+            .help("Choose what to show (⌘K)")
     }
     var syncNeedsAttention: Bool {
         if !session.backgroundIssues.isEmpty { return true }
@@ -259,12 +289,6 @@ struct UpOnlyUnlockedPanel: View {
         .frame(width: 32, height: 32).glassEffect(.regular, in: .circle)
         .accessibilityLabel("More").accessibilityIdentifier("DashboardActions")
         .help("Manage, privacy and lock")
-    }
-    func destination(_ title: String, value: Int) -> some View {
-        Button { session.destination = value; detail = nil } label: {
-            Text(title).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.body.weight(session.destination == value ? .semibold : .regular))
-                .foregroundStyle(session.destination == value ? .primary : .secondary)
-        }.buttonStyle(.bordered).controlSize(.small).tint(session.destination == value ? Color.accentColor : Color.secondary).accessibilityAddTraits(session.destination == value ? .isSelected : [])
     }
     // The tab above already names the page, so the empty state is just the invitation.
     var addFirstData: some View {
@@ -425,31 +449,17 @@ struct UpOnlyUnlockedPanel: View {
             .help(performanceBasis)
             .accessibilityHint(performanceBasis)
     }
-    func worthScopeOptions(at date: Date) -> [(ValuationScope, String)] {
-        var options: [(ValuationScope, String)] = [(.allTracked, "All assets")]
-        if shows(.banks) && showsHoldings { options.append((.banks, "Bank balances")) }
-        options += (session.document?.portfolios.filter { $0.isActive(at: date) } ?? []).map { (.portfolio($0.id), $0.name) }
-        return options
-    }
-    /// One point per chart stop from the start of the range to the last sample, and the baseline for the change line:
-    /// the first sample in the range that is fully valued, unless that is today's. `value` returns a sample's figure and,
-    /// when the figure is an estimate, a note saying what it leaves out.
-    func dailySeries(_ samples: [DailyValuation], interval: DateInterval, baselineMatches: (DailyValuation) -> Bool = { _ in true },
-                             _ value: (DailyValuation) -> (Decimal, String?)?) -> (points: [UpOnlyChartPoint], baseline: Baseline?) {
+    /// One point per chart stop from the start of the range to the last sample. `value` returns a sample's figure
+    /// and, when the figure is an estimate, a note saying what it leaves out.
+    func dailySeries(_ samples: [DailyValuation], interval: DateInterval, _ value: (DailyValuation) -> (Decimal, String?)?) -> [UpOnlyChartPoint] {
         let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
         let labels = DashboardChart.endLabels(stops.map { $0.day }, range: worthRange)
-        let points = stops.enumerated().map { index, stop -> UpOnlyChartPoint in
+        return stops.enumerated().map { index, stop -> UpOnlyChartPoint in
             let sample = stop.sample.map { samples[$0] }
             let figure = sample.flatMap(value)
             return UpOnlyChartPoint(id: String(stop.day.timeIntervalSince1970), label: UpOnlyFormat.utcDay(stop.day), value: figure?.0,
                                     detailLabel: UpOnlyFormat.utcDate(sample?.utcDay ?? stop.day), partial: figure?.1 != nil, note: figure?.1, axisLabel: labels[index])
         }
-        let today = UTCDay.start(of: interval.end)
-        var baseline: Baseline?
-        for sample in samples where UTCDay.start(of: sample.utcDay) < today && baselineMatches(sample) {
-            if let figure = value(sample), figure.1 == nil { baseline = Baseline(sample: sample, value: figure.0); break }
-        }
-        return (points, baseline)
     }
     var selectedPortfolio: Portfolio? {
         guard session.destination == 1, case .portfolio(let id) = scope else { return nil }
@@ -468,7 +478,7 @@ struct UpOnlyUnlockedPanel: View {
         /// The detail line is an amount, hidden in privacy mode.
         var detailIsAmount = false
         var value: String
-        /// The row's own change over the chart range, as a fraction.
+        /// The row's own move over the last 24 hours, as a fraction.
         var change: Decimal? = nil
         var image: Data? = nil
         var symbol: String
@@ -501,8 +511,9 @@ struct UpOnlyUnlockedPanel: View {
                     // Value over its change, as in Delta, so the name keeps the width.
                     VStack(alignment: .trailing, spacing: 1) {
                         UpOnlyPrivateText(row.value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1).minimumScaleFactor(0.7)
-                        if let change = row.change, !session.privacyMode {
-                            Text(UpOnlyFormat.percent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
+                        // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
+                        if let change = row.change {
+                            Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
                                 .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1)
                         }
                     }.layoutPriority(1)
@@ -523,12 +534,11 @@ struct UpOnlyUnlockedPanel: View {
             }
         }
     }
-    /// "<value>, <detail>, +18.0% over the past year": the name is the label, so VoiceOver reads "<name>, <value>".
+    /// "<value>, <detail>, +0.4% in 24 hours": the name is the label, so VoiceOver reads "<name>, <value>".
     func spokenValue(_ row: AssetRow) -> String {
-        if session.privacyMode { return "Hidden value" }
-        var parts = [row.value]
-        if let detail = row.detail { parts.append(detail) }
-        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + " " + worthRange.over) }
+        var parts = [session.privacyMode ? "Hidden value" : row.value]
+        if let detail = row.detail, !(row.detailIsAmount && session.privacyMode) { parts.append(detail) }
+        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + " in 24 hours") }
         return parts.joined(separator: ", ")
     }
 }

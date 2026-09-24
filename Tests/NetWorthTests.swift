@@ -988,3 +988,24 @@ struct DayChangeTests {
         #expect(HoldingPerformance.scope(parts, document: doc, at: now) == nil)
     }
 }
+
+struct DayChangePartsTests {
+    private let now = Date(timeIntervalSince1970: 1_790_000_000)
+    private func part(_ id: UUID, _ value: Decimal, quoted: Date?, kind: ValuationComponent.Kind = .holding) -> ValuationComponent {
+        ValuationComponent(id: id, kind: kind, label: "Part", currency: "USD", nativeAmount: PreciseDecimal(1), usdValue: PreciseDecimal(value),
+                           quoteTime: quoted, fxTime: nil, isStale: false, missing: nil)
+    }
+    @Test("A row's 24h move needs every part then, on fresh prices; the rest of the valuation doesn't matter")
+    func rowMove() {
+        let coin = UUID(), bank = UUID(), other = UUID(), then = now.addingTimeInterval(-DayChange.window)
+        let current = [part(coin, 550, quoted: now.addingTimeInterval(-60)), part(bank, 450, quoted: nil, kind: .bank)]
+        let earlier = [part(coin, 500, quoted: then.addingTimeInterval(-60)), part(bank, 500, quoted: nil, kind: .bank), part(other, 99, quoted: then)]
+        let move = DayChange.parts(current, earlier: earlier, now: now)
+        #expect(move?.amount == 0 && move?.fraction == 0)
+        // An account that didn't exist 24 hours ago makes the move unknown, not a gain.
+        #expect(DayChange.parts(current + [part(UUID(), 10, quoted: nil, kind: .bank)], earlier: earlier, now: now) == nil)
+        // A stale price now or then makes it unknown too.
+        #expect(DayChange.parts([part(coin, 550, quoted: now.addingTimeInterval(-4 * 3600))], earlier: earlier, now: now) == nil)
+        #expect(DayChange.parts([], earlier: earlier, now: now) == nil)
+    }
+}

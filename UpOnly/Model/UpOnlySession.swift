@@ -30,7 +30,15 @@ final class UpOnlySession {
     private(set) var fxIssues: [String: String] = [:]
     /// Last manual or scheduled update's problem per price source ("crypto", "metals", "fx"), cleared on success.
     private(set) var sourceIssues: [String: String] = [:]
-    var destination = 0
+    /// What the dashboard shows, chosen with the switcher: everything, one bank group ("personal" or a company's
+    /// id), one portfolio, or cash flow. Kept here so a trip to Manage or Add returns to the same page.
+    enum DashboardSelection: Equatable { case all, bankGroup(String), portfolio(UUID), cashFlow }
+    var dashboardSelection: DashboardSelection = .all
+    /// 1 for net worth pages, 0 for cash flow; the older way of saying which half of the dashboard is showing.
+    var destination: Int {
+        get { dashboardSelection == .cashFlow ? 0 : 1 }
+        set { if newValue == 0 { dashboardSelection = .cashFlow } else if dashboardSelection == .cashFlow { dashboardSelection = .all } }
+    }
     var addingInMenu = false
     var managementInMenu = false
     var managementSection = "Accounts"
@@ -349,7 +357,7 @@ final class UpOnlySession {
         sessionToken = UUID()
         document = nil
         monthModel = nil
-        destination = 0
+        dashboardSelection = .all
         message = nil
         isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
         sourceIssues = [:]
