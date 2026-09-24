@@ -9,33 +9,68 @@ struct UpOnlyAmount: View {
     var tint: Color = .primary
     /// Shows cents, in secondary colour so the dollars still read first: "$13,710.42".
     var cents = false
-    private var sign: String { value < 0 ? "−" : signed && value > 0 ? "+" : "" }
-    /// "13,710" and ".42" (or "" without cents).
-    private var parts: (whole: String, fraction: String) {
-        let text = (cents ? UpOnlyFormat.exactMoney(abs(value)) : UpOnlyFormat.money(abs(value))).replacingOccurrences(of: "$", with: "")
-        guard cents, let dot = text.lastIndex(of: ".") else { return (text, "") }
-        return (String(text[..<dot]), String(text[dot...]))
-    }
     var body: some View {
-        if session.privacyMode {
+        // Privacy mode shows the stand-in figure in the same style, and tells VoiceOver it's hidden.
+        if let shown = session.privacyMode ? session.standInFactor.map({ value * $0 }) : value {
+            let parts = Self.parts(shown, signed: signed, cents: cents)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(parts.sign + "$").fixedSize(horizontal: false, vertical: true)
+                        .font(.system(size: 24, weight: .medium))
+                    Text(parts.whole).fixedSize(horizontal: false, vertical: true)
+                        .font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3)
+                    if !parts.fraction.isEmpty {
+                        Text(parts.fraction).font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
+                    }
+                }.fixedSize()
+                Text(parts.sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .semibold).monospacedDigit())
+            }.foregroundStyle(tint)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(session.privacyMode ? "Hidden value" : parts.sign + "$" + parts.whole + parts.fraction)
+        } else {
             Text("••••").font(.system(size: 40, weight: .semibold)).foregroundStyle(.primary)
                 .accessibilityLabel("Hidden value")
-        } else {
-        let parts = parts
-        ViewThatFits(in: .horizontal) {
-        HStack(alignment: .firstTextBaseline, spacing: 1) {
-            Text(sign + "$").fixedSize(horizontal: false, vertical: true)
-                .font(.system(size: 24, weight: .medium))
-            Text(parts.whole).fixedSize(horizontal: false, vertical: true)
-                .font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3)
-            if !parts.fraction.isEmpty {
-                Text(parts.fraction).font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
-            }
-        }.fixedSize()
-            Text(sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .semibold).monospacedDigit())
-        }.foregroundStyle(tint)
-            .accessibilityElement(children: .ignore).accessibilityLabel(sign + "$" + parts.whole + parts.fraction)
         }
+    }
+    /// "−", "13,710" and ".42" (or "" without cents).
+    static func parts(_ value: Decimal, signed: Bool, cents: Bool) -> (sign: String, whole: String, fraction: String) {
+        let sign = value < 0 ? "−" : signed && value > 0 ? "+" : ""
+        let text = (cents ? UpOnlyFormat.exactMoney(abs(value)) : UpOnlyFormat.money(abs(value))).replacingOccurrences(of: "$", with: "")
+        guard cents, let dot = text.lastIndex(of: ".") else { return (sign, text, "") }
+        return (sign, String(text[..<dot]), String(text[dot...]))
+    }
+}
+
+/// Privacy mode's stand-in figures: every amount scaled by one factor, fixed per vault and unknown to anyone looking,
+/// so the figures look real and small, agree with each other, and keep their percentages.
+nonisolated enum UpOnlyStandIn {
+    /// A vault-random base (6,000 to 12,000) over the power of ten just above the real total: the stand-in total lands
+    /// between about 600 and 12,000 and moves as the real one does, without saying what that is.
+    static func factor(total: Decimal?, vaultID: UUID) -> Decimal {
+        let seed = vaultID.uuidString.unicodeScalars.reduce(UInt64(1_469_598_103_934_665_603)) { ($0 ^ UInt64($1.value)) &* 1_099_511_628_211 }
+        let base = Decimal(6000 + Int(seed % 6000))
+        let magnitude = max(abs(NSDecimalNumber(decimal: total ?? 100_000).doubleValue), 1)
+        return base / Decimal(pow(10, ceil(log10(magnitude))))
+    }
+    private static let money = try! NSRegularExpression(pattern: #"(?<![\w.,])([$£€¥₹₩₫₱₪₦₴₺₽฿]|[A-Z]{3}[\s\u00A0])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"#)
+    private static let quantity = try! NSRegularExpression(pattern: #"(?<![\w.,$£€¥₹])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?=[\s\u00A0](?:[A-Z][A-Z0-9]{1,9}|ozt|kg|g)\b)"#)
+    /// The same text with each amount and quantity scaled: "$1,234.56", "£20.00", "CHF 1,234.00", "0.1 BTC", "2 ozt".
+    /// Percentages, dates and counts are left alone.
+    static func scale(_ text: String, by factor: Decimal) -> String {
+        var result = text
+        for (expression, group, isQuantity) in [(money, 2, false), (quantity, 1, true)] {
+            let source = result as NSString
+            for match in expression.matches(in: result, range: NSRange(location: 0, length: source.length)).reversed() {
+                let range = match.range(at: group)
+                let original = source.substring(with: range)
+                guard let value = Decimal(string: original.replacingOccurrences(of: ",", with: ""), locale: Locale(identifier: "en_US_POSIX")) else { continue }
+                let decimals = original.split(separator: ".").dropFirst().first?.count ?? 0
+                let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US"); formatter.numberStyle = .decimal
+                formatter.minimumFractionDigits = decimals; formatter.maximumFractionDigits = isQuantity ? max(decimals, 4) : decimals
+                result = (result as NSString).replacingCharacters(in: range, with: formatter.string(from: NSDecimalNumber(decimal: value * factor)) ?? original)
+            }
+        }
+        return result
     }
 }
 
@@ -159,8 +194,10 @@ struct UpOnlyPrivateText: View {
     let value: String
     init(_ value: String) { self.value = value }
     var body: some View {
-        if session.privacyMode { Text("••••").accessibilityLabel("Hidden value") }
-        else { Text(value) }
+        if session.privacyMode {
+            // The stand-in figures, or dots before a vault is open.
+            Text(session.standInFactor.map { UpOnlyStandIn.scale(value, by: $0) } ?? "••••").accessibilityLabel("Hidden value")
+        } else { Text(value) }
     }
 }
 

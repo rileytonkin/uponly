@@ -186,3 +186,27 @@ struct PrivacyFormatTests {
         #expect(UpOnlyFormat.hiddenMovement(0, fraction: 0) == "••••  0.0%")
     }
 }
+
+struct StandInTests {
+    @Test("Stand-in figures scale amounts and quantities, and leave percentages, dates and counts alone")
+    func scaling() {
+        #expect(UpOnlyStandIn.scale("$1,234.56", by: Decimal(string: "0.01")!) == "$12.35")
+        #expect(UpOnlyStandIn.scale("−$3,200.00", by: Decimal(string: "0.5")!) == "−$1,600.00")
+        #expect(UpOnlyStandIn.scale("£20.00", by: 2) == "£40.00")
+        #expect(UpOnlyStandIn.scale("CHF\u{00A0}1,234.00", by: 2) == "CHF\u{00A0}2,468.00")
+        #expect(UpOnlyStandIn.scale("0.1 BTC", by: Decimal(string: "0.5")!) == "0.05 BTC")
+        #expect(UpOnlyStandIn.scale("2 ozt", by: Decimal(string: "0.03")!) == "0.06 ozt")
+        #expect(UpOnlyStandIn.scale("Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", by: Decimal(string: "0.1")!) == "Since Mar 2025 · Paid $420 · +$131 (+31%)")
+        #expect(UpOnlyStandIn.scale("1 of 2 holdings", by: Decimal(string: "0.1")!) == "1 of 2 holdings")
+        #expect(UpOnlyStandIn.scale("Sep 24, 2026", by: Decimal(string: "0.1")!) == "Sep 24, 2026")
+    }
+    @Test("The stand-in total is small, the same for a vault every time, and moves with the real one")
+    func factor() {
+        let vault = UUID()
+        let factor = UpOnlyStandIn.factor(total: 245_000, vaultID: vault)
+        #expect(factor == UpOnlyStandIn.factor(total: 245_000, vaultID: vault))
+        let shown = NSDecimalNumber(decimal: 245_000 * factor).doubleValue
+        #expect(shown >= 600 && shown <= 12_000)
+        #expect(UpOnlyStandIn.factor(total: 300_000, vaultID: vault) == factor)   // same power of ten, same scale
+    }
+}

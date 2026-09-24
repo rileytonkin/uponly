@@ -83,8 +83,8 @@ extension UpOnlyUnlockedPanel {
             + (shows(.cashFlow) ? [cashFlow] : [])
         let slices = allocation(rows)
         return VStack(spacing: 10) {
-            // What your total is made of, first. Hidden in privacy mode, like the shares: proportions say how you hold it.
-            if slices.count > 1, !session.privacyMode { UpOnlyBreakdown(slices: slices) }
+            // What your total is made of, first.
+            if slices.count > 1, !session.privacyMode || session.standInFactor != nil { UpOnlyBreakdown(slices: slices) }
             assetList(list.map(switcherRow))
         }
     }
@@ -102,7 +102,8 @@ extension UpOnlyUnlockedPanel {
     /// over its change over the range. The chosen one has a check where the home rows have a chevron.
     func switcherRow(_ row: SelectionRow) -> AssetRow {
         let chosen = row.selection == session.dashboardSelection
-        let share = session.privacyMode ? nil : row.share.map { $0 == 0 ? "<1% of total" : "\($0)% of total" }
+        // Stand-in figures keep proportions, so shares show in privacy mode too; only without them are they hidden.
+        let share = session.privacyMode && session.standInFactor == nil ? nil : row.share.map { $0 == 0 ? "<1% of total" : "\($0)% of total" }
         return AssetRow(id: row.id, name: row.name, detail: share ?? row.detail, value: row.valueText, change: row.change?.fraction,
                         image: row.image, symbol: row.symbol, tint: row.tint, trailing: .check(chosen)) { select(row.selection) }
     }

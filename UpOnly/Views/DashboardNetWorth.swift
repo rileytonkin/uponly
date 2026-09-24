@@ -133,9 +133,11 @@ extension UpOnlyUnlockedPanel {
     /// rather than losing how many holdings it covers. Privacy mode hides the amounts but keeps the percentage.
     func allTimeLine(_ allTime: (gain: Decimal, cost: Decimal, covered: Int, total: Int)) -> some View {
         let fraction = allTime.cost > 0 ? allTime.gain / allTime.cost : nil
-        let text = session.privacyMode ? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: fraction) : UpOnlyFormat.movement(allTime.gain, fraction: fraction, cents: false)
+        // Privacy mode: stand-in figures, scaled like the total above.
+        let scale = session.privacyMode ? session.standInFactor : 1
+        let text = scale.map { UpOnlyFormat.movement(allTime.gain * $0, fraction: fraction, cents: false) } ?? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: fraction)
         let covered = allTime.covered < allTime.total ? " · \(allTime.covered) of \(allTime.total) holdings" : ""
-        let note = session.privacyMode ? covered : " on " + UpOnlyFormat.money(allTime.cost) + " paid" + covered
+        let note = scale.map { " on " + UpOnlyFormat.money(allTime.cost * $0) + " paid" + covered } ?? covered
         let label = Text("All-time  ").foregroundStyle(.secondary)
         let figure = Text(text).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(allTime.gain))
         return Text("\(label)\(figure)\(Text(note).font(UpOnlyType.caption).foregroundStyle(.secondary))")
