@@ -21,104 +21,83 @@ extension UpOnlyManagement {
                     session.startImport(.bankBalances, newAccount: true)
                 }
             } else {
-                // Each account card has its own Update, so this button only adds.
-                UpOnlyFlow {
-                    Button { session.startImport(.bankBalances, newAccount: true) } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.glassProminent)
-                    if all.count > 1 { Button("Update all balances") { session.startImport(.bankBalances, prefill: true) } }
-                }
-            }
-            ForEach(order, id: \.self) { key in
-                if let members = groups[key], let first = members.first {
-                    if members.count == 1 && first.externalProfileID == nil { accountCard(first, latest: latest[first.id]) }
-                    else { profileCard(first, members: members, latest: latest) }
+                // One list: a manual account's row updates its balance; a synced profile lists its currencies under it.
+                ManageCard {
+                    ForEach(Array(order.enumerated()), id: \.element) { index, key in
+                        if let members = groups[key], let first = members.first {
+                            if members.count == 1 && first.externalProfileID == nil { accountRow(first, latest: latest[first.id], divided: index > 0) }
+                            else { profileRows(first, members: members, latest: latest, divided: index > 0) }
+                        }
+                    }
                 }
             }
         }
     }
-    func accountMenu(_ account: Account) -> some View {
-        Menu {
-            Button("Rename…") { editor = .renameAccount(account) }
-            Button("Import statement…") { session.startImport(.statements, accountID: account.id) }
-            ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: account, in: $0) }) { setAccountOwner(account, owner: $0) }
-            trackingToggle([account])
-        } label: { Image(systemName: "ellipsis") }.modifier(UpOnlyRowMenu()).accessibilityLabel("More options for " + account.name)
-    }
-    @ViewBuilder func ownerLine(_ members: [Account]) -> some View {
+    /// "Sep 24 · Studio · Outside net worth": when the balance is from, who owns it, and whether it counts.
+    func accountCaption(_ members: [Account], date: Date?, synced: Bool = false) -> String {
+        var parts: [String] = []
+        if let date { parts.append((synced ? "Synced " : "") + date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))) }
+        else { parts.append(synced ? "Not synced yet" : "Balance needed") }
         if let document = session.document, let first = members.first {
             if let owner = AssetOwnership.businessID(for: first, in: document) {
-                Text("Owner: " + (document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable")).font(UpOnlyType.caption).foregroundStyle(.secondary)
+                parts.append(document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable")
             }
             let outside = members.filter { !document.isBankTracked($0.id, at: Date()) }.count
-            if outside > 0 {
-                Text(outside == members.count ? "Outside net worth" : "Partly outside net worth").font(UpOnlyType.caption).foregroundStyle(.secondary)
+            if outside > 0 { parts.append(outside == members.count ? "Outside net worth" : "Partly outside net worth") }
+        }
+        return parts.joined(separator: " · ")
+    }
+    /// A manual bank account: its balance and when it's from. The row updates the balance.
+    func accountRow(_ account: Account, latest: BankBalanceObservation?, divided: Bool) -> some View {
+        ManageRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt),
+                  value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) } ?? "Add balance", divided: divided,
+                  action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
+            UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: 24)
+        } menu: {
+            ManageRowMenu(label: "More options for " + account.name) {
+                Button("Update balance…") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
+                Button("Rename…") { editor = .renameAccount(account) }
+                Button("Import statement…") { session.startImport(.statements, accountID: account.id) }
+                ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: account, in: $0) }) { setAccountOwner(account, owner: $0) }
+                trackingToggle([account])
             }
         }
     }
-    /// A manual bank account: one balance, one date.
-    func accountCard(_ account: Account, latest: BankBalanceObservation?) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: 24)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(account.name).font(UpOnlyType.row.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                if let observation = latest {
-                    HStack(spacing: 6) {
-                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(observation.amount.value, currency: account.currency)).font(UpOnlyType.row.monospacedDigit())
-                        Text(observation.observedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))).font(UpOnlyType.caption).foregroundStyle(.secondary)
-                    }
-                } else { Text("Balance needed").font(UpOnlyType.caption).foregroundStyle(.secondary) }
-                ownerLine([account])
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            Button("Update") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
-                .controlSize(.small).accessibilityLabel("Update balance for " + account.name)
-            accountMenu(account)
-        }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
-    }
-    /// A synced profile: currencies with money listed, empty ones summarised in one line.
-    /// Its options apply to the whole profile; balances come from the sync, so there is no Update, Rename or Import.
-    func profileCard(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation]) -> some View {
+    /// A synced profile: its row, then a line per currency with money in it and one for the empty ones.
+    /// Balances come from the sync, so the options apply to the whole profile and there's nothing to update by hand.
+    @ViewBuilder func profileRows(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation], divided: Bool) -> some View {
         let name = AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first)
         // Jars merge into their currency: one figure per currency for the whole profile.
-        var byCurrency: [String: (Account, Decimal, Date?)] = [:]
-        for account in members {
+        let byCurrency: [String: (Account, Decimal, Date?)] = members.reduce(into: [:]) { result, account in
             let observation = latest[account.id]
             let amount = observation?.amount.value ?? 0
-            if let existing = byCurrency[account.currency] {
-                byCurrency[account.currency] = (existing.0, existing.1 + amount, [existing.2, observation?.observedAt].compactMap { $0 }.max())
-            } else { byCurrency[account.currency] = (account, amount, observation?.observedAt) }
+            if let existing = result[account.currency] {
+                result[account.currency] = (existing.0, existing.1 + amount, [existing.2, observation?.observedAt].compactMap { $0 }.max())
+            } else { result[account.currency] = (account, amount, observation?.observedAt) }
         }
-        let rows = byCurrency.values.map { ($0.0, $0.1) }
-        let funded = rows.filter { $0.1 != 0 }.sorted { $0.1 > $1.1 }
-        let empty = rows.filter { $0.1 == 0 }
-        let synced = byCurrency.values.compactMap { $0.2 }.max()
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center, spacing: 10) {
-                UpOnlyProfileImage(data: first.profileImage, name: name, size: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(UpOnlyType.row.weight(.medium))
-                    Text(synced.map { "Synced " + $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) } ?? "Not synced yet").font(UpOnlyType.caption).foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                Menu {
-                    ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }) { setAccountOwner(first, owner: $0) }
-                    trackingToggle(members)
-                } label: { Image(systemName: "ellipsis") }.modifier(UpOnlyRowMenu()).accessibilityLabel("More options for " + name)
+        let funded = byCurrency.values.filter { $0.1 != 0 }.sorted { $0.1 > $1.1 }
+        let empty = byCurrency.values.filter { $0.1 == 0 }.map(\.0.currency).sorted()
+        ManageRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true), divided: divided) {
+            UpOnlyProfileImage(data: first.profileImage, name: name, size: 24)
+        } menu: {
+            ManageRowMenu(label: "More options for " + name) {
+                ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }) { setAccountOwner(first, owner: $0) }
+                trackingToggle(members)
             }
-            ownerLine(members)
-            VStack(spacing: 0) {
-                ForEach(funded, id: \.0.currency) { account, amount in
-                    Divider().opacity(0.4)
-                    HStack(spacing: 8) {
-                        Text(account.currency).font(UpOnlyType.body.weight(.medium))
-                        Spacer(minLength: 8)
-                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(amount, currency: account.currency)).font(UpOnlyType.row.monospacedDigit())
-                    }.padding(.vertical, 6)
-                }
-                if !empty.isEmpty {
-                    Divider().opacity(0.4)
-                    // Which currencies hold nothing is itself an amount, so it hides with the others.
-                    UpOnlyPrivateText((funded.isEmpty ? "No money in " : "Empty: ") + empty.map(\.0.currency).sorted().joined(separator: ", "))
-                        .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
+        }
+        ForEach(funded, id: \.0.currency) { account, amount, _ in
+            HStack(spacing: 8) {
+                Text(account.currency).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                UpOnlyPrivateText(UpOnlyFormat.currencyMoney(amount, currency: account.currency)).font(UpOnlyType.row.monospacedDigit())
+            }.padding(.leading, 34).padding(.trailing, 28).padding(.bottom, 6)
+                .accessibilityElement(children: .combine)
+        }
+        if !empty.isEmpty {
+            // Which currencies hold nothing is itself an amount, so it hides with the others.
+            UpOnlyPrivateText((funded.isEmpty ? "No money in " : "Empty: ") + empty.joined(separator: ", "))
+                .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 34).padding(.bottom, 8)
+        }
     }
 }

@@ -11,16 +11,13 @@ extension UpOnlyManagement {
         let accountNames: [UUID: String] = imported.count > 1 ? Dictionary(uniqueKeysWithValues: imported.map { ($0.id, $0.name) }) : [:]
         let searching = !entrySearch.isEmpty || !entryProfile.isEmpty || !entryAccount.isEmpty
         return VStack(alignment: .leading, spacing: 12) {
+            // Adding is the + beside the title; search sits alone, like a list's own search field.
             HStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search transactions", text: $entrySearch).textFieldStyle(.plain).accessibilityLabel("Search transactions")
-                        .onChange(of: entrySearch) { entryLimit = 100 }
-                    if !entrySearch.isEmpty { Button { entrySearch = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search") }
-                }.padding(10).background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-                Button { editor = .entry } label: { Label("Add", systemImage: "plus") }
-                    .buttonStyle(.glassProminent).fixedSize().accessibilityLabel("Add a transaction")
-            }
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search transactions", text: $entrySearch).textFieldStyle(.plain).accessibilityLabel("Search transactions")
+                    .onChange(of: entrySearch) { entryLimit = 100 }
+                if !entrySearch.isEmpty { Button { entrySearch = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search") }
+            }.font(UpOnlyType.body).padding(.horizontal, 10).padding(.vertical, 8).modifier(UpOnlyContentSurface())
             UpOnlyFlow(spacing: 12) {
                 Picker("Month", selection: $entryMonth) {
                     Text("All months").tag("")
@@ -56,25 +53,25 @@ extension UpOnlyManagement {
             } else {
                 ForEach(groups.keys.sorted(by: >), id: \.self) { month in
                     let rows = groups[month] ?? []
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(MonthKey(month)?.title ?? month).font(UpOnlyType.section).foregroundStyle(.secondary)
-                            .padding(.leading, UpOnlyLayout.cardInset).padding(.bottom, 6)
-                        VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(MonthKey(month)?.title ?? month).font(UpOnlyType.section)
+                        ManageCard {
                             ForEach(rows) { entry in
+                                if entry.id != rows.first?.id { Divider().opacity(0.5) }
                                 transactionRow(entry, accountNames: accountNames)
-                                if entry.id != rows.last?.id { Divider().opacity(0.5) }
                             }
-                        }.padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 2)
-                            .modifier(UpOnlyContentSurface())
+                        }
                     }
                 }
                 if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.bordered) }
             }
         }
     }
+    /// A transaction: what it was, when and in what, and the amount. Clicking it opens its options underneath.
     func transactionRow(_ entry: Entry, accountNames: [UUID: String]) -> some View {
         let editing = editingEntry == entry.id
         return VStack(alignment: .leading, spacing: 8) {
+            Button { editingEntry = editing ? nil : entry.id } label: {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -101,18 +98,15 @@ extension UpOnlyManagement {
                         #endif
                     }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Button {
-                    editingEntry = editing ? nil : entry.id
-                } label: {
-                    Image(systemName: editing ? "checkmark" : "pencil")
-                        .frame(width: 12, height: 16)
-                }.buttonStyle(.bordered).controlSize(.small)
-                    .help(editing ? "Done editing" : "Edit transaction")
-                    .accessibilityLabel("Edit " + entry.label)
-                    .accessibilityValue(editing ? "Editing" : "")
-            }
-            if editing { transactionOptions(entry) }
-        }.padding(.vertical, 6)
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(editing ? 90 : 0)).padding(.top, 4)
+            }.padding(.vertical, 8).contentShape(Rectangle())
+            }.buttonStyle(UpOnlyRowButtonStyle())
+                .help(editing ? "Close options" : "Change type, who paid, or remove")
+                .accessibilityLabel(entry.label).accessibilityHint(editing ? "Closes options" : "Opens options")
+                .accessibilityAddTraits(editing ? .isSelected : [])
+            if editing { transactionOptions(entry).padding(.bottom, 10) }
+        }
     }
     /// "Aug 12 · GBP · Refund": the day when the source gave one, then the currency and anything unusual about the row.
     func caption(_ entry: Entry) -> String {

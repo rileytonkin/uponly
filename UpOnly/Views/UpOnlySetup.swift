@@ -32,16 +32,22 @@ struct UpOnlyPageHeader: View {
     let back: () -> Void
     var subtitle: String?
     var trailing: AnyView?
+    /// The same header as the dashboard's: a small box to go back (or ✕ to cancel an editor) and the page's title
+    /// beside it at the dashboard's title size, with the page's own actions on the right.
     var body: some View {
-        HStack(spacing: 12) {
-            Button(action: back) { Label(backTitle, systemImage: "chevron.left") }
-                .buttonStyle(.glass).accessibilityLabel(backLabel)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 14, weight: .semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                if let subtitle { Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-            }
-            Spacer(minLength: 0)
+        HStack(spacing: 8) {
+            Button(action: back) {
+                HStack(spacing: 8) {
+                    Image(systemName: backTitle == "Cancel" ? "xmark" : backTitle == "Done" ? "checkmark" : "chevron.left")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(width: 26, height: 26)
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(UpOnlyType.pageTitle).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                        if let subtitle { Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    }
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel(backLabel).help(backLabel)
+            Spacer(minLength: 8)
             if let trailing { trailing }
         }.controlSize(.regular).frame(minHeight: 32)
     }
@@ -406,8 +412,8 @@ struct UpOnlySources: View {
                             }
                         }
                     }
-                    DisclosureGroup("What CoinGecko receives") {
-                        Text("Coin IDs, your API key and network information. Your quantities, portfolio names and balances stay private.")
+                    DisclosureGroup("What the price services receive") {
+                        Text("CoinGecko gets your API key and a request for the 250 largest coins, so it can’t tell which you hold; only a coin outside the top 500 is asked for by name. History older than a year comes from Binance, which sees that coin’s ticker and dates. Your quantities, portfolio names and balances stay private.")
                             .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                     }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
@@ -426,7 +432,7 @@ struct UpOnlySources: View {
                                 }
                                 Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(UpOnlyType.body).buttonStyle(.bordered).controlSize(.small)
                             }
-                            Text("Live prices need no key and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
+                            Text("Live prices need no key (Swissquote steps in when Gold API can’t answer) and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
                                 .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -447,7 +453,7 @@ struct UpOnlySources: View {
                         }
                     }
                     DisclosureGroup("About exchange rates") {
-                        Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Past transactions need a rate dated in the last week of their month.")
+                        Text(exchangeRateSource + " Your balances stay private. Past transactions need a rate dated in the last week of their month.")
                             .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                     }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
@@ -459,7 +465,7 @@ struct UpOnlySources: View {
             if !showsCrypto && !showsFX && session.document?.shows(.metals) != true {
                 Text("Add an account or holding to see price options.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-        }.padding(UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
         }.task(id: message) {
             if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
         }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
@@ -476,6 +482,12 @@ struct UpOnlySources: View {
                 prices = settings.automaticPrices; fx = settings.automaticFX; key = settings.coinGeckoKey; metals = settings.automaticMetals; metalKey = settings.metalHistoryKey }
             Task { @MainActor in loaded = true }
         }
+    }
+    private var exchangeRateSource: String {
+        #if UPONLY_PERSONAL
+        if wise { return "Rates come from Wise, which already knows your currencies, and from Frankfurter’s reference rates when Wise can’t answer." }
+        #endif
+        return "Frankfurter provides reference rates and receives currency codes and network information."
     }
     /// The one save path. Switches pass the saved keys; Save key passes that one draft key.
     /// Crypto prices stay off until a key is saved, so turning the switch on first never blocks other changes.

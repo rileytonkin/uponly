@@ -29,6 +29,79 @@ struct ManageEmptyState: View {
     }
 }
 
+/// Rows in one card, divided as the home list is. Every Manage list uses it.
+struct ManageCard<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(spacing: 0) { content() }
+            .padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 2).modifier(UpOnlyContentSurface())
+    }
+}
+/// One Manage row in the home list's style: a badge, the name over a caption, a value, and a chevron or a quiet "…".
+/// The row itself does the obvious thing; anything else is in the menu.
+struct ManageRow<Badge: View, Options: View>: View {
+    var title: String
+    var caption: String? = nil
+    /// The caption is an amount (a balance, a quantity), hidden in privacy mode.
+    var captionIsPrivate = false
+    var value: String? = nil
+    var valueTint: Color = .primary
+    var divided = false
+    var chevron = false
+    var action: (() -> Void)? = nil
+    @ViewBuilder var badge: () -> Badge
+    @ViewBuilder var menu: () -> Options
+    @Environment(UpOnlySession.self) private var session
+    var body: some View {
+        VStack(spacing: 0) {
+            if divided { Divider().opacity(0.5) }
+            HStack(spacing: 6) {
+                Button { action?() } label: {
+                    HStack(spacing: 10) {
+                        badge()
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                            if let caption {
+                                Group { if captionIsPrivate { UpOnlyPrivateText(caption) } else { Text(caption) } }
+                                    .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }.frame(minWidth: 96, alignment: .leading)
+                        Spacer(minLength: 8)
+                        if let value {
+                            UpOnlyPrivateText(value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(valueTint).lineLimit(1)
+                                .minimumScaleFactor(value.count > 13 ? 0.7 : 1).layoutPriority(1)
+                        }
+                        if chevron { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
+                    }.padding(.vertical, 8).contentShape(Rectangle())
+                }.buttonStyle(UpOnlyRowButtonStyle()).disabled(action == nil)
+                    .accessibilityLabel(title).accessibilityValue([session.privacyMode && captionIsPrivate ? nil : caption, session.privacyMode ? (value == nil ? nil : "Hidden value") : value]
+                        .compactMap { $0 }.joined(separator: ", "))
+                menu()
+            }
+        }
+    }
+}
+/// The quiet "…" at the end of a Manage row.
+struct ManageRowMenu<Content: View>: View {
+    var label: String
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        Menu { content() } label: {
+            Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).frame(width: 22, height: 22).contentShape(Rectangle())
+        }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel(label)
+    }
+}
+/// The dashboard's round glass + button, for a page's own Add.
+struct ManageAddButton: View {
+    var label: String
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary).frame(width: 32, height: 32).contentShape(Circle())
+        }.buttonStyle(.plain).glassEffect(.regular, in: .circle).accessibilityLabel(label).help(label)
+    }
+}
+
 /// Every transaction type picker lists the types in this order.
 let entryKinds: [EntryKind] = [.expense, .income, .refund, .transfer]
 func kindTitle(_ kind: EntryKind) -> String {

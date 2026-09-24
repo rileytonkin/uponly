@@ -10,7 +10,10 @@ struct UpOnlyPanel: View {
     var body: some View {
         Group {
             if session.state == .unlocked, session.document?.settings.setupComplete == true, session.managementInMenu, !session.addingInMenu {
+                // Manage opens at the dashboard's height too, and scrolls within it.
                 UpOnlyManagement().id(session.sessionToken).frame(width: 344)
+                    .environment(\.upOnlyScrollHeight, max(320, (session.dashboardHeight ?? 600) - 58))
+                    .frame(minHeight: session.dashboardHeight, alignment: .top)
             } else if session.state != .unlocked {
                 panelContent.fixedSize(horizontal: false, vertical: true)
             } else {

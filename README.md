@@ -99,7 +99,7 @@ Bank balances may be negative or zero. Today's observations use the save time, a
 
 Bulk entry (**Import or paste…**) selects statements, bank balances, crypto holdings, or metals for table entry. The individual Add cards keep the short guided forms.
 
-Use **Update all balances** in Accounts or **Update all quantities** in Crypto to start from existing records. Manage lists Accounts, Crypto, Gold & silver and Transactions only once they contain data, followed by **Prices & rates** and **Backup & security**. Older vaults that chose a subset of asset types during setup keep that choice under the hood.
+Use **Update all balances** (the … beside Accounts' title) or **Update all holdings** (a portfolio's …) to start from existing records; clicking an account or holding updates just that one. Manage lists Accounts, Crypto, Gold & silver and Transactions, each with a count, only once they contain data, followed by **Data sources** and **Backup & security**. Every Manage page has the dashboard's header, with its own + for adding. Older vaults that chose a subset of asset types during setup keep that choice under the hood.
 
 Limits: 8 MiB and 20,000 rows per file; 50 files, 32 MiB and 50,000 rows per batch; 128 MiB per encrypted vault. Excel workbooks and PDFs are not supported; export CSV or copy spreadsheet cells.
 
