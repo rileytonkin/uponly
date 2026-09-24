@@ -165,9 +165,18 @@ struct DashboardTests {
         #expect(WorthRange.allCases.map(\.title) == ["1W", "1M", "3M", "1Y", "All"])
         #expect(WorthRange.year.phrase == "past year" && WorthRange.month.spokenTitle == "Past month" && WorthRange.all.spokenTitle == "All time")
         #expect(WorthRange.week.seconds == 7 * 86400 && WorthRange.month.seconds == 30 * 86400 && WorthRange.all.seconds == nil)
-        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year" && WorthRange.all.over == "over all time")
+        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year")
         // All samples by how long the history is.
         #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 400 * 86400) == 7 && WorthRange.all.chartStepDays(span: 1500 * 86400) == 30)
         #expect(WorthRange.all.months == nil && WorthRange.week.months == 1 && WorthRange.year.months == 12)
+    }
+}
+
+struct PrivacyFormatTests {
+    @Test("In privacy mode a move keeps its sign and percentage but not its amount")
+    func hiddenMoves() {
+        #expect(UpOnlyFormat.hiddenMovement(Decimal(string: "-12.5")!, fraction: Decimal(string: "-0.0385")!) == "−•••••  ▼ 3.9%")
+        #expect(UpOnlyFormat.hiddenMovement(3, fraction: nil) == "+•••••")
+        #expect(UpOnlyFormat.hiddenMovement(0, fraction: 0) == "•••••  0.0%")
     }
 }

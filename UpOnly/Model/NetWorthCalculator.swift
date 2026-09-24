@@ -871,9 +871,20 @@ nonisolated enum DayChange {
         return (amount, before > 0 ? amount / before : nil)
     }
     static func pricesFresh(_ valuation: ValuationResult) -> Bool {
-        valuation.components.allSatisfy { component in
-            component.kind != .holding || component.quoteTime.map { valuation.at.timeIntervalSince($0) <= tolerance } == true
-        }
+        valuation.components.allSatisfy { fresh($0, at: valuation.at) }
+    }
+    private static func fresh(_ component: ValuationComponent, at moment: Date) -> Bool {
+        component.kind != .holding || component.quoteTime.map { moment.timeIntervalSince($0) <= tolerance } == true
+    }
+    /// A group's parts now against the same parts 24 hours ago (from `earlier`, a valuation made as of then): only
+    /// when every part existed then and every price is fresh at both moments. For a portfolio or bank row.
+    static func parts(_ current: [ValuationComponent], earlier: [ValuationComponent], now: Date) -> (amount: Decimal, fraction: Decimal?)? {
+        let ids = Set(current.map(\.id))
+        let before = earlier.filter { ids.contains($0.id) }
+        guard !current.isEmpty, before.count == current.count,
+              current.allSatisfy({ fresh($0, at: now) }), before.allSatisfy({ fresh($0, at: now.addingTimeInterval(-window)) }),
+              let today = AssetOwnership.sum(current), let then = AssetOwnership.sum(before) else { return nil }
+        return (today - then, then > 0 ? (today - then) / then : nil)
     }
     /// One asset's price now against its price 24 hours ago, as a fraction. Each side is the latest quote at or
     /// before its moment, and must be within `tolerance` of it.

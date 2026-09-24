@@ -207,8 +207,6 @@ nonisolated enum WorthRange: CaseIterable {
     var spokenTitle: String { phrase.prefix(1).uppercased() + String(phrase.dropFirst()) }
     /// " in the past year", or nothing for All: "No saved values in the past year."
     var within: String { self == .all ? "" : " in the " + phrase }
-    /// "over the past year", or "over all time".
-    var over: String { self == .all ? "over all time" : "over the " + phrase }
     /// Whole months the company figures cover, ending with the current month. Nil for All: every reported month.
     var months: Int? {
         switch self { case .week, .month: 1; case .quarter: 3; case .year: 12; case .all: nil }
@@ -266,7 +264,7 @@ nonisolated enum DashboardChart {
         return last >= first
     }
     /// Whole percentages of each value that add up to exactly 100 (largest remainder first); zero and negative
-    /// values get 0. For the allocation legend.
+    /// values get 0. For each switcher row's share of the whole.
     static func percentages(_ values: [Decimal]) -> [Int] {
         let parts = values.map { max($0, 0) }
         let total = parts.reduce(Decimal(0), +)

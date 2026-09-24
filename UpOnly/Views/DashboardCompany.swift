@@ -4,12 +4,6 @@ import SwiftUI
 extension UpOnlyUnlockedPanel {
     struct CompanySelection {
         var group: BankBalanceGroup
-        var previousScope: PerformanceScope
-    }
-    func openCompany(_ group: BankBalanceGroup) {
-        companyFocus = .all
-        companySelection = CompanySelection(group: group, previousScope: model.scope)
-        model.selectScope(group.businessID.map(PerformanceScope.business) ?? .personal)
     }
     func companyContent(_ selection: CompanySelection) -> some View {
         let document = session.document
@@ -34,8 +28,11 @@ extension UpOnlyUnlockedPanel {
         let share = document.flatMap { doc in allParts.isEmpty ? nil : AssetOwnership.personalTotal(allParts, at: interval.end, document: doc) }
         let series = companySeries(selection, interval: interval)
         let focusOptions = companyFocusOptions(bankValues: bankValues, portfolios: portfolios)
-        let delta = change(from: series.baseline, to: focusTotal, interval: interval)
-        let hasAssetChart = series.points.contains { $0.value != nil }
+        // The same 24-hour measure as the overview, over whatever the page is focused on.
+        let then = interval.end.addingTimeInterval(-DayChange.window)
+        let earlier = document.map { NetWorthCalculator.value(at: then, scope: .allTracked, document: $0, now: then).components } ?? []
+        let day = DayChange.parts(focusParts, earlier: earlier, now: interval.end)
+        let hasAssetChart = series.contains { $0.value != nil }
         let showProfit = companyChart == .profit && companyID != nil
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
@@ -44,8 +41,12 @@ extension UpOnlyUnlockedPanel {
                     eyebrow(title).frame(minHeight: 22, alignment: .leading)
                 }
                 if let focusTotal {
-                    UpOnlyAmount(value: focusTotal)
-                    if let delta { Text(delta.text).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(delta.tint).padding(.top, 2) }
+                    HStack(alignment: .center, spacing: 4) {
+                        UpOnlyAmount(value: focusTotal, cents: true)
+                        UpOnlyPrivacyButton()
+                        Spacer(minLength: 0)
+                    }
+                    if let day { metricLine("24h", amount: day.amount, fraction: day.fraction, cents: true).padding(.top, 2) }
                 } else if allParts.isEmpty {
                     Text("Balance needed").font(UpOnlyType.title)
                     Text("Add a balance to value this account.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -93,7 +94,7 @@ extension UpOnlyUnlockedPanel {
                     if showProfit {
                         UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow)
                     } else if hasAssetChart {
-                        UpOnlyChart(points: series.points, tint: trendTint(series.points), spansRange: true)
+                        UpOnlyChart(points: series, tint: trendTint(series), spansRange: true)
                     } else { Text("No history yet for this selection.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
                 }.padding(.top, 6)
             }
@@ -116,8 +117,7 @@ extension UpOnlyUnlockedPanel {
                                         symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                         tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, selected: companyFocus == .portfolio(portfolio.id),
                                         trailing: .button(symbol: "chevron.right", label: "Open " + portfolio.name, action: {
-                                            companySelection = nil; model.selectScope(selection.previousScope)
-                                            portfolioReturn = selection; scope = .portfolio(portfolio.id)
+                                            select(.portfolio(portfolio.id))
                                         })) {
                             companyFocus = companyFocus == .portfolio(portfolio.id) ? .all : .portfolio(portfolio.id)
                         }
@@ -186,8 +186,8 @@ extension UpOnlyUnlockedPanel {
     }
     /// The selected account, portfolio or whole company over time, from the saved daily values of everything tracked.
     /// A day with an unpriced part is an estimate.
-    func companySeries(_ selection: CompanySelection, interval: DateInterval) -> (points: [UpOnlyChartPoint], baseline: Baseline?) {
-        guard let document = session.document else { return ([], nil) }
+    func companySeries(_ selection: CompanySelection, interval: DateInterval) -> [UpOnlyChartPoint] {
+        guard let document = session.document else { return [] }
         let ids = Set(selection.group.components.map(\.id))
         let companyID = selection.group.businessID
         let samples = DashboardPeriod.samples(in: interval, scope: .allTracked, document: document)

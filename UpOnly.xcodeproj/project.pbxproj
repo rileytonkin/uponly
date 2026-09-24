@@ -36,6 +36,7 @@
 		69DF9393FD88A150AD72E432 /* UpOnlyFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E176ABBBFCE9A2BAD8326050 /* UpOnlyFixture.swift */; };
 		6BD73C030333610D235627A6 /* CSVReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = D180EDF0610BC67774AB7415 /* CSVReader.swift */; };
 		6C338A0B6B201FEB80E7D5EC /* UpOnlyChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ED71CAC3053FCC4645F3584 /* UpOnlyChart.swift */; };
+		996087029D6DBC6D2EAC9DC3 /* DashboardSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CE4BB458F1F53396B40ACAB /* DashboardSwitcher.swift */; };
 		1BA4556E65D97C5D0124EC9A /* UpOnlyEditSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DFA52E77776185A9C253E6D /* UpOnlyEditSheet.swift */; };
 		2A3573DEAEBFCB3D0452E1E6 /* NeedsAttentionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D17068D47AF111BD712A2A8 /* NeedsAttentionView.swift */; };
 		B8E52BB04C37502D3140BEAD /* ManageComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E3B1DEC6E390C62F550F584 /* ManageComponents.swift */; };
@@ -68,6 +69,7 @@
 		D5AA0955774AC868DD1CFB1B /* BackupCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A5EFDAAA1E8A22A9D498637 /* BackupCoordinator.swift */; };
 		D7B7F860903C91F5185790F5 /* NetWorthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 303CE491CE9D129860515002 /* NetWorthTests.swift */; };
 		DC4058140F8C78A17B40C4C1 /* UpOnlyChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ED71CAC3053FCC4645F3584 /* UpOnlyChart.swift */; };
+		16FAA50461861EC1247CC7C4 /* DashboardSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CE4BB458F1F53396B40ACAB /* DashboardSwitcher.swift */; };
 		46CDCC7AB5A5AEDF12137A80 /* UpOnlyEditSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DFA52E77776185A9C253E6D /* UpOnlyEditSheet.swift */; };
 		E57E47A9F6772A7E73FB1E0D /* NeedsAttentionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D17068D47AF111BD712A2A8 /* NeedsAttentionView.swift */; };
 		B714E2958809DE999913217C /* ManageComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E3B1DEC6E390C62F550F584 /* ManageComponents.swift */; };
@@ -124,6 +126,7 @@
 		25507AF43A97D41B240765B2 /* VaultTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VaultTypes.swift; path = Security/VaultTypes.swift; sourceTree = "<group>"; };
 		299AEE2C5DAF4B1624371F8C /* UpOnlyManagement.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyManagement.swift; path = Views/UpOnlyManagement.swift; sourceTree = "<group>"; };
 		2ED71CAC3053FCC4645F3584 /* UpOnlyChart.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyChart.swift; path = Views/UpOnlyChart.swift; sourceTree = "<group>"; };
+		6CE4BB458F1F53396B40ACAB /* DashboardSwitcher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DashboardSwitcher.swift; path = Views/DashboardSwitcher.swift; sourceTree = "<group>"; };
 		6DFA52E77776185A9C253E6D /* UpOnlyEditSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyEditSheet.swift; path = Views/UpOnlyEditSheet.swift; sourceTree = "<group>"; };
 		5D17068D47AF111BD712A2A8 /* NeedsAttentionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NeedsAttentionView.swift; path = Views/NeedsAttentionView.swift; sourceTree = "<group>"; };
 		2E3B1DEC6E390C62F550F584 /* ManageComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ManageComponents.swift; path = Views/ManageComponents.swift; sourceTree = "<group>"; };
@@ -241,6 +244,7 @@
 				6C08F6365E3CED72E05E089F /* UpOnlyApp.swift */,
 				357DA93FB3EEE2EF97738ABC /* StatementReview.swift */,
 				2ED71CAC3053FCC4645F3584 /* UpOnlyChart.swift */,
+				6CE4BB458F1F53396B40ACAB /* DashboardSwitcher.swift */,
 				6DFA52E77776185A9C253E6D /* UpOnlyEditSheet.swift */,
 				5D17068D47AF111BD712A2A8 /* NeedsAttentionView.swift */,
 				2E3B1DEC6E390C62F550F584 /* ManageComponents.swift */,
@@ -438,6 +442,7 @@
 				53AA8FEE5CAC8ADA67680F31 /* UpOnlyApp.swift in Sources */,
 				56A5CDD3B012209052FD6943 /* StatementReview.swift in Sources */,
 				DC4058140F8C78A17B40C4C1 /* UpOnlyChart.swift in Sources */,
+				16FAA50461861EC1247CC7C4 /* DashboardSwitcher.swift in Sources */,
 				46CDCC7AB5A5AEDF12137A80 /* UpOnlyEditSheet.swift in Sources */,
 				E57E47A9F6772A7E73FB1E0D /* NeedsAttentionView.swift in Sources */,
 				B714E2958809DE999913217C /* ManageComponents.swift in Sources */,
@@ -495,6 +500,7 @@
 				3C40B68554DCBA12FB89A55F /* UpOnlyApp.swift in Sources */,
 				499D486CBFA9E268F3D1E1F9 /* StatementReview.swift in Sources */,
 				6C338A0B6B201FEB80E7D5EC /* UpOnlyChart.swift in Sources */,
+				996087029D6DBC6D2EAC9DC3 /* DashboardSwitcher.swift in Sources */,
 				1BA4556E65D97C5D0124EC9A /* UpOnlyEditSheet.swift in Sources */,
 				2A3573DEAEBFCB3D0452E1E6 /* NeedsAttentionView.swift in Sources */,
 				B8E52BB04C37502D3140BEAD /* ManageComponents.swift in Sources */,
