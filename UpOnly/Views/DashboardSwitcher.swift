@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The switcher behind the title: everything, each bank group, portfolio and company, and income & spending, each
 /// with its value, its change over the chart's range and its share of the whole. Picking one shows it; the title box
-/// closes it.
+/// closes it. Adding and managing are the + and … beside the title, as on every page.
 extension UpOnlyUnlockedPanel {
     struct SelectionRow: Identifiable {
         var id: String
@@ -78,17 +78,10 @@ extension UpOnlyUnlockedPanel {
         let cashFlow = SelectionRow(id: "cashflow", selection: .cashFlow, section: "Cash flow", name: "Income & spending", symbol: "arrow.up.arrow.down",
                                     tint: UpOnlyTint.cashFlow, value: month, valueText: month.map { ($0 > 0 ? "+" : "") + UpOnlyFormat.money($0) } ?? "—", detail: "this month")
         // One card of rows, the same rows as the home list: everything, then each group, then income & spending.
-        // The chosen one has a check; adding and managing sit quietly underneath.
+        // The chosen one has a check; adding and managing stay with the + and … by the title.
         let list = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Gold & silver", "Companies"].flatMap { section in rows.filter { $0.section == section } }
             + (shows(.cashFlow) ? [cashFlow] : [])
-        return VStack(alignment: .leading, spacing: 10) {
-            assetList(list.map(switcherRow))
-            HStack {
-                Button { showingSwitcher = false; manage("Manage") } label: { Label("Manage", systemImage: "slider.horizontal.3") }
-                Spacer()
-                Button { showingSwitcher = false; session.addingInMenu = true } label: { Label("Add", systemImage: "plus") }
-            }.buttonStyle(.borderless).font(UpOnlyType.body.weight(.medium)).padding(.horizontal, 4)
-        }
+        return assetList(list.map(switcherRow))
     }
     /// A switcher row is a home row: icon, name with its share of your total (or "this month") underneath, and value
     /// over its change over the range. The chosen one has a check where the home rows have a chevron.
