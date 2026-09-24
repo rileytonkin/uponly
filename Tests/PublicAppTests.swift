@@ -21,8 +21,9 @@ struct PublicAppTests {
         doc.reviewedMonths = [month.description]
         result = DataAttention.evaluate(doc, months: [month])
         #expect(result.count == 0)
+        // A month confirmed with "Nothing to record this month" stays done even with no transactions.
         doc.entries = []
-        #expect(DataAttention.evaluate(doc, months: [month]).spendingMonths == [month])
+        #expect(DataAttention.evaluate(doc, months: [month]).spendingMonths.isEmpty)
     }
     @Test("Attention catches missing first observations and ignores explicit zero holdings")
     func attentionFirstObservations() throws {
@@ -50,10 +51,10 @@ struct PublicAppTests {
         let model = PopoverModel(); model.replace(with: doc); model.select(previous)
         #expect(model.attention(in: doc).count == 0)
         model.step(by: 1)
-        #expect(model.attention(in: doc).spendingMonths == [.current()])
+        #expect(model.attention(in: doc).spendingMonths.isEmpty)
         #expect(model.attention(in: doc, includePerformance: false).count == 0)
         model.selectPeriod(.annual)
-        #expect(model.attention(in: doc).spendingMonths.count == MonthKey.current().month - (previous.year == MonthKey.current().year ? 1 : 0))
+        #expect(model.attention(in: doc).spendingMonths.isEmpty)
         #expect(DataAttention.evaluate(doc, months: [.current()], includePersonal: false).spendingMonths.isEmpty)
         doc.settings.tracked = [] ; doc.entries = []
         #expect(DataAttention.evaluate(doc, months: [.current()]).count == 0)
@@ -124,7 +125,9 @@ struct PublicAppTests {
         doc.fx = [FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(2), providerTime: Date(), fetchedAt: Date(), provider: "Synthetic")]
         let total = try #require(MonthlyLedger.personal(month, document: doc).totals)
         #expect(total.moneyIn == 100 && total.moneyOut == 40 && total.net == 60)
-        #expect(MonthlyLedger.evaluate(month, document: doc).unavailable == .accounting(["Business profit"]))
+        // With no accounting, business rows are simply left out.
+        let all = MonthlyLedger.evaluate(month, document: doc)
+        #expect(all.unavailable == nil && all.totals?.net == 60)
     }
     @Test("Zero foreign amounts do not require a rate or hide real results")
     func zeroCurrencyDoesNotBlock() throws {
@@ -182,14 +185,22 @@ struct PublicAppTests {
         #expect(rows == [["A", "B"], ["x,y", "say \"hello\""]])
         #expect(throws: StatementError.self) { _ = try CSVReader.parse("A,B\n\"unfinished") }
     }
+    private func statementReview(_ csv: String) throws -> ImportEvaluation {
+        var source = try ImportParser.source(bytes: Data(csv.utf8), filename: "sample.csv", mode: .statements)
+        source.account = ImportAccount(name: "Checking")
+        return ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements)), document: empty())
+    }
     @Test("Statement import rejects bad rows rather than silently skipping them")
     func statementValidation() throws {
         let header = "TransactionID,Date,Description,Amount,Currency,Type\n"
         let good = "sample-1,2025-01-02,Sample expense,12.50,USD,expense\n"
-        let doc = try StatementParser.read(Data((header + good).utf8), filename: "sample.csv", accountID: UUID())
+        let valid = try statementReview(header + good)
+        let doc = try #require(valid.document)
         #expect(doc.entries.count == 1 && doc.entries[0].amount == Decimal(string: "12.50"))
-        #expect(throws: StatementError.self) { _ = try StatementParser.read(Data((header + good + "sample-2,2025-02-30,Bad date,10,USD,income\n").utf8), filename: "sample.csv", accountID: UUID()) }
-        #expect(throws: StatementError.self) { _ = try StatementParser.read(Data((header + good + good).utf8), filename: "sample.csv", accountID: UUID()) }
+        let badDate = try statementReview(header + good + "sample-2,2025-02-30,Bad date,10,USD,income\n")
+        #expect(badDate.hasErrors && badDate.document == nil)
+        let conflicting = try statementReview(header + good + "sample-1,2025-01-02,Sample expense,13,USD,expense\n")
+        #expect(conflicting.hasErrors && conflicting.document == nil)
     }
     @Test("Price responses reject unrelated assets and future timestamps")
     func quotesBoundary() throws {
@@ -227,16 +238,16 @@ struct PublicAppTests {
     }
     @Test("CSV month follows its calendar date independent of device timezone")
     func utcStatementMonth() throws {
-        let csv = "TransactionID,Date,Description,Amount,Currency,Type\nfirst,2025-01-01,Sample,10,USD,income\n"
-        let parsed = try StatementParser.read(Data(csv.utf8), filename: "sample.csv", accountID: UUID())
-        #expect(parsed.entries[0].month == "2025-01")
+        let review = try statementReview("TransactionID,Date,Description,Amount,Currency,Type\nfirst,2025-01-01,Sample,10,USD,income\n")
+        let doc = try #require(review.document)
+        #expect(doc.entries[0].month == "2025-01" && doc.entries[0].day == "2025-01-01")
     }
     @Test("Personal income details exclude business income")
     @MainActor func consistentBreakdown() {
         var doc = empty(); let month = MonthKey.current()
         doc.entries = [Entry(month: month, kind: .income, amount: 100, currency: "USD", label: "Personal"), Entry(month: month, bucket: .otherBusiness, kind: .income, amount: 200, currency: "USD", label: "Business")]
         let model = PopoverModel(); model.replace(with: doc)
-        #expect(model.state.partialTotals?.personalIncome == 100)
+        #expect(model.state.totals?.personalIncome == 100)
         #expect(model.breakdown(.income).count == 1)
         #expect(model.breakdown(.income)[0].amount == 100)
     }
@@ -298,7 +309,7 @@ struct BulkInputTests {
         return VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
     }
     private func batch(_ csv: String, mode: ImportMode, name: String = "Example") throws -> ImportBatchDraft {
-        var source = try ImportParser.source(bytes: Data(csv.utf8), filename: "sample.csv", mode: mode, pasted: true)
+        var source = try ImportParser.source(bytes: Data(csv.utf8), filename: "sample.csv", mode: mode)
         source.account = ImportAccount(name: name)
         return ImportBatchDraft(mode: mode, sources: [source], rows: try ImportParser.rows(source: source, mode: mode))
     }
@@ -632,6 +643,274 @@ struct BulkInputTests {
         let legacy = try VaultJSON.decode(ImportedStatement.self, from: Data("{\"digest\":\"\",\"originalBytes\":\"\",\"importedAt\":\"2026-01-01T00:00:00.000Z\"}".utf8))
         #expect(legacy.accountID == nil)
     }
+    @Test("A full Monzo export imports its signed amounts and categories, ignores Money in/out and skips zero rows")
+    func monzoFullExport() throws {
+        let header = "Transaction ID,Date,Time,Type,Name,Emoji,Category,Amount,Currency,Local amount,Local currency,Notes and #tags,Address,Receipt,Description,Category split,Money Out,Money In"
+        func line(_ id: String, _ date: String, _ type: String, _ name: String, _ category: String, _ amount: String, out: String = "", in money: String = "") -> String {
+            [id, date, "10:00:00", type, name, "", category, amount, "GBP", amount, "GBP", "", "", "", name.uppercased(), "", out, money].joined(separator: ",")
+        }
+        let csv = [header,
+                   line("tx_1", "14/08/2026", "Card payment", "Pret", "eating_out", "-4.50", out: "-4.50"),
+                   line("tx_2", "15/08/2026", "Faster payment", "Acme Ltd", "income", "2500.00", in: "2500.00"),
+                   line("tx_3", "16/08/2026", "Pot transfer", "Savings", "savings", "-100.00", out: "-100.00"),
+                   line("tx_4", "17/08/2026", "Card payment", "Tesco", "groceries", "12.00", in: "12.00"),
+                   line("tx_5", "18/08/2026", "Card payment", "Active card check", "general", "0.00")].joined(separator: "\n")
+        let source = try ImportParser.source(bytes: Data(csv.utf8), filename: "monzo.csv", mode: .statements)
+        #expect(source.account.name == "Monzo" && source.account.currency == "GBP" && source.dateFormat == .dayFirst)
+        #expect(source.mapping[.amount] == 7 && source.mapping[.debit] == nil && source.mapping[.credit] == nil && source.mapping[.type] == nil)
+        let draft = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
+        #expect(draft.rows.map(\.included) == [true, true, true, true, false])
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        #expect(saved.accounts.map(\.currency) == ["GBP"])
+        #expect(saved.entries.map(\.kind) == [.expense, .income, .transfer, .refund])
+        #expect(saved.entries.map(\.amount) == [Decimal(string: "4.50")!, 2500, 100, 12])
+        #expect(saved.entries.map(\.outflow) == [true, false, true, false])
+        // Money out written negative, as Monzo does, is still money out.
+        var split = source; split.mapping[.amount] = nil; split.mapping[.debit] = 16; split.mapping[.credit] = 17
+        let rows = Array(try ImportParser.rows(source: split, mode: .statements).prefix(4))
+        let splitSaved = try #require(ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: [split], rows: rows), document: empty()).document)
+        #expect(splitSaved.entries.map(\.amount) == saved.entries.map(\.amount))
+        // A lone "Transaction ID" column is not a Monzo export.
+        #expect(!ImportParser.isMonzoExport(["Transaction ID", "Date", "Description", "Amount"]))
+    }
+    @Test("A Wise statement reads dd-MM-yyyy dates, and common date styles are detected")
+    func wiseAndDateFormats() throws {
+        let header = "TransferWise ID,Date,Amount,Currency,Description,Payment Reference,Running Balance,Exchange From,Exchange To,Exchange Rate,Payer Name,Payee Name,Payee Account Number,Merchant,Card Last Four Digits,Card Holder Full Name,Attachment,Note,Total fees"
+        let rows = [["CARD-1", "05-08-2026", "-20.00", "EUR", "Card transaction of 20.00 EUR issued by Cafe", "", "480.00", "", "", "", "", "", "", "Cafe", "1234", "Alex", "", "", "0.00"],
+                    ["TRANSFER-2", "31-07-2026", "500.00", "EUR", "Received money from Alex", "", "500.00", "", "", "", "Alex", "", "", "", "", "", "", "", "0.00"]]
+        let csv = ([header] + rows.map { $0.joined(separator: ",") }).joined(separator: "\n")
+        let source = try ImportParser.source(bytes: Data(csv.utf8), filename: "wise.csv", mode: .statements)
+        #expect(source.dateFormat == .dayFirstDash && source.account.currency == "EUR" && source.account.name == "Wise")
+        var draft = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
+        // Without an account, the file is asked about once and its rows wait.
+        draft.sources[0].account.name = ""
+        let unassigned = ImportBatchProcessor.evaluate(draft, document: empty())
+        #expect(unassigned.needsAccount == [source.id] && unassigned.sourceErrors[source.id] == "Choose an account for wise.csv." && unassigned.states.isEmpty && unassigned.document == nil)
+        draft.sources[0].account.name = "Wise EUR"
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        #expect(saved.entries.map(\.month) == ["2026-08", "2026-07"] && saved.entries.map(\.kind) == [.expense, .income])
+        #expect(saved.accounts.first?.currency == "EUR")
+        let day = try ImportDateFormat.iso.date("2026-01-31")
+        let styles: [(String, ImportDateFormat)] = [("31-01-2026", .dayFirstDash), ("31.01.2026", .dayFirstDot), ("31/1/2026", .dayFirst), ("1/31/2026", .monthFirst),
+                                                    ("2026-01-31 13:45:00", .iso), ("2026-01-31T13:45:00Z", .iso), ("31/01/2026, 09:30", .dayFirst)]
+        for (text, format) in styles { #expect(try format.date(text) == day) }
+        #expect(throws: Error.self) { _ = try ImportDateFormat.dayFirst.date("30/02/2026") }
+        #expect(throws: Error.self) { _ = try ImportDateFormat.iso.date("2026-01-31 later") }
+        #expect(ImportDateFormat.detect(["31.01.2026", "1.2.2026"]) == .dayFirstDot)
+        #expect(ImportDateFormat.detect(["2026-01-31", "13/01/2026"]) == nil)
+        let generic = try ImportParser.source(bytes: Data("Date,Description,Amount\n31/01/2026,Rent,-500\n1/2/2026,Pay,900".utf8), filename: "bank.csv", mode: .statements)
+        #expect(generic.dateFormat == .dayFirst)
+    }
+    @Test("Wise's transaction history imports completed rows only, adds fees to money out and splits by currency")
+    func wiseTransactionHistory() throws {
+        let header = "ID,Status,Direction,Created on,Finished on,Source fee amount,Source fee currency,Target fee amount,Target fee currency,Source name,Source amount (after fees),Source currency,Target name,Target amount (after fees),Target currency,Exchange rate,Reference,Batch,Created by,Category,Note"
+        let lines = ["TRANSFER-1001,COMPLETED,OUT,2026-08-03 14:20:05,2026-08-03 14:23:11,0.45,EUR,,,Alex Example,120.00,EUR,Landlord GmbH,120.00,EUR,1,August rent,,Alex Example,Housing,",
+                     "TRANSFER-1002,COMPLETED,IN,2026-07-31 09:00:00,2026-07-31 09:01:30,,,5.00,GBP,Acme Ltd,2505.00,GBP,Alex Example,2500.00,GBP,1,Invoice 42,,,,",
+                     "BALANCE-1003,COMPLETED,NEUTRAL,2026-08-01 10:00:00,2026-08-01 10:00:02,1.20,EUR,,,Alex Example,498.80,EUR,Alex Example,430.00,GBP,0.862,,,Alex Example,,",
+                     "TRANSFER-1004,CANCELLED,OUT,2026-08-02 08:00:00,,0.45,EUR,,,Alex Example,50.00,EUR,Someone,50.00,EUR,1,,,Alex Example,,",
+                     "CARD_TRANSACTION-1005,REFUNDED,OUT,2026-08-04 12:00:00,2026-08-04 12:00:01,,,,,Alex Example,15.00,EUR,Cafe Blau,15.00,EUR,1,,,Alex Example,Eating out,",
+                     "CARD_TRANSACTION-1006,COMPLETED,OUT,2026-06-30 23:59:59,,0.30,USD,,,Alex Example,9.50,GBP,,11.99,USD,1.262,Netflix,,Alex Example,Entertainment,"]
+        let bytes = Data(([header] + lines).joined(separator: "\n").utf8)
+        let sources = try ImportParser.sources(bytes: bytes, filename: "wise.csv", mode: .statements)
+        #expect(sources.map(\.filename) == ["wise.csv · EUR", "wise.csv · GBP"] && sources.map(\.splitCurrency) == ["EUR", "GBP"])
+        #expect(sources.map(\.account) == [ImportAccount(name: "Wise · EUR", currency: "EUR"), ImportAccount(name: "Wise · GBP", currency: "GBP")])
+        #expect(sources.allSatisfy { $0.bytes == bytes && $0.dateFormat == .iso })
+        let rows = try sources.flatMap { try ImportParser.rows(source: $0, mode: .statements) }
+        // Cancelled and refunded rows are left out; a conversion leaves one balance and arrives in another.
+        #expect(rows.map(\.statement.transactionID) == ["TRANSFER-1001", "BALANCE-1003:out", "TRANSFER-1002", "BALANCE-1003:in", "CARD_TRANSACTION-1006"])
+        let saved = try #require(ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: sources, rows: rows), document: empty()).document)
+        #expect(saved.accounts.map(\.name) == ["Wise · EUR", "Wise · GBP"] && saved.accounts.map(\.currency) == ["EUR", "GBP"])
+        // Money out includes a fee charged in its own currency (0.45 EUR, 1.20 EUR) but not one in another (0.30 USD).
+        #expect(saved.entries.map(\.amount) == [Decimal(string: "120.45")!, 500, 2500, 430, Decimal(string: "9.5")!])
+        #expect(saved.entries.map(\.currency) == ["EUR", "EUR", "GBP", "GBP", "GBP"])
+        #expect(saved.entries.map(\.kind) == [.expense, .transfer, .income, .transfer, .expense])
+        #expect(saved.entries.map(\.outflow) == [true, true, false, false, true])
+        #expect(saved.entries.map(\.label) == ["Landlord GmbH", "Alex Example", "Acme Ltd", "Alex Example", "Netflix"])
+        #expect(saved.entries.map(\.day) == ["2026-08-03", "2026-08-01", "2026-07-31", "2026-08-01", "2026-06-30"])
+        #expect(saved.entries.map(\.month) == ["2026-08", "2026-08", "2026-07", "2026-08", "2026-06"])
+        #expect(saved.entries.map(\.accountID) == [saved.accounts[0].id, saved.accounts[0].id, saved.accounts[1].id, saved.accounts[1].id, saved.accounts[1].id])
+        #expect(saved.importedStatements.count == 2 && saved.importedStatements.allSatisfy { $0.originalBytes == bytes })
+        // An account chosen before picking the file applies only to the part in its currency.
+        let joint = Account(name: "Joint", currency: "EUR")
+        let chosen = ImportAccount(existingID: joint.id, name: joint.name, currency: joint.currency)
+        #expect(sources.map { ImportParser.account(for: $0, preferred: chosen, saved: [joint] + saved.accounts).existingID } == [joint.id, saved.accounts[1].id])
+        var mismatched = ImportBatchDraft(mode: .statements, sources: sources, rows: rows)
+        mismatched.sources[1].account.currency = "EUR"
+        let blocked = ImportBatchProcessor.evaluate(mismatched, document: empty())
+        #expect(blocked.sourceErrors[sources[1].id] == "Choose an account in GBP for wise.csv · GBP." && blocked.document == nil)
+        // The same export again adds nothing.
+        var again = try ImportParser.sources(bytes: bytes, filename: "wise.csv", mode: .statements)
+        for index in again.indices { again[index].account = ImportParser.account(for: again[index], preferred: ImportAccount(), saved: saved.accounts) }
+        #expect(again.compactMap(\.account.existingID) == saved.accounts.map(\.id))
+        let repeated = ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: again, rows: try again.flatMap { try ImportParser.rows(source: $0, mode: .statements) }), document: saved)
+        #expect(repeated.duplicates == 5 && repeated.added == 0 && !repeated.hasErrors)
+        // A later export, in another column order and without Category and Note, overlaps the first: only its new row is added.
+        let later = ["Status,ID,Direction,Finished on,Created on,Source currency,Source amount (after fees),Source fee amount,Source fee currency,Target fee amount,Target fee currency,Source name,Target name,Target currency,Target amount (after fees),Exchange rate,Reference,Batch,Created by",
+                     "COMPLETED,TRANSFER-1001,OUT,2026-08-03 14:23:11,2026-08-03 14:20:05,EUR,120.00,0.45,EUR,,,Alex Example,Landlord GmbH,EUR,120.00,1,August rent,,Alex Example",
+                     "COMPLETED,BALANCE-1003,NEUTRAL,2026-08-01 10:00:02,2026-08-01 10:00:00,EUR,498.80,1.20,EUR,,,Alex Example,Alex Example,GBP,430.00,0.862,,,Alex Example",
+                     "COMPLETED,TRANSFER-1007,OUT,2026-08-20 08:00:00,2026-08-20 07:59:00,EUR,40.00,0,EUR,,,Alex Example,Bike shop,EUR,40.00,1,,,Alex Example"].joined(separator: "\n")
+        var overlap = try ImportParser.sources(bytes: Data(later.utf8), filename: "wise-2.csv", mode: .statements)
+        for index in overlap.indices { overlap[index].account = ImportParser.account(for: overlap[index], preferred: ImportAccount(), saved: saved.accounts) }
+        let review = ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: overlap, rows: try overlap.flatMap { try ImportParser.rows(source: $0, mode: .statements) }), document: saved)
+        #expect(review.duplicates == 3 && review.readyRows == 1 && !review.hasErrors)
+        #expect(review.document?.entries.count == 6 && review.document?.entries.last?.label == "Bike shop" && review.document?.entries.last?.amount == 40)
+    }
+    @Test("Other statements, including Wise's classic statement and Monzo's export, stay one source each")
+    func singleSourceStatements() throws {
+        let classic = "TransferWise ID,Date,Amount,Currency,Description,Payment Reference,Running Balance\nCARD-1,05-08-2026,-20.00,EUR,Card transaction of 20.00 EUR issued by Cafe,,480.00"
+        let wise = try ImportParser.sources(bytes: Data(classic.utf8), filename: "statement.csv", mode: .statements)
+        #expect(wise.count == 1 && wise[0].filename == "statement.csv" && wise[0].splitCurrency == nil)
+        #expect(wise[0].account.name == "Wise" && wise[0].account.currency == "EUR" && wise[0].dateFormat == .dayFirstDash)
+        let monzo = "id,created,title,subtitle,amount,currency,categories\na,\"02/01/26, 12:03\",Coffee,,-5,GBP,General"
+        let search = try ImportParser.sources(bytes: Data(monzo.utf8), filename: "monzo.csv", mode: .statements)
+        #expect(search.count == 1 && search[0].account.name == "Monzo" && search[0].dateFormat == .monzoSearch)
+        let both = wise + search
+        let saved = try #require(ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: both, rows: try both.flatMap { try ImportParser.rows(source: $0, mode: .statements) }), document: empty()).document)
+        #expect(saved.accounts.map(\.name) == ["Wise", "Monzo"] && saved.entries.map(\.amount) == [20, 5] && saved.entries.map(\.kind) == [.expense, .expense])
+    }
+    @Test("Semicolon and tab files, Windows-1252 and UTF-16 text are read")
+    func delimitersAndEncodings() throws {
+        var source = try ImportParser.source(bytes: Data("Datum;Beschreibung;Amount;Currency\n31.01.2026;Miete;-1.250,00;EUR\n01.02.2026;Gehalt;2.500,50;EUR".utf8), filename: "bank.csv", mode: .statements)
+        #expect(source.grid[1] == ["31.01.2026", "Miete", "-1.250,00", "EUR"])
+        source.mapping = [.date: 0, .description: 1, .amount: 2, .currency: 3]; source.dateFormat = .dayFirstDot
+        source.numberFormat = .comma; source.account = ImportAccount(name: "Girokonto", currency: "EUR")
+        let saved = try #require(ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements)), document: empty()).document)
+        #expect(saved.entries.map(\.amount) == [1250, Decimal(string: "2500.5")!] && saved.entries.map(\.kind) == [.expense, .income])
+        let tabbed = try ImportParser.source(bytes: Data("Account\tCurrency\tBalance\nChecking\tUSD\t1,250.00".utf8), filename: "balances.txt", mode: .bankBalances)
+        #expect(tabbed.grid[1] == ["Checking", "USD", "1,250.00"] && tabbed.hasHeader)
+        let latin = try ImportParser.source(bytes: try #require("Date,Description,Amount\n2026-01-02,£5 voucher,-5".data(using: .windowsCP1252)), filename: "uk.csv", mode: .statements)
+        #expect(latin.grid[1][1] == "£5 voucher")
+        let unicode = try ImportParser.source(bytes: try #require("Date\tDescription\tAmount\n2026-01-02\tCafé\t-5".data(using: .utf16)), filename: "excel.txt", mode: .statements)
+        #expect(unicode.grid[0] == ["Date", "Description", "Amount"] && unicode.grid[1] == ["2026-01-02", "Café", "-5"])
+    }
+    @Test("Numbers accept signs, brackets and spaced thousands, and 0,125 is never 125")
+    func numberVariants() throws {
+        let cases: [(String, ImportNumberFormat, String)] = [
+            ("+12.34", .point, "12.34"), ("(12.34)", .point, "-12.34"), ("12.34-", .point, "-12.34"), ("\u{2212}12.34", .point, "-12.34"),
+            ("1 234,56", .comma, "1234.56"), ("1\u{00A0}234,56", .comma, "1234.56"), ("1'234.56", .point, "1234.56"), ("1 234 567", .point, "1234567")
+        ]
+        for (text, format, value) in cases { #expect(try format.decimal(text) == Decimal(string: value)!) }
+        for invalid in ["0,125", "00,125", "-0,125", "1,2,3", "--5", "(5", "12,5.0"] {
+            #expect(throws: Error.self) { _ = try ImportNumberFormat.point.decimal(invalid) }
+        }
+        #expect(throws: Error.self) { _ = try ImportNumberFormat.comma.decimal("0.125") }
+        // Typed by hand, a lone separator that can't group thousands is the decimal mark; only 1,250 follows the format.
+        #expect(try ImportNumberFormat.point.decimal("0,125", typed: true) == Decimal(string: "0.125")!)
+        #expect(try ImportNumberFormat.point.decimal("12,50", typed: true) == Decimal(string: "12.5")!)
+        #expect(try ImportNumberFormat.point.decimal("1,2345", typed: true) == Decimal(string: "1.2345")!)
+        #expect(try ImportNumberFormat.point.decimal("1,250", typed: true) == 1250)
+        #expect(try ImportNumberFormat.comma.decimal("1.250", typed: true) == 1250)
+        #expect(try ImportNumberFormat.comma.decimal("0.5", typed: true) == Decimal(string: "0.5")!)
+        // The guided form saves what it reads: 0,125 BTC is 0.125.
+        let manual = ImportSourceDraft(filename: "Manual entry", bytes: Data(), grid: [])
+        let row = ImportDraftRow(sourceID: manual.id, line: 1, content: .holding(HoldingInput(portfolioName: "Ledger", coin: "bitcoin", resolvedCoinID: "bitcoin", assetName: "Bitcoin", quantity: "0,125")))
+        let saved = try #require(ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .holdings, sources: [manual], rows: [row]), document: empty()).document)
+        let holding = try #require(saved.holdings.first)
+        #expect(saved.effectiveQuantity(holdingID: holding.id, at: Date()) == Decimal(string: "0.125")!)
+    }
+    @Test("Income or expense follows the amount as finally read, after the number format changes")
+    func kindFollowsNumberFormat() throws {
+        var draft = try batch("Date,Description,Amount,Currency\n2026-01-02,Salary,\"2500,00\",EUR\n2026-01-03,Coffee,\"-12,50\",EUR", mode: .statements)
+        #expect(ImportBatchProcessor.evaluate(draft, document: empty()).hasErrors)
+        draft.sources[0].numberFormat = .comma
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        #expect(saved.entries.map(\.kind) == [.income, .expense] && saved.entries.map(\.amount) == [2500, Decimal(string: "12.5")!])
+    }
+    @Test("Typed transfers take their direction from the sign; unsigned ones stay out of balance history")
+    func transferDirection() throws {
+        let draft = try batch("TransactionID,Date,Description,Amount,Currency,Type\nt1,2026-03-01,To savings,-500,USD,transfer\nt2,2026-03-02,From savings,200,USD,transfer\nt3,2026-03-03,Rent,900,USD,expense\nt4,2026-03-04,Refund,-5,USD,refund", mode: .statements)
+        let failed = ImportBatchProcessor.evaluate(draft, document: empty())
+        #expect(failed.hasErrors && failed.states[draft.rows[3].id]?.blocksSave == true)
+        var fixed = draft; fixed.rows.removeLast()
+        let saved = try #require(ImportBatchProcessor.evaluate(fixed, document: empty()).document)
+        #expect(saved.entries.map(\.kind) == [.transfer, .transfer, .expense] && saved.entries.map(\.amount) == [500, 200, 900])
+        #expect(saved.entries.map(\.outflow) == [true, nil, true])
+        #expect(saved.entries.map(BalanceReconstruction.signed) == [-500, nil, -900])
+    }
+    @Test("A holding total dated today is saved as now, so an edit earlier the same day can't override it")
+    func sameDayHolding() throws {
+        let now = Date()
+        var doc = empty()
+        let portfolio = Portfolio(name: "Ledger", createdAt: now.addingTimeInterval(-86400 * 30)); doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: now.addingTimeInterval(-86400 * 10), document: doc)
+        let holding = try #require(doc.holdings.first)
+        // An edit earlier today, as Manage makes it.
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 2, at: max(UTCDay.start(of: now), now.addingTimeInterval(-60)), document: doc)
+        var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t3", mode: .holdings)
+        draft.rows[0].holding.portfolioID = portfolio.id
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc, now: now).document)
+        #expect(saved.effectiveQuantity(holdingID: holding.id, at: now) == 3)
+        // Going back to the start-of-day total is a change, not "already saved".
+        draft.rows[0].holding.quantity = "1"
+        let restored = ImportBatchProcessor.evaluate(draft, document: doc, now: now)
+        #expect(restored.duplicates == 0 && restored.document?.effectiveQuantity(holdingID: holding.id, at: now) == 1)
+    }
+    @Test("Restating a total and its cost on the same day replaces that day's purchase lot")
+    func restatedLot() throws {
+        var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t1", mode: .holdings)
+        draft.rows[0].holding.date = "2026-03-10"; draft.rows[0].holding.paid = "30000"
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        draft.rows[0].holding.portfolioID = saved.portfolios[0].id
+        #expect(ImportBatchProcessor.evaluate(draft, document: saved).duplicates == 1)
+        draft.rows[0].holding.paid = "32000"
+        let corrected = try #require(ImportBatchProcessor.evaluate(draft, document: saved).document)
+        #expect(corrected.purchases?.count == 1 && corrected.purchases?[0].paid.value == 32000 && corrected.purchases?[0].id == saved.purchases?[0].id)
+    }
+    @Test("An account set to Personal keeps its imported rows personal and still matches by name")
+    func personalOwnerSentinel() throws {
+        var doc = empty()
+        let account = Account(name: "Monzo", currency: "GBP", ownerBusinessID: ""); doc.accounts = [account]
+        var draft = try batch("Date,Description,Amount,Currency\n2026-03-02,Coffee,-4,GBP", mode: .statements)
+        draft.sources[0].account = ImportAccount(existingID: account.id, name: account.name, currency: account.currency)
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.entries.first?.bucket == .personal)
+        let search = try ImportParser.source(bytes: Data("id,created,title,subtitle,amount,currency,categories\na,\"02/01/26, 12:03\",Coffee,,-5,GBP,General".utf8), filename: "monzo.csv", mode: .statements)
+        #expect(ImportParser.account(for: search, preferred: ImportAccount(), saved: [account]).existingID == account.id)
+    }
+    @Test("A bank's own Type column is ignored unless every value is an Up Only type, and a reference is not an ID")
+    func typeColumnGating() throws {
+        let chase = try batch("Date,Description,Amount,Type\n2026-03-02,Coffee,-4,DEBIT_CARD\n2026-03-03,Payroll,1200,ACH_CREDIT", mode: .statements)
+        #expect(chase.sources[0].mapping[.type] == nil)
+        let saved = try #require(ImportBatchProcessor.evaluate(chase, document: empty()).document)
+        #expect(saved.entries.map(\.kind) == [.expense, .income])
+        let typed = try batch("Date,Description,Amount,Type\n2026-03-02,Coffee,4,expense\n2026-03-03,Payroll,1200,", mode: .statements)
+        #expect(typed.sources[0].mapping[.type] == 3)
+        #expect(try #require(ImportBatchProcessor.evaluate(typed, document: empty()).document).entries.map(\.kind) == [.expense, .income])
+        let rent = try batch("Date,Description,Amount,Reference\n2026-02-01,Rent,-900,RENT\n2026-03-01,Rent,-900,RENT", mode: .statements)
+        #expect(rent.sources[0].mapping[.transactionID] == nil && !ImportBatchProcessor.evaluate(rent, document: empty()).hasErrors)
+        // One familiar word in a row of data doesn't make it a header.
+        let headerless = try batch("2026-01-02,Deposit,100.00,USD", mode: .statements)
+        #expect(!headerless.sources[0].hasHeader && headerless.sources[0].mapping[.amount] == 2)
+    }
+    @Test("Blank rows are dropped, a trailing delimiter is harmless, and zero amounts are left out")
+    func blankAndRaggedRows() throws {
+        #expect(try CSVReader.parse("A,B\n1,2\n,\n , \n\n3,4\n") == [["A", "B"], ["1", "2"], ["3", "4"]])
+        let draft = try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee,-4,USD,\n2026-01-03,Lunch,-9,USD,\n,,,,\n", mode: .statements)
+        #expect(draft.rows.count == 2 && draft.rows.allSatisfy { $0.parseError == nil })
+        #expect(!ImportBatchProcessor.evaluate(draft, document: empty()).hasErrors)
+        #expect(try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee", mode: .statements).rows.first?.parseError != nil)
+        #expect(try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee, large,-4,USD", mode: .statements).rows.first?.parseError != nil)
+        var zero = try batch("Date,Description,Amount,Currency\n2026-01-02,Card check,0.00,USD", mode: .statements)
+        #expect(zero.rows.first?.included == false)
+        zero.rows[0].included = true
+        #expect(ImportBatchProcessor.evaluate(zero, document: empty()).hasErrors)
+        // The row limit counts data rows, not the header.
+        #expect(try CSVReader.parse("A\n" + Array(repeating: "1", count: 20000).joined(separator: "\n") + "\n").count == 20001)
+    }
+    @Test("Updating all balances records only the accounts that changed")
+    func updateAllBalances() throws {
+        var doc = empty()
+        let checking = Account(name: "Checking", currency: "USD"), savings = Account(name: "Savings", currency: "USD"); doc.accounts = [checking, savings]
+        let then = Date().addingTimeInterval(-86400 * 40)
+        doc.bankBalances = [checking, savings].map { BankBalanceObservation(id: UUID(), accountID: $0.id, amount: PreciseDecimal(100), currency: "USD", observedAt: then, source: "Import", sourceIdentity: $0.id.uuidString) }
+        let manual = ImportSourceDraft(filename: "Current balances", bytes: Data(), grid: [])
+        let rows = [(checking, "100"), (savings, "250")].enumerated().map { index, item in
+            ImportDraftRow(sourceID: manual.id, line: index + 1, content: .bankBalance(BankBalanceInput(account: ImportAccount(existingID: item.0.id, name: item.0.name, currency: "USD"), balance: item.1)))
+        }
+        let review = ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .bankBalances, sources: [manual], rows: rows), document: doc)
+        #expect(review.duplicates == 1 && review.readyRows == 1)
+        #expect(review.document?.bankBalances.filter { $0.accountID == checking.id }.count == 1)
+    }
 }
 
 #if UPONLY_PERSONAL
@@ -722,6 +1001,24 @@ struct WiseInputTests {
         #expect(session.importDraft?.sources.map(\.id) == draft.sources.map(\.id))
         #expect(session.importDraft?.rows.first?.statement.amount == "12.50" && !session.importLoading)
         #expect(session.document?.entries.isEmpty == true)
+    }
+    @Test("A Wise transaction history with two currencies is read as one statement per currency")
+    func wiseHistorySplits() async throws {
+        let (session, _, _) = harness()
+        await session.create(recovery: .random())
+        session.startImport(.statements)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let csv = directory.appendingPathComponent("wise.csv")
+        try Data(("ID,Status,Direction,Created on,Finished on,Source fee amount,Source fee currency,Source name,Source amount (after fees),Source currency,Target name,Target amount (after fees),Target currency,Reference\n"
+                  + "BALANCE-1,COMPLETED,NEUTRAL,2026-08-01 10:00:00,2026-08-01 10:00:02,1.20,EUR,Alex,498.80,EUR,Alex,430.00,GBP,\n"
+                  + "TRANSFER-2,COMPLETED,OUT,2026-08-03 14:20:05,2026-08-03 14:23:11,0,EUR,Alex,20.00,EUR,Cafe,20.00,EUR,\n").utf8).write(to: csv)
+        await session.readImportFiles([csv])
+        let draft = try #require(session.importDraft)
+        #expect(session.importMessage == nil && draft.sources.map(\.filename) == ["wise.csv · EUR", "wise.csv · GBP"])
+        #expect(draft.sources.map(\.account.name) == ["Wise · EUR", "Wise · GBP"] && draft.rows.count == 3)
+        #expect(Set(draft.rows.map(\.sourceID)) == Set(draft.sources.map(\.id)))
     }
     @Test("Setup completes with one generation and correct navigation")
     func setup() async throws {
@@ -1198,7 +1495,7 @@ struct MetalHistoryTests {
         return VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
     }
     private func batch(_ text: String) throws -> ImportBatchDraft {
-        let source = try ImportParser.source(bytes: Data(text.utf8), filename: "metals.csv", mode: .metals, pasted: true)
+        let source = try ImportParser.source(bytes: Data(text.utf8), filename: "metals.csv", mode: .metals)
         return ImportBatchDraft(mode: .metals, sources: [source], rows: try ImportParser.rows(source: source, mode: .metals))
     }
     @Test("Metals have independent visibility and legacy portfolios remain crypto")
@@ -1272,9 +1569,6 @@ struct MetalHistoryTests {
         let metalRequest = PriceHistoryRequest(source: .metal, key: "asset:metal-gold-gram", identifier: PreciousMetal.gold.assetID.rawValue, start: start, end: end)
         let metals = try PriceHistory.decodeMetals(Data(#"[{"day":"2026-08-01","avg_price":3110.34768}]"#.utf8), request: metalRequest, fetchedAt: end)
         #expect(metals[0].priceUSD.value == 100 && metals[0].providerTime == start.addingTimeInterval(86399))
-        let fxRequest = PriceHistoryRequest(source: .fx, key: "fx:GBP", identifier: "GBP", start: start, end: end)
-        let fx = try PriceHistory.decodeFX(Data(#"{"base":"GBP","rates":{"2026-07-31":{"USD":1.23456789123456789}}}"#.utf8), request: fxRequest, fetchedAt: end)
-        #expect(fx.count == 1 && fx[0].providerTime < start)
     }
     @Test("Catch-up fills offline dates using past quantities and is idempotent")
     func backfillValuations() throws {

@@ -48,9 +48,15 @@ nonisolated enum BackupCoordinator {
 
     static func publish(_ package: BackupPackage, to directory: URL, io: VaultFileIO) throws {
         try verifyPackage(package)
-        if io.fileExists(at: directory) { throw VaultError.alreadyExists }
-        let staging = directory.deletingLastPathComponent()
-            .appendingPathComponent(directory.lastPathComponent + ".staging-" + UUID().uuidString, isDirectory: true)
+        // The save panel's "Replace" may swap out an earlier backup, never a vault or any other item.
+        let replacing = io.fileExists(at: directory)
+        if replacing && !isBackup(at: directory, io: io) { throw VaultError.alreadyExists }
+        // The sandbox grants the chosen path but not its folder, so nothing is created beside it: the backup is
+        // staged on the same volume and moved into place, or else written straight into the new folder, manifest last.
+        let scratch = try? io.replacementDirectory(for: directory)
+        defer { if let scratch { try? io.removeItem(at: scratch) } }
+        if replacing && scratch == nil { throw VaultError.backupIncoherent }
+        let staging = scratch?.appendingPathComponent(directory.lastPathComponent, isDirectory: true) ?? directory
         do {
             try io.createDirectory(at: staging)
             try io.createDirectory(at: staging.appendingPathComponent("inbox", isDirectory: true))
@@ -72,11 +78,23 @@ nonisolated enum BackupCoordinator {
                 to: staging.appendingPathComponent("manifest.json"),
                 sync: true
             )
-            try io.installItem(at: directory, from: staging)
+            if replacing { try io.replaceItem(at: directory, withItemAt: staging) }
+            else if staging != directory { try io.installItem(at: directory, from: staging) }
         } catch {
-            try? io.removeItem(at: staging)
+            if !replacing { try? io.removeItem(at: staging) }
             throw VaultError.backupIncoherent
         }
+    }
+
+    /// An earlier Up Only backup: a real folder holding only backup files (and Finder's hidden ones) and a readable manifest.
+    static func isBackup(at url: URL, io: VaultFileIO) -> Bool {
+        let names: Set<String> = ["manifest.json", "vault.uponly", "vault.uponly.prev", "recovery.wrapper", "inbox"]
+        guard (try? io.isSymbolicLink(at: url)) == false, (try? io.isDirectory(at: url)) == true,
+              let children = try? io.contentsOfDirectory(at: url),
+              Set(children.map(\.lastPathComponent).filter { !$0.hasPrefix(".") }).isSubset(of: names),
+              let bytes = try? io.data(at: url.appendingPathComponent("manifest.json")), bytes.count <= VaultLimits.maxManifestBytes,
+              let manifest = try? VaultJSON.decode(BackupManifest.self, from: bytes) else { return false }
+        return manifest.format == VaultSchema.backupPackage
     }
 
     static func restore(
@@ -135,6 +153,12 @@ nonisolated enum BackupCoordinator {
             if let vaultError = error as? VaultError { throw vaultError }
             throw VaultError.backupIncoherent
         }
+    }
+
+    /// Whether `recovery` opens this backup's recovery wrapper, checked before anything is replaced or asked.
+    static func opens(_ package: BackupPackage, with recovery: RecoveryCode) -> Bool {
+        guard let wrapper = try? VaultJSON.decode(RecoveryWrapperFile.self, from: package.recovery) else { return false }
+        return (try? VaultCrypto.unwrapVaultKey(wrapper, recovery: recovery)) != nil
     }
 
     static func verifyPackage(_ package: BackupPackage) throws {

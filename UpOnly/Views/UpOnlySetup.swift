@@ -4,26 +4,42 @@ import AppKit
 /// Action rows wrap as a whole, keeping native button titles readable in narrow windows.
 // Shared menu geometry. Content surfaces stay quiet; navigation uses native glass.
 enum UpOnlyLayout {
+    /// Side margin of every page in the menu panel: dashboard, Add, Manage, setup and unlock.
     static let inset: CGFloat = 16
     static let cardInset: CGFloat = 12
     static let radius: CGFloat = 14
 }
+/// Type roles shared by every page, so the same kind of text looks the same everywhere.
+enum UpOnlyType {
+    /// Page and empty-state titles ("Which account?", "Nothing here yet").
+    static let title = Font.system(size: 18, weight: .semibold)
+    /// Section headings inside a page or card ("Holdings", "Bank accounts", "Transactions").
+    static let section = Font.system(size: 13, weight: .semibold)
+    /// Row names and row amounts.
+    static let row = Font.system(size: 13)
+    /// Explanations under a title or card.
+    static let body = Font.system(size: 12)
+    /// Captions, eyebrows and secondary row lines.
+    static let caption = Font.system(size: 11)
+}
 struct UpOnlyPageHeader: View {
     let title: String
     var backLabel = "Back"
+    /// The visible button title: "Back", or "Cancel" or "Done" when the page is an editor.
+    var backTitle = "Back"
     var profileImage: Data?
     let back: () -> Void
     var subtitle: String?
     var trailing: AnyView?
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: back) { Label("Back", systemImage: "chevron.left") }
+            Button(action: back) { Label(backTitle, systemImage: "chevron.left") }
                 .buttonStyle(.glass).accessibilityLabel(backLabel)
             if let profileImage { UpOnlyProfileImage(data: profileImage, name: title, size: 24) }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.system(size: 14, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                if let subtitle { Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                if let subtitle { Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             }
             Spacer(minLength: 0)
             if let trailing { trailing }
@@ -39,8 +55,8 @@ struct UpOnlyConfirmation: View {
     let cancel: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-            if !detail.isEmpty { Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            Text(title).font(UpOnlyType.title).fixedSize(horizontal: false, vertical: true)
+            if !detail.isEmpty { Text(detail).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             HStack(spacing: 12) {
                 Button(cancelTitle, action: cancel).keyboardShortcut(.cancelAction)
                 Spacer(minLength: 0)
@@ -55,6 +71,18 @@ struct UpOnlyContentSurface: ViewModifier {
     func body(content: Content) -> some View {
         content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
             .overlay(RoundedRectangle(cornerRadius: UpOnlyLayout.radius).strokeBorder(Color.primary.opacity(0.06)))
+    }
+}
+/// One look for problems on every page: a warning asks for a fix; an error says something failed.
+struct UpOnlyNotice: View {
+    enum Style { case warning, error }
+    let text: String
+    var style: Style
+    init(_ text: String, style: Style = .warning) { self.text = text; self.style = style }
+    var body: some View {
+        Label(text, systemImage: style == .warning ? "exclamationmark.triangle" : "xmark.octagon")
+            .font(UpOnlyType.body).foregroundStyle(style == .warning ? Color.orange : Color(nsColor: .systemRed))
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -111,7 +139,7 @@ struct UpOnlySetupHeader: View {
             HStack {
                 UpOnlyBrandMark(width: 20).foregroundStyle(.primary)
                 Label("Step \(step) of \(total)", systemImage: symbol)
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(tint)
+                    .font(UpOnlyType.caption.weight(.medium)).foregroundStyle(tint)
                 Spacer()
                 HStack(spacing: 5) {
                     ForEach(1...total, id: \.self) { value in
@@ -120,7 +148,7 @@ struct UpOnlySetupHeader: View {
                 }.accessibilityHidden(true)
             }
             Text(title).fixedSize(horizontal: false, vertical: true).font(.system(size: 22, weight: .semibold)).tracking(-0.4).fixedSize(horizontal: false, vertical: true)
-            if !subtitle.isEmpty { Text(subtitle).fixedSize(horizontal: false, vertical: true).font(.system(size: 12)).foregroundStyle(.secondary) }
+            if !subtitle.isEmpty { Text(subtitle).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.body).foregroundStyle(.secondary) }
         }
     }
 }
@@ -135,15 +163,26 @@ struct UpOnlyRecoveryCodeCard: View {
         VStack(spacing: 10) {
             Text(formatted).fixedSize(horizontal: false, vertical: true).font(.system(size: 14, weight: .medium, design: .monospaced)).lineSpacing(3)
                 .textSelection(.enabled).fixedSize().accessibilityLabel("Recovery code, " + code.canonical)
-            Button {
-                NSPasteboard.general.clearContents()
-                copied = NSPasteboard.general.setString(code.canonical, forType: .string)
-            } label: { Label(copied ? "Copied" : "Copy recovery code", systemImage: copied ? "checkmark" : "doc.on.doc").fixedSize(horizontal: false, vertical: true) }
-                .controlSize(.small)
-        }.padding(14).frame(maxWidth: .infinity)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.secondary.opacity(0.15)))
+            Button(action: copy) { Label(copied ? "Copied" : "Copy recovery code", systemImage: copied ? "checkmark" : "doc.on.doc").fixedSize(horizontal: false, vertical: true) }
+                .controlSize(.small).help("Clears from the clipboard after a minute.")
+        }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity)
+            .modifier(UpOnlyContentSurface())
             .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { copied = false } } }
+    }
+    /// The code is marked concealed and transient so clipboard managers and history skip it,
+    /// and it is cleared after a minute unless something else has been copied since.
+    private func copy() {
+        let pasteboard = NSPasteboard.general
+        let markers = [NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"), NSPasteboard.PasteboardType("org.nspasteboard.TransientType")]
+        pasteboard.declareTypes([NSPasteboard.PasteboardType.string] + markers, owner: nil)
+        copied = pasteboard.setString(code.canonical, forType: .string)
+        for marker in markers { pasteboard.setData(Data(), forType: marker) }
+        let change = pasteboard.changeCount
+        // Not tied to the view: the code must still be cleared after the user moves on.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(60))
+            if NSPasteboard.general.changeCount == change { NSPasteboard.general.clearContents() }
+        }
     }
 }
 struct UpOnlySetup: View {
@@ -158,33 +197,33 @@ struct UpOnlySetup: View {
             UpOnlySetupHeader(step: 2, symbol: "arrow.triangle.2.circlepath", title: "Keep values current",
                               subtitle: "Up Only can fetch reference exchange rates and gold and silver prices while it runs. Your balances never leave this Mac.")
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.cashFlow, size: 30)
+                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 24)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Automatic prices and exchange rates").font(.system(size: 13, weight: .medium))
-                    Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("Automatic prices and exchange rates").font(UpOnlyType.row.weight(.medium))
+                    Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
                 Toggle("Automatic prices and exchange rates", isOn: $automatic).labelsHidden().toggleStyle(.switch).controlSize(.small)
                     .accessibilityIdentifier("AutomaticSources")
-            }.padding(12).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
+            }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
             DisclosureGroup("What providers receive", isExpanded: $showSourceDetails) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Frankfurter receives currency codes. Gold API receives metal symbols. Both see your IP address; neither receives balances, quantities or names.")
-                    Text("Crypto prices need a free CoinGecko key. Up Only asks for it when you add your first coin, or in Manage → Prices & rates.")
-                }.font(.system(size: 12)).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
-            }.font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("Crypto prices need a free CoinGecko key. You can add one any time in Manage → Prices & rates.")
+                }.font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+            }.font(UpOnlyType.body).foregroundStyle(.secondary)
             VStack(spacing: 9) {
                 Button { Task { await finish(addData: true) } } label: {
                     Text("Add your first balance").frame(maxWidth: .infinity)
                 }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction)
                 Button { Task { await finish(addData: false) } } label: {
-                    Text("Do this later").frame(maxWidth: .infinity)
+                    Text("Skip for now").frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered).controlSize(.large)
             }.disabled(saving || session.isBusy)
-            if let error { Text(error).fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.red) }
+            if let error { UpOnlyNotice(error, style: .error) }
             if let message = session.setupProgressMessage {
-                Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                Button("Save progress again") { session.checkpointSetup(progress) }.buttonStyle(.bordered).font(.caption)
+                UpOnlyNotice(message)
+                Button("Save progress again") { session.checkpointSetup(progress) }.buttonStyle(.bordered).controlSize(.small)
             }
             if saving { ProgressView().controlSize(.small) }
         }.padding(UpOnlyLayout.inset).frame(maxWidth: 380).fixedSize(horizontal: false, vertical: true)
@@ -211,19 +250,18 @@ struct UpOnlySettingsCard<Content: View>: View {
     let symbol: String
     var tint = UpOnlyTint.netWorth
     var isOn: Binding<Bool>?
-    var controlDisabled = false
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
-                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 36)
+                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 30)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(title).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                    if !subtitle.isEmpty { Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    Text(title).font(UpOnlyType.section).fixedSize(horizontal: false, vertical: true)
+                    if !subtitle.isEmpty { Text(subtitle).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if let isOn {
                     Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
-                        .disabled(controlDisabled).padding(.top, 4)
+                        .padding(.top, 4)
                 }
             }
             content()
@@ -285,8 +323,8 @@ struct UpOnlySourceStatus: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Circle().fill(color).frame(width: 7, height: 7).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(text).font(.system(size: 12)).foregroundStyle(savedOn ? .primary : .secondary).fixedSize(horizontal: false, vertical: true)
-                    if savedOn { Text(interval).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                    Text(text).font(UpOnlyType.body).foregroundStyle(savedOn ? .primary : .secondary).fixedSize(horizontal: false, vertical: true)
+                    if savedOn { Text(interval).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 }
             }.accessibilityElement(children: .combine)
             Spacer(minLength: 8)
@@ -309,6 +347,7 @@ struct UpOnlySources: View {
     @State private var metalKey = ""
     @State private var key = ""
     @State private var message: String?
+    @State private var failure: String?
     @State private var loaded = false
     private var showsCrypto: Bool { session.document?.shows(.crypto) == true }
     private var showsFX: Bool { session.document?.shows(.banks) == true || session.document?.shows(.cashFlow) == true }
@@ -326,8 +365,7 @@ struct UpOnlySources: View {
             #if UPONLY_PERSONAL
             UpOnlySettingsCard(title: "Wise", subtitle: "Balances and transactions from your linked profiles.",
                                symbol: "building.columns.fill", tint: UpOnlyTint.netWorth,
-                               isOn: $wise,
-                               controlDisabled: session.isBusy) {
+                               isOn: $wise) {
                 UpOnlySourceStatus(kind: .wise, savedOn: session.document?.settings.automaticWise == true, interval: "Updates every 12 hours",
                                    refresh: { Task { await session.refreshWise() } },
                                    refreshDisabled: session.isBusy || session.document?.settings.automaticWise != true)
@@ -335,66 +373,68 @@ struct UpOnlySources: View {
                     ForEach(session.wiseProfiles) { profile in
                         VStack(spacing: 7) {
                             UpOnlyProfileImage(data: profile.image, name: profile.name, size: 38)
-                            Text(profile.name).font(.system(size: 12, weight: .medium)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                            Text(profile.name).font(UpOnlyType.body.weight(.medium)).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                         }.frame(maxWidth: .infinity)
                     }
                 }.padding(.vertical, 3)
-                if let message = session.wiseMessage { Text(message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                if let message = session.wiseMessage { Text(message).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 DisclosureGroup("About your Wise connection") {
                     Text("Balances come directly from Wise. Completed transactions are kept up to date, with transfers between your linked profiles excluded from cash flow. Review other transfers in Transactions.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
-                }.font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                }.font(UpOnlyType.caption).foregroundStyle(.secondary)
             }
             #endif
             if showsCrypto {
                 UpOnlySettingsCard(title: "Crypto prices", subtitle: "Current USD prices for the coins you track.",
-                                   symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, isOn: $prices,
-                                   controlDisabled: session.isBusy) {
+                                   symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, isOn: $prices) {
                     UpOnlySourceStatus(kind: .crypto, savedOn: session.document?.settings.automaticPrices == true, interval: "Updates every hour",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if prices {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("CoinGecko Demo API key").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { save() }
+                            Text("CoinGecko Demo API key").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { save(draftKey: true) }
                             UpOnlyFlow(spacing: 8) {
                                 if key != session.document?.settings.coinGeckoKey {
-                                    Button("Save key") { save() }.buttonStyle(.glassProminent).controlSize(.small)
-                                        .disabled(session.isBusy || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                    // Clearing the field and pressing Remove key forgets a saved key.
+                                    Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Remove key" : "Save key") { save(draftKey: true) }
+                                        .buttonStyle(.glassProminent).controlSize(.small)
                                 }
-                                Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                                Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(UpOnlyType.body).buttonStyle(.bordered).controlSize(.small)
+                            }
+                            if session.document?.settings.coinGeckoKey.isEmpty != false {
+                                Text("Crypto prices start once a key is saved.").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
                     DisclosureGroup("What CoinGecko receives") {
                         Text("Coin IDs, your API key and network information. Your quantities, portfolio names and balances stay private.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
-                    }.font(.system(size: 11)).foregroundStyle(.secondary)
+                            .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
             }
             if session.document?.shows(.metals) == true {
-                UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals, controlDisabled: session.isBusy) {
+                UpOnlySettingsCard(title: "Gold & silver prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals) {
                     UpOnlySourceStatus(kind: .metals, savedOn: session.document?.settings.automaticMetals == true, interval: "Updates every hour",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if metals {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Gold API history key (optional)").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder).onSubmit { save() }
+                            Text("Gold API history key (optional)").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder).onSubmit { save(draftMetalKey: true) }
                             UpOnlyFlow(spacing: 8) {
                                 if metalKey != session.document?.settings.metalHistoryKey {
-                                    Button("Save key") { save() }.buttonStyle(.glassProminent).controlSize(.small).disabled(session.isBusy)
+                                    Button("Save key") { save(draftMetalKey: true) }.buttonStyle(.glassProminent).controlSize(.small)
                                 }
-                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(.system(size: 12)).buttonStyle(.bordered).controlSize(.small)
+                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(UpOnlyType.body).buttonStyle(.bordered).controlSize(.small)
                             }
                             Text("Live prices need no key and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
             }
             if showsFX {
                 UpOnlySettingsCard(title: "Exchange rates", subtitle: "Convert your balances and cash flow to USD.",
-                                   symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.cashFlow, isOn: $fx,
-                                   controlDisabled: session.isBusy) {
+                                   symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, isOn: $fx) {
                     UpOnlySourceStatus(kind: .fx, savedOn: session.document?.settings.automaticFX == true, interval: "Updates every 15 minutes",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     if let doc = session.document, doc.settings.automaticFX {
@@ -403,31 +443,31 @@ struct UpOnlySources: View {
                         ForEach(currencies, id: \.self) { currency in
                             let days = Set(doc.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.map { UTCDay.start(of: $0.providerTime) })
                             Text(currency + ": " + (days.isEmpty ? "no daily rates yet" : "\(days.count) daily rates since " + UpOnlyFormat.utcDay(days.min()!)))
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .font(UpOnlyType.caption).foregroundStyle(.secondary)
                         }
                     }
                     DisclosureGroup("About exchange rates") {
-                        Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Historical entries need a rate dated near the end of their month.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
-                    }.font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("Frankfurter provides reference rates and receives currency codes and network information. Your balances stay private. Past transactions need a rate dated in the last week of their month.")
+                            .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
             }
-            if let status = message ?? session.sourceMessage {
-                Text(status).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let failure { UpOnlyNotice(failure, style: .error) }
+            else if let status = message ?? session.sourceMessage {
+                Text(status).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Add a CoinGecko key, or turn Crypto prices off to save.").font(.system(size: 12)).foregroundStyle(.secondary)
+            if !showsCrypto && !showsFX && session.document?.shows(.metals) != true {
+                Text("Add an account or holding to see price options.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            sourceActions
-        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
         }.task(id: message) {
             if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
         }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
-        // Switches save themselves. Keys save on Return or with Save key, since a half-typed key must not be stored.
+        // Switches save themselves with the saved keys. A key being typed saves only with Save key or Return, so a half-typed key is never stored.
         .onChange(of: wise) { if loaded { save() } }
         .onChange(of: fx) { if loaded { save() } }
         .onChange(of: metals) { if loaded { save() } }
-        .onChange(of: prices) { _, on in if loaded, !on || !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { save() } }
+        .onChange(of: prices) { if loaded { save() } }
         .onAppear {
             if let settings = session.document?.settings {
                 #if UPONLY_PERSONAL
@@ -437,30 +477,27 @@ struct UpOnlySources: View {
             Task { @MainActor in loaded = true }
         }
     }
-    private func save() {
-        guard hasChanges, !(prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) else { return }
+    /// The one save path. Switches pass the saved keys; Save key passes that one draft key.
+    /// Crypto prices stay off until a key is saved, so turning the switch on first never blocks other changes.
+    private func save(draftKey: Bool = false, draftMetalKey: Bool = false) {
+        guard let settings = session.document?.settings else { return }
+        let key = draftKey ? self.key : settings.coinGeckoKey
+        let metalKey = draftMetalKey ? self.metalKey : settings.metalHistoryKey
+        if draftKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && settings.coinGeckoKey.isEmpty { return }
+        let prices = self.prices && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        #if UPONLY_PERSONAL
+        let wiseChanged = wise != settings.automaticWise
+        #else
+        let wiseChanged = false
+        #endif
+        guard wiseChanged || prices != settings.automaticPrices || fx != settings.automaticFX || metals != settings.automaticMetals
+                || key != settings.coinGeckoKey || metalKey != settings.metalHistoryKey else { return }
         Task {
+            failure = nil
             do { try await session.saveSources(prices: prices, fx: fx, key: key, metals: metals, metalKey: metalKey, wise: wise); message = "Changes saved." }
-            catch { message = error.localizedDescription }
+            catch { failure = error.localizedDescription }
         }
     }
-    @ViewBuilder private var sourceActions: some View {
-            if showsCrypto || showsFX || session.document?.shows(.metals) == true {
-                UpOnlyFlow(spacing: 12) {
-                    if hasChanges {
-                    Button("Save changes") { Task {
-                        do { try await session.saveSources(prices: prices, fx: fx, key: key, metals: metals, metalKey: metalKey, wise: wise); message = "Changes saved." }
-                        catch { message = error.localizedDescription }
-                    } }.buttonStyle(.glassProminent)
-                        .disabled(session.isBusy || !hasChanges || (prices && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                    }
-                }.padding(.top, 4)
-            } else {
-                Text("Add an account or holding to see price options.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-
-    }
-
 }
 
 struct UpOnlyProfileImage: View {
@@ -484,10 +521,10 @@ struct UpOnlyMonthPicker: View {
                 ForEach(1...(month.year == current.year ? current.month : 12), id: \.self) { value in
                     Text(DateFormatter().monthSymbols[value - 1]).tag(value)
                 }
-            }.accessibilityLabel("Entry month")
+            }.accessibilityLabel("Transaction month")
             Picker("Year", selection: Binding(get: { month.year }, set: { value in month = MonthKey(year: value, month: value == current.year ? min(month.month, current.month) : month.month) })) {
                 ForEach((1900...current.year).reversed(), id: \.self) { Text(String($0)).tag($0) }
-            }.accessibilityLabel("Entry year")
+            }.accessibilityLabel("Transaction year")
         }
     }
 }

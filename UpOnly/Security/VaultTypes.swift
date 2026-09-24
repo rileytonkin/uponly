@@ -49,7 +49,6 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     case barrierHeld
     case diskWriteFailed
     case missingRecoveryWrapper
-    case inboxNotCommitted
     case oversizedVault
     case oversizedBatch
     case oversizedInbox
@@ -80,7 +79,7 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .cancelled: "The action was cancelled."
-        case .locked, .staleSession: "Up is locked. Unlock it, then try again."
+        case .locked, .staleSession: "Up Only is locked. Unlock it, then try again."
         case .invalidAmount, .overflow: "Enter a valid amount within the supported range."
         case .invalidCurrency: "Enter a three-letter currency code, such as USD or GBP."
         case .invalidAssetID: "Choose a coin from search or enter its exact CoinGecko ID."
@@ -99,7 +98,7 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
         case .staleGeneration, .invalidGeneration, .alreadyOpen, .barrierHeld, .pauseFailed: "Another change is still finishing. Wait a moment, then try again."
         case .missingRecoveryWrapper: "This backup is missing recovery information. Choose another backup."
         case .corrupt, .backupIncoherent, .malformedEnvelope, .invalidSignature, .wrongVault, .unauthorizedRole, .staleSequence, .malformedLegacy, .verificationFailed, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
-        case .inboxNotCommitted, .cleanupFailed, .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
+        case .cleanupFailed, .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
         }
     }
 
@@ -113,15 +112,30 @@ nonisolated enum ValuationScope: Codable, Hashable, Sendable, Equatable {
 
 nonisolated enum UTCDay {
     static let timeZone = TimeZone(secondsFromGMT: 0)!
-
-    static func start(of date: Date) -> Date {
+    /// Days and months are Gregorian UTC everywhere, whatever calendar and time zone the Mac uses.
+    static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
-        return calendar.startOfDay(for: date)
+        calendar.timeZone = UTCDay.timeZone
+        return calendar
+    }()
+
+    /// UTC has no DST, so a day starts on a multiple of 86,400 s; the 2001 reference date is itself a UTC midnight.
+    static func start(of date: Date) -> Date {
+        let seconds = date.timeIntervalSinceReferenceDate, remainder = seconds.truncatingRemainder(dividingBy: 86400)
+        return Date(timeIntervalSinceReferenceDate: remainder < 0 ? seconds - remainder - 86400 : seconds - remainder)
     }
 
     static func isSameDay(_ lhs: Date, _ rhs: Date) -> Bool {
         start(of: lhs) == start(of: rhs)
+    }
+}
+
+extension Sequence {
+    /// What `sorted(by:).last` returns, in one pass: the greatest element and, of equals, the later one.
+    func latest(by areInIncreasingOrder: (Element, Element) -> Bool) -> Element? {
+        var result: Element?
+        for element in self where result.map({ !areInIncreasingOrder(element, $0) }) ?? true { result = element }
+        return result
     }
 }
 
@@ -180,17 +194,19 @@ nonisolated enum MoneyInput {
         return parsed
     }
 
-    static func add(_ lhs: Decimal, _ rhs: Decimal) throws -> Decimal {
+    /// Exact by default. Valuations pass `allowingRounding`: a value rounded to Decimal's 38 digits
+    /// (a long token quantity times a long price) is still right, and only overflow fails.
+    static func add(_ lhs: Decimal, _ rhs: Decimal, allowingRounding: Bool = false) throws -> Decimal {
         var a = lhs, b = rhs, result = Decimal()
         let status = NSDecimalAdd(&result, &a, &b, .plain)
-        guard status == .noError, isFinite(result) else { throw VaultError.overflow }
+        guard status == .noError || (allowingRounding && status == .lossOfPrecision), isFinite(result) else { throw VaultError.overflow }
         return result
     }
 
-    static func multiply(_ lhs: Decimal, _ rhs: Decimal) throws -> Decimal {
+    static func multiply(_ lhs: Decimal, _ rhs: Decimal, allowingRounding: Bool = false) throws -> Decimal {
         var a = lhs, b = rhs, result = Decimal()
         let status = NSDecimalMultiply(&result, &a, &b, .plain)
-        guard status == .noError, isFinite(result) else { throw VaultError.overflow }
+        guard status == .noError || (allowingRounding && status == .lossOfPrecision), isFinite(result) else { throw VaultError.overflow }
         return result
     }
 

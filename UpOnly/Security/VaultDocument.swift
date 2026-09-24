@@ -90,32 +90,34 @@ struct VaultDocument: Codable, Sendable, Equatable {
         portfolios.first { $0.id == id }
     }
 
-    func holding(id: UUID) -> Holding? {
-        holdings.first { $0.id == id }
-    }
-
     func activeHoldings(in portfolioID: UUID, at date: Date) -> [Holding] {
         holdings.filter { $0.portfolioID == portfolioID && $0.isActive(at: date) }
     }
 
     func effectiveQuantity(holdingID: UUID, at date: Date) -> Decimal? {
-        quantities
+        quantities.lazy
             .filter { $0.holdingID == holdingID && $0.effectiveAt <= date }
-            .sorted(by: QuantityObservation.ordering)
-            .last
+            .latest(by: QuantityObservation.ordering)
             .map(\.quantity.value)
     }
 
     func isBankTracked(_ accountID: UUID, at date: Date) -> Bool {
-        let relevant = bankTracking
-            .filter { $0.accountID == accountID && $0.effectiveAt <= date }
-            .sorted { lhs, rhs in
-                if lhs.effectiveAt != rhs.effectiveAt { return lhs.effectiveAt < rhs.effectiveAt }
-                return lhs.ordinal < rhs.ordinal
-            }
-        if let last = relevant.last { return last.tracked }
+        if let last = bankTracking.lazy.filter({ $0.accountID == accountID && $0.effectiveAt <= date })
+            .latest(by: { ($0.effectiveAt, $0.ordinal) < ($1.effectiveAt, $1.ordinal) }) { return last.tracked }
         if bankTracking.contains(where: { $0.accountID == accountID }) { return false }
         return trackedBankAccountIDs.contains(accountID)
+    }
+
+    /// Tracking starts at an account's first observation, so a balance dated before its first tracked day
+    /// moves that start back, unless the account was explicitly left out in between. Returns whether it moved.
+    @discardableResult mutating func backdateBankTracking(_ accountID: UUID, to date: Date) -> Bool {
+        guard !isBankTracked(accountID, at: date),
+              let first = bankTracking.lazy.filter({ $0.accountID == accountID && $0.tracked }).min(by: { $0.effectiveAt < $1.effectiveAt }),
+              date < first.effectiveAt,
+              !bankTracking.contains(where: { $0.accountID == accountID && !$0.tracked && $0.effectiveAt >= date && $0.effectiveAt <= first.effectiveAt })
+        else { return false }
+        setBankTracked(accountID, tracked: true, at: date)
+        return true
     }
 
     mutating func setBankTracked(_ accountID: UUID, tracked: Bool, at date: Date) {
@@ -131,10 +133,16 @@ struct VaultDocument: Codable, Sendable, Equatable {
         }
     }
 
+    /// Every scope a daily value is stored for.
+    var valuationScopes: [ValuationScope] { [.allTracked, .banks] + portfolios.map { .portfolio($0.id) } }
+
     func storedValuation(day: Date, scope: ValuationScope) -> DailyValuation? {
         let start = UTCDay.start(of: day)
         return dailyValuations.last { UTCDay.start(of: $0.utcDay) == start && $0.scope == scope }
     }
+
+    /// Something the user added. Restoring a backup over a vault that has any asks first.
+    var hasRecords: Bool { !accounts.isEmpty || !entries.isEmpty || !holdings.isEmpty || !portfolios.isEmpty }
 }
 
 struct VaultSession: Sendable {
@@ -177,6 +185,25 @@ struct VaultLayout: Sendable, Equatable {
         try io.createDirectory(at: root)
         try io.createDirectory(at: inbox)
     }
+
+    /// The folder a vault replaced by a restored backup is moved to, beside it: “Vault (replaced 2026-09-24 1432)”.
+    func replacedName(at date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HHmm"
+        return root.lastPathComponent + " (replaced " + formatter.string(from: date) + ")"
+    }
+
+    /// `replacedName`, numbered when a folder of that name already exists.
+    func replacedRoot(at date: Date, io: VaultFileIO) -> URL {
+        let parent = root.deletingLastPathComponent(), name = replacedName(at: date)
+        var candidate = parent.appendingPathComponent(name, isDirectory: true), number = 2
+        while io.fileExists(at: candidate) {
+            candidate = parent.appendingPathComponent(String(name.dropLast()) + " \(number))", isDirectory: true)
+            number += 1
+        }
+        return candidate
+    }
 }
 
 struct RecoveryCode: Equatable, Sendable {
@@ -217,7 +244,7 @@ struct RecoveryCode: Equatable, Sendable {
 
     private static func hexData(_ hex: String) -> Data? {
         var data = Data()
-        var chars = Array(hex)
+        let chars = Array(hex)
         guard chars.count.isMultiple(of: 2) else { return nil }
         for i in stride(from: 0, to: chars.count, by: 2) {
             let byte = String(chars[i...i + 1])

@@ -11,6 +11,9 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     private(set) var state = PanelState(totals: nil, isEstimated: true, waitingCaption: "No entries recorded")
     private(set) var history: [(month: MonthKey, net: Decimal?, settled: Bool)] = []
     private var document: VaultDocument?
+    /// Earliest month with any entry, accounting or asset observation, and with a personal entry; found once per document.
+    private var dataStart: MonthKey?
+    private var personalStart: MonthKey?
     private var choseInitialMonth = false
     private var explicitlySelectedMonth = false
     weak var owner: UpOnlySession?
@@ -25,12 +28,8 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
         DashboardPeriod.interval(month: month, period: period, now: now)
     }
     var selectableMonths: [MonthKey] {
-        guard let document else { return [.current()] }
-        let dates = document.dailyValuations.map(\.utcDay) + document.bankBalances.map(\.observedAt) + document.quantities.map(\.effectiveAt)
-        let months = document.entries.compactMap { MonthKey($0.month) }
-            + books.compactMap { MonthKey($0.firstMonth) }
-            + dates.map { AssetOwnership.month(at: $0) }
-        let first = min(month, months.filter { $0 <= .current() }.min() ?? .current())
+        guard document != nil else { return [.current()] }
+        let first = min(month, dataStart ?? .current())
         var cursor = MonthKey.current(), result: [MonthKey] = []
         for _ in 0..<1200 {
             result.append(cursor)
@@ -57,8 +56,29 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
         case .allTime: history.map(\.month)
         }
     }
+    /// Closed months whose cash flow can be confirmed in this view: never the open current month, nor months before
+    /// anything was recorded. The current month's view looks back at the month just ended, once it has activity.
+    private func reviewMonths(in document: VaultDocument) -> [MonthKey] {
+        let current = MonthKey.current()
+        guard period == .monthly, month == current else {
+            guard let start = startMonth(for: scope) else { return [] }
+            return attentionMonths.filter { $0 >= start && $0 < current }
+        }
+        let previous = current.previous.description
+        let hasEntries = (scope == .all || scope == .personal)
+            && document.entries.contains { $0.month == previous && $0.bucket == .personal && $0.kind != .transfer }
+        let hasAccounting = scope != .personal && books.contains { (scope == .all || scope == .business($0.id)) && $0.firstMonth <= previous }
+        return hasEntries || hasAccounting ? [current.previous] : []
+    }
+    private func startMonth(for scope: PerformanceScope) -> MonthKey? {
+        switch scope {
+        case .personal: return personalStart
+        case .all: return [personalStart, books.compactMap { MonthKey($0.firstMonth) }.min()].compactMap { $0 }.min()
+        case .business(let id): return books.first { $0.id == id }.flatMap { MonthKey($0.firstMonth) }
+        }
+    }
     func attention(in document: VaultDocument, includePerformance: Bool = true) -> DataAttention {
-        let months = includePerformance ? attentionMonths : []
+        let months = includePerformance ? reviewMonths(in: document) : []
         let personal = scope == .all || scope == .personal
         let books = scope == .personal ? [] : document.businessAccounting ?? []
         let selectedBooks = books.filter { scope == .all || scope == .business($0.id) }
@@ -79,6 +99,13 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     }
     func replace(with document: VaultDocument) {
         self.document = document
+        let current = MonthKey.current()
+        personalStart = document.entries.lazy.filter { $0.bucket == .personal }.compactMap { MonthKey($0.month) }.min()
+        var months = document.entries.compactMap { MonthKey($0.month) } + books.compactMap { MonthKey($0.firstMonth) }
+        let dates: [Date?] = [document.dailyValuations.lazy.map(\.utcDay).min(), document.bankBalances.lazy.map(\.observedAt).min(),
+                              document.quantities.lazy.map(\.effectiveAt).min()]
+        if let first = dates.compactMap({ $0 }).min() { months.append(AssetOwnership.month(at: first)) }
+        dataStart = months.filter { $0 <= current }.min()
         if case .business(let id) = scope, !books.contains(where: { $0.id == id }) { scope = .all }
         if !choseInitialMonth, !books.isEmpty, let latest = latestAccountingMonth {
             if !explicitlySelectedMonth { month = latest }
@@ -88,8 +115,9 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     }
     var latestAccountingMonth: MonthKey? {
         guard !books.isEmpty else { return nil }
+        let current = MonthKey.current()
         return books.flatMap(\.months).compactMap { MonthKey($0.month) }.filter { candidate in
-            candidate <= .current() && books.allSatisfy { candidate.description < $0.firstMonth || $0.months.contains { $0.month == candidate.description } }
+            candidate <= current && books.allSatisfy { candidate.description < $0.firstMonth || $0.months.contains { $0.month == candidate.description } }
         }.max()
     }
     var availableTotals: MonthTotals? {
@@ -123,20 +151,12 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
         }
     }
     var canStepForward: Bool { month < .current() }
-    var canStepBack: Bool { month > (history.first?.month ?? .current()) }
     func step(by count: Int) { select(count < 0 ? month.previous : month.next) }
     func select(_ month: MonthKey) { guard month <= .current() else { return }; explicitlySelectedMonth = true; self.month = month; recompute() }
     func drillInto(_ month: MonthKey) { period = .monthly; select(month) }
     private func recompute() {
-        guard let document else { return }
-        let entryStart = document.entries.filter { $0.bucket == .personal }.compactMap { MonthKey($0.month) }.min()
-        let bookStart = books.compactMap { MonthKey($0.firstMonth) }.min()
-        let earliest: MonthKey
-        switch scope {
-        case .personal: earliest = entryStart ?? .current()
-        case .all: earliest = [entryStart, bookStart].compactMap { $0 }.min() ?? .current()
-        case .business(let id): earliest = books.first { $0.id == id }.flatMap { MonthKey($0.firstMonth) } ?? .current()
-        }
+        guard document != nil else { return }
+        let earliest = startMonth(for: scope) ?? .current()
         var cursor = MonthKey.current(); var rows: [(MonthKey, Decimal?, Bool)] = []
         for _ in 0..<1200 {
             let result = state(for: cursor)
@@ -157,8 +177,9 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
         return aggregate(months: history.map(\.month).filter { $0 >= earliest && (period == .allTime || $0.year == month.year) }, scope: .personal)
     }
     var personalEntries: [Entry] {
-        (document?.entries ?? []).filter {
-            $0.bucket == .personal && $0.kind != .transfer && MonthKey($0.month).map { $0 <= .current() } == true
+        let current = MonthKey.current()
+        return (document?.entries ?? []).filter {
+            $0.bucket == .personal && $0.kind != .transfer && MonthKey($0.month).map { $0 <= current } == true
                 && (period == .allTime || (period == .annual ? $0.month.hasPrefix(String(month.year) + "-") : $0.month == month.description))
         }.sorted { $0.month == $1.month ? $0.label.localizedStandardCompare($1.label) == .orderedAscending : $0.month > $1.month }
     }
@@ -171,10 +192,14 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     private func aggregate(months: [MonthKey], scope: PerformanceScope) -> PanelState {
         var totals = MonthTotals(), known = 0, missing = 0, estimated = false
         var warnings = Set<String>(), contributions: [String: BusinessContribution] = [:]
+        // Months that only lack exchange rates keep the period repairable rather than reading as empty.
+        var rateGaps = Set<String>(), otherGap = false
         do {
             for m in months {
                 let result = state(for: m, scope: scope)
                 if result.totals == nil { missing += 1 }
+                if case .exchangeRates(let currencies)? = result.unavailable { rateGaps.formUnion(currencies) }
+                else if result.totals == nil && result.unavailable != .noEntries { otherGap = true }
                 if let value = result.totals ?? result.partialTotals {
                     totals.personalIncome = try MoneyInput.add(totals.personalIncome, value.personalIncome)
                     totals.personalSpend = try MoneyInput.add(totals.personalSpend, value.personalSpend)
@@ -201,9 +226,10 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
                     } else { contributions[row.id] = row }
                 }
             }
+            let unavailable: MonthUnavailable? = known > 0 ? nil : !rateGaps.isEmpty && !otherGap ? .exchangeRates(rateGaps.sorted()) : .noEntries
             return PanelState(totals: known > 0 ? totals : nil, isEstimated: estimated || missing > 0,
                                waitingCaption: missing > 0 ? "Partial result · \(missing) month\(missing == 1 ? "" : "s") unavailable" : "All recorded months in this period",
-                               unavailable: known == 0 ? .noEntries : nil, businesses: contributions.values.sorted { $0.book.name < $1.book.name }, warnings: warnings.sorted(), missingMonths: missing)
+                               unavailable: unavailable, businesses: contributions.values.sorted { $0.book.name < $1.book.name }, warnings: warnings.sorted(), missingMonths: missing)
         } catch { return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount) }
     }
     func breakdown(_ kind: EntryKind) -> [(label: String, amount: Decimal)] {
@@ -235,13 +261,16 @@ struct DataAttention {
                          books: [BusinessBook] = [], now: Date = Date(), valuationAt: Date? = nil) -> DataAttention {
         var result = DataAttention()
         let assetDate = valuationAt ?? now
+        // The current month is still open: only closed months can be complete or not.
         let current = MonthKey.current(now: now)
-        let selected = Array(Set(months.filter { $0 <= current })).sorted()
+        let selected = Array(Set(months.filter { $0 < current })).sorted()
         if includePersonal && document.shows(.cashFlow) {
             let reviewed = Set(document.reviewedMonths)
             result.spendingMonths = selected.filter { month in
-                if month == current || !reviewed.contains(month.description) { return true }
-                return MonthlyLedger.personal(month, document: document).unavailable != nil
+                if !reviewed.contains(month.description) { return true }
+                // "Nothing to record this month" confirms a month that has no transactions.
+                let unavailable = MonthlyLedger.personal(month, document: document).unavailable
+                return unavailable != nil && unavailable != .noEntries
             }
         }
         result.balances = document.accounts.filter { account in
@@ -256,9 +285,8 @@ struct DataAttention {
         result.pricesNeeded = valuation.missing.contains { ["quote", "fx"].contains($0.reason) }
         result.missingPriceLabels = valuation.components.filter { $0.missing == "quote" || $0.missing == "fx" }
             .map { $0.label + ($0.missing == "fx" ? " (" + $0.currency + " rate)" : " (price)") }.sorted()
-        // The current month's accounting is naturally unfinished; only closed months count as incomplete.
         result.accountingNames = books.filter { book in
-            selected.filter { $0 < .current() }.contains { month in
+            selected.contains { month in
                 month.description >= book.firstMonth &&
                 (!book.months.contains { $0.month == month.description } || book.ownership(at: month.description) == nil)
             }
@@ -270,10 +298,9 @@ struct DataAttention {
 nonisolated enum DashboardPeriod {
     static func interval(month: MonthKey, period: PerformancePeriod, now: Date) -> DateInterval {
         if period == .allTime { return DateInterval(start: .distantPast, end: now) }
-        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
         let firstMonth = period == .annual ? 1 : month.month
-        let start = calendar.date(from: DateComponents(year: month.year, month: firstMonth, day: 1))!
-        let next = calendar.date(byAdding: period == .annual ? .year : .month, value: 1, to: start)!
+        guard let start = UTCDay.calendar.date(from: DateComponents(year: month.year, month: firstMonth, day: 1)),
+              let next = UTCDay.calendar.date(byAdding: period == .annual ? .year : .month, value: 1, to: start) else { return DateInterval(start: now, end: now) }
         return DateInterval(start: min(start, now), end: min(now, next.addingTimeInterval(-1)))
     }
     static func samples(in interval: DateInterval, scope: ValuationScope, document: VaultDocument) -> [DailyValuation] {

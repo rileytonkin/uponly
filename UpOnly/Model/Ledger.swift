@@ -193,8 +193,7 @@ nonisolated struct PanelState {
 nonisolated enum MonthlyLedger {
     static func rate(currency: String, month: MonthKey, document: VaultDocument, now: Date = Date()) -> Decimal? {
         if currency == "USD" { return 1 }
-        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = UTCDay.timeZone
-        guard let end = calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) else { return nil }
+        guard let end = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) else { return nil }
         let cutoff = min(end.addingTimeInterval(-1), now)
         return document.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" && $0.providerTime <= cutoff && cutoff.timeIntervalSince($0.providerTime) <= 7 * 86400 }
             .max(by: { $0.providerTime < $1.providerTime })?.rate.value
@@ -217,15 +216,8 @@ nonisolated enum MonthlyLedger {
         let monthID = month.description
         var result = personal(month, document: document)
         let books = (document.businessAccounting ?? []).filter { $0.firstMonth <= monthID }
-        let hasCompanyActivity = document.entries.contains { $0.month == monthID && ($0.bucket == .otherBusiness || $0.bucket == .businessCost) }
-        if books.isEmpty {
-            if hasCompanyActivity && document.businessAccounting == nil {
-                result.partialTotals = result.totals
-                result.totals = nil; result.unavailable = .accounting(["Business profit"])
-                result.waitingCaption = "Connect accounting to include business profit."
-            }
-            return result
-        }
+        // Without accounting, rows paid by or for a business are simply not personal cash flow.
+        if books.isEmpty { return result }
         let personalUnavailable = result.unavailable != nil
         var partial = result.totals ?? MonthTotals()
         // Company profit already includes what the company paid you, so the payment itself is not counted again here.
@@ -288,9 +280,7 @@ nonisolated enum MonthlyLedger {
                 let spent = e.kind == .refund ? -value : value
                 if e.kind == .income { totals.moneyIn = try MoneyInput.add(totals.moneyIn, value) }
                 else { totals.moneyOut = try MoneyInput.add(totals.moneyOut, spent) }
-                if e.bucket == .otherBusiness || e.bucket == .businessCost {
-                    totals.otherBusiness = try MoneyInput.add(totals.otherBusiness, e.kind == .income ? value : -spent)
-                } else if e.kind == .income {
+                if e.kind == .income {
                     totals.personalIncome = try MoneyInput.add(totals.personalIncome, value)
                     if OwnerPayments.isCompanyCounterparty(e.label, month: monthID, document: document) { totals.ownerPayments = try MoneyInput.add(totals.ownerPayments, value) }
                 } else { totals.personalSpend = try MoneyInput.add(totals.personalSpend, spent) }

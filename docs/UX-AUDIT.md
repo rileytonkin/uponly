@@ -90,7 +90,7 @@ Review notes from the bug pass: the duplicate check now compares against the tot
 
 1. **Bulk import table.** Column mapping, date and number formats, and per-row editing remain a power-user surface. It is now out of the main path but could be reduced to a single "This file looks like: [Monzo / Wise / Generic]" chooser.
 2. **CoinGecko key prompt.** Currently a "Set up prices" button on the Net worth tab when a coin has no price. An inline field on that card would save a trip to Manage.
-3. **Prices & rates page.** Switches still need an explicit "Save changes". Auto-saving each switch would match system Settings, but the CoinGecko key field needs validation first.
+3. **Prices & rates page.** Done: each switch saves on its own, like System Settings; a typed API key is saved only with **Save key** or Return.
 4. **Company and ownership pages** (private build) were not audited for wording.
 5. **Purchase lots** cannot yet be edited or deleted, and the spreadsheet import has no Paid column.
 
