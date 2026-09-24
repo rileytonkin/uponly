@@ -443,12 +443,6 @@ enum UpOnlyFormat {
         let value = rounded(fraction * 100, scale: 1)
         return (value > 0 ? "+" : value < 0 ? "−" : "") + (oneDecimal.string(from: NSDecimalNumber(decimal: abs(value))) ?? "0.0") + "%"
     }
-    /// "+$4,599 (+50.5%)": the change in whole dollars, and as a share of where it started when that was above zero.
-    static func change(_ amount: Decimal, from baseline: Decimal) -> String {
-        let whole = rounded(amount, scale: 0)
-        let text = (whole > 0 ? "+" : "") + money(whole)
-        return baseline > 0 ? text + " (" + percent(amount / baseline) + ")" : text
-    }
     /// "+$66.59 ▲ 1.3%": a signed amount (with cents, or whole dollars for large figures) and, when known, the
     /// percentage with an arrow that says the direction without relying on colour.
     static func movement(_ amount: Decimal, fraction: Decimal?, cents: Bool) -> String {

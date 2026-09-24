@@ -17,7 +17,12 @@ extension UpOnlyUnlockedPanel {
             // With no companies the tab title already says Cash flow, so the eyebrow says what the figure is.
             if model.books.isEmpty { headline(eyebrow(performanceBasis)) } else { headline(performanceScopeSelector) }
             if let totals = model.availableTotals {
-                UpOnlyAmount(value: totals.net, signed: true, tint: UpOnlyTint.signed(totals.net)).padding(.top, 10)
+                // The eye sits by the number it hides, as on every other page.
+                HStack(alignment: .center, spacing: 4) {
+                    UpOnlyAmount(value: totals.net, signed: true, tint: UpOnlyTint.signed(totals.net))
+                    UpOnlyPrivacyButton()
+                    Spacer(minLength: 0)
+                }.padding(.top, 10)
                 if let caption = performanceCaption { Text(caption).font(UpOnlyType.body).foregroundStyle(.secondary).padding(.top, 6) }
             } else if case .exchangeRates(let currencies)? = model.state.unavailable {
                 nativeMonthContent(gaps.first ?? (model.month, currencies)).padding(.top, 16)
