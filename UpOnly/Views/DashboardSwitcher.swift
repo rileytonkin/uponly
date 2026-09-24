@@ -77,94 +77,25 @@ extension UpOnlyUnlockedPanel {
                                value: personal?.total, valueText: personal?.total.map(UpOnlyFormat.exactMoney) ?? "—", change: allChange)
         let cashFlow = SelectionRow(id: "cashflow", selection: .cashFlow, section: "Cash flow", name: "Income & spending", symbol: "arrow.up.arrow.down",
                                     tint: UpOnlyTint.cashFlow, value: month, valueText: month.map { ($0 > 0 ? "+" : "") + UpOnlyFormat.money($0) } ?? "—", detail: "this month")
-        // Each group is a card of rows, as on the pages themselves; empty groups aren't shown.
-        let sections = ["Accounts", "Crypto", "Gold & silver", "Companies"].map { title in (title: title, rows: rows.filter { $0.section == title }) }.filter { !$0.rows.isEmpty }
-        return VStack(alignment: .leading, spacing: 14) {
-            if showsNetWorth { switcherCard([all]) }
-            ForEach(sections, id: \.title) { section in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(section.title).font(UpOnlyType.section)
-                    switcherCard(section.rows)
-                }
-            }
-            if shows(.cashFlow) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Cash flow").font(UpOnlyType.section)
-                    switcherCard([cashFlow])
-                }
-            }
-            // Adding and managing read as rows too, rather than a pair of big buttons.
-            VStack(spacing: 0) {
-                switcherAction("plus", "Add an account, coin or metal") { showingSwitcher = false; session.addingInMenu = true }
-                Divider().opacity(0.5)
-                switcherAction("slider.horizontal.3", "Manage accounts & portfolios") { showingSwitcher = false; manage("Manage") }
-            }.padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 2).modifier(UpOnlyContentSurface())
+        // One card of rows, the same rows as the home list: everything, then each group, then income & spending.
+        // The chosen one has a check; adding and managing sit quietly underneath.
+        let list = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Gold & silver", "Companies"].flatMap { section in rows.filter { $0.section == section } }
+            + (shows(.cashFlow) ? [cashFlow] : [])
+        return VStack(alignment: .leading, spacing: 10) {
+            assetList(list.map(switcherRow))
+            HStack {
+                Button { showingSwitcher = false; manage("Manage") } label: { Label("Manage", systemImage: "slider.horizontal.3") }
+                Spacer()
+                Button { showingSwitcher = false; session.addingInMenu = true } label: { Label("Add", systemImage: "plus") }
+            }.buttonStyle(.borderless).font(UpOnlyType.body.weight(.medium)).padding(.horizontal, 4)
         }
     }
-    /// Rows in one card, divided as the home list is. The chosen row's own highlight replaces the lines beside it.
-    func switcherCard(_ rows: [SelectionRow]) -> some View {
-        let current = session.dashboardSelection
-        return VStack(spacing: 0) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                if index > 0 { Divider().opacity(row.selection == current || rows[index - 1].selection == current ? 0 : 0.5) }
-                switcherRow(row)
-            }
-        }.padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 2).modifier(UpOnlyContentSurface())
-    }
-    func switcherAction(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: symbol, tint: .accentColor, size: 28)
-                Text(title).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-            }.padding(.vertical, 9).contentShape(Rectangle())
-        }.buttonStyle(UpOnlyRowButtonStyle())
-    }
-    /// Icon, name and share of the whole on the left; value over its change on the right.
-    /// The All row gives the change in dollars too; the narrower rows below give the percentage, as on the home rows.
-    func switcherRow(_ row: SelectionRow) -> some View {
+    /// A switcher row is a home row: icon, name with its share of your total (or "this month") underneath, and value
+    /// over its change over the range. The chosen one has a check where the home rows have a chevron.
+    func switcherRow(_ row: SelectionRow) -> AssetRow {
         let chosen = row.selection == session.dashboardSelection
-        let move = row.change.map { change -> String in
-            if row.selection != .all, let fraction = change.fraction { return UpOnlyFormat.arrowPercent(fraction) }
-            return session.privacyMode ? UpOnlyFormat.hiddenMovement(change.amount, fraction: change.fraction) : UpOnlyFormat.movement(change.amount, fraction: change.fraction, cents: true)
-        }
-        let spokenMove = row.change.map { change in
-            [row.selection == .all && !session.privacyMode ? UpOnlyFormat.movement(change.amount, fraction: nil, cents: true) : nil,
-             change.fraction.map(UpOnlyFormat.percent)].compactMap { $0 }.joined(separator: ", ") + (worthRange == .all ? " since the first saved value" : " over the " + worthRange.phrase)
-        }
-        return Button { select(row.selection) } label: {
-            HStack(spacing: 10) {
-                if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 28) }
-                else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 28) }
-                // The name, with its share of your total underneath; it gives way before the figures do.
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(row.name).font(UpOnlyType.row.weight(chosen ? .semibold : .medium)).lineLimit(1).truncationMode(.middle)
-                    if let share = row.share, !session.privacyMode {
-                        Text(share == 0 ? "<1% of total" : "\(share)% of total").font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }.frame(minWidth: 90, alignment: .leading)  // a huge amount shrinks before the name disappears
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 1) {
-                    UpOnlyPrivateText(row.valueText).font(UpOnlyType.row.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
-                    if let move, let change = row.change {
-                        Text(move).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(change.amount)).lineLimit(1).minimumScaleFactor(0.8)
-                    } else if let detail = row.detail { Text(detail).font(UpOnlyType.caption).foregroundStyle(.secondary) }
-                }.layoutPriority(1)
-                Image(systemName: "checkmark.circle.fill").font(.system(size: 15)).symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, Color.accentColor).opacity(chosen ? 1 : 0).frame(width: 16)
-            }.padding(.vertical, 9).contentShape(Rectangle())
-                // The chosen row: a soft accent panel inside the card, its name in semibold and a filled check.
-                .background {
-                    if chosen {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.accentColor.opacity(0.1))
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.accentColor.opacity(0.25), lineWidth: 1))
-                            .padding(.horizontal, -8).padding(.vertical, 2)
-                    }
-                }
-        }.buttonStyle(UpOnlyRowButtonStyle())
-            .accessibilityLabel(row.name).accessibilityAddTraits(chosen ? .isSelected : [])
-            .accessibilityValue([session.privacyMode ? "Hidden value" : row.valueText, spokenMove, row.detail,
-                                 session.privacyMode ? nil : row.share.map { "\($0)% of your total" }].compactMap { $0 }.joined(separator: ", "))
+        let share = session.privacyMode ? nil : row.share.map { $0 == 0 ? "<1% of total" : "\($0)% of total" }
+        return AssetRow(id: row.id, name: row.name, detail: share ?? row.detail, value: row.valueText, change: row.change?.fraction,
+                        image: row.image, symbol: row.symbol, tint: row.tint, trailing: .check(chosen)) { select(row.selection) }
     }
 }

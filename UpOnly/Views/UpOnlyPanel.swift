@@ -577,7 +577,7 @@ struct UpOnlyUnlockedPanel: View {
 
     /// One bank, company or portfolio row. Every list on the dashboard uses it, so they all look and read the same.
     struct AssetRow: Identifiable {
-        enum Trailing { case chevron, space, button(symbol: String, label: String, action: () -> Void) }
+        enum Trailing { case chevron, space, check(Bool), button(symbol: String, label: String, action: () -> Void) }
         var id: String
         var name: String
         var detail: String? = nil
@@ -592,6 +592,11 @@ struct UpOnlyUnlockedPanel: View {
         var selected = false
         var trailing = Trailing.chevron
         var action: () -> Void
+        /// Highlighted (a company page's focus) or checked (the switcher's current page).
+        var isChosen: Bool {
+            if case .check(true) = trailing { return true }
+            return selected
+        }
     }
     func assetList(_ rows: [AssetRow]) -> some View {
         VStack(spacing: 0) {
@@ -626,12 +631,16 @@ struct UpOnlyUnlockedPanel: View {
                     if case .chevron = row.trailing {
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
                     }
+                    // The switcher's chosen row: a check in the chevron's place, the same width chosen or not.
+                    if case .check(let chosen) = row.trailing {
+                        Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.accentColor).opacity(chosen ? 1 : 0).frame(width: 12)
+                    }
                 }.padding(.vertical, 8).contentShape(Rectangle())
             }.buttonStyle(UpOnlyRowButtonStyle(selected: row.selected))
                 .accessibilityLabel(row.name).accessibilityValue(spokenValue(row))
-                .accessibilityAddTraits(row.selected ? .isSelected : [])
+                .accessibilityAddTraits(row.isChosen ? .isSelected : [])
             switch row.trailing {
-            case .chevron: EmptyView()
+            case .chevron, .check: EmptyView()
             case .space: Color.clear.frame(width: 24, height: 24)
             case .button(let symbol, let label, let action):
                 Button(action: action) {
@@ -640,11 +649,11 @@ struct UpOnlyUnlockedPanel: View {
             }
         }
     }
-    /// "<value>, <detail>, +0.4% in 24 hours": the name is the label, so VoiceOver reads "<name>, <value>".
+    /// "<value>, <detail>, +0.4% over the past 30 days": the name is the label, so VoiceOver reads "<name>, <value>".
     func spokenValue(_ row: AssetRow) -> String {
         var parts = [session.privacyMode ? "Hidden value" : row.value]
         if let detail = row.detail, !(row.detailIsAmount && session.privacyMode) { parts.append(detail) }
-        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + " in 24 hours") }
+        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + (worthRange == .all ? " since the first saved value" : " over the " + worthRange.phrase)) }
         return parts.joined(separator: ", ")
     }
 }
