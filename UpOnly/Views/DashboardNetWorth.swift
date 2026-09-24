@@ -15,6 +15,10 @@ extension UpOnlyUnlockedPanel {
         var baseline: Baseline? = nil
         /// Any saved history for this scope, even outside the range, so the range can still be changed.
         var hasHistory = false
+        /// Today's total against 24 hours ago, like for like and on fresh prices; nil when that can't be known.
+        var day: (amount: Decimal, fraction: Decimal?)? = nil
+        /// Profit against what was paid, over the holdings with recorded purchases.
+        var allTime: (gain: Decimal, cost: Decimal, covered: Int, total: Int)? = nil
     }
     func worthSnapshot() -> WorthSnapshot {
         let interval = selectedInterval
@@ -34,9 +38,18 @@ extension UpOnlyUnlockedPanel {
             guard !valued.isEmpty, !unpriced.isEmpty, let total = AssetOwnership.personalTotal(valued, at: sample.utcDay, document: document) else { return nil }
             return (total, "Excludes " + unpriced.joined(separator: ", ") + " (no price that day)")
         }
+        // The value as the app would have shown it 24 hours ago: the latest prices, rates and balances at that moment.
+        let then = interval.end.addingTimeInterval(-DayChange.window)
+        let earlier = AssetOwnership.personalValue(at: then, scope: scope, document: document, now: then)
+        // A company's holdings count at your share in the total, so profit on cost is only summed for personal portfolios.
+        let personal = Set(document.portfolios.filter { ($0.ownerBusinessID ?? "").isEmpty }.map(\.id))
+        let portfolioOf = Dictionary(document.holdings.map { ($0.id, $0.portfolioID) }, uniquingKeysWith: { first, _ in first })
+        let owned = valuation.components.filter { $0.kind == .holding && portfolioOf[$0.id].map(personal.contains) == true }
         return WorthSnapshot(interval: interval, valuation: valuation,
                              points: series.points, baseline: series.baseline,
-                             hasHistory: !samples.isEmpty || document.dailyValuations.contains { $0.scope == scope })
+                             hasHistory: !samples.isEmpty || document.dailyValuations.contains { $0.scope == scope },
+                             day: DayChange.total(now: valuation, then: earlier),
+                             allTime: HoldingPerformance.scope(owned, document: document, at: interval.end))
     }
     var worthContent: some View {
         let snapshot = worthSnapshot()
@@ -53,14 +66,26 @@ extension UpOnlyUnlockedPanel {
                     .frame(minHeight: 26, alignment: .leading)
             } else if let ownerShare { eyebrow(ownerShare).frame(minHeight: 26, alignment: .leading) }
             if let valuation, available, let value = valuation.total ?? valuation.lastComplete?.value {
-                UpOnlyAmount(value: value).padding(.top, showsPill || ownerShare != nil ? 10 : 0)
+                // The eye sits by the number it hides.
+                HStack(alignment: .center, spacing: 4) {
+                    UpOnlyAmount(value: value, cents: true)
+                    UpOnlyPrivacyButton()
+                    Spacer(minLength: 0)
+                }.padding(.top, showsPill || ownerShare != nil ? 10 : 0)
             }
             if let valuation, available {
                 VStack(alignment: .leading, spacing: 3) {
                     if valuation.total == nil, let last = valuation.lastComplete {
                         Text("Last complete value · " + UpOnlyFormat.utcDate(last.at)).font(UpOnlyType.body).foregroundStyle(.secondary)
-                    } else if let delta = change(from: snapshot.baseline, to: valuation.total, interval: snapshot.interval) {
-                        Text(delta.text).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(delta.tint)
+                    } else {
+                        // Two fixed answers: what moved today, and how the holdings stand against what was paid.
+                        // Neither changes with the chart range.
+                        if let day = snapshot.day { metricLine("24h", text: UpOnlyFormat.movement(day.amount, fraction: day.fraction, cents: true), amount: day.amount) }
+                        if let allTime = snapshot.allTime {
+                            let covered = allTime.covered < allTime.total ? " · \(allTime.covered) of \(allTime.total) holdings" : ""
+                            metricLine("All-time", text: UpOnlyFormat.movement(allTime.gain, fraction: allTime.cost > 0 ? allTime.gain / allTime.cost : nil, cents: false),
+                                       amount: allTime.gain, note: "on " + UpOnlyFormat.money(allTime.cost) + " paid" + covered)
+                        }
                     }
                     if let stale = staleNote(valuation) {
                         Text(stale.text).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(2).help(stale.detail)
@@ -103,15 +128,18 @@ extension UpOnlyUnlockedPanel {
                 }.padding(.top, 16)
             }
             if snapshot.hasHistory {
-                VStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
+                    rangeControl
+                    if let valuation, let delta = change(from: snapshot.baseline, to: valuation.total, interval: snapshot.interval) {
+                        Text(delta.text).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(delta.tint)
+                    }
                     if snapshot.points.contains(where: { $0.value != nil }) {
-                        UpOnlyChart(points: snapshot.points, tint: UpOnlyTint.netWorth, spansRange: true)
+                        UpOnlyChart(points: snapshot.points, tint: trendTint(snapshot.points), spansRange: true)
                     } else {
-                        Text("No saved values in the " + worthRange.phrase + ".").font(UpOnlyType.caption).foregroundStyle(.secondary)
+                        Text("No saved values" + worthRange.within + ".").font(UpOnlyType.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    rangeChips(tint: UpOnlyTint.netWorth)
-                }.padding(.top, 20)
+                }.padding(.top, 18)
             }
             if let portfolio {
                 if let valuation, available { holdingsCard(portfolio, valuation: valuation, at: snapshot.interval.end).padding(.top, 14) }
@@ -124,15 +152,29 @@ extension UpOnlyUnlockedPanel {
             }
         }
     }
-    /// "+$4,599 (+50.5%) · past year", or "· since Jul 3" when the first full valuation came after the range began.
+    /// "Past year  +$4,599  ▲ 50.5%", or "Since Jul 3 …" when the first full valuation came after the range began.
     func change(from baseline: Baseline?, to current: Decimal?, interval: DateInterval) -> (text: String, tint: Color)? {
         guard let baseline, let current else { return nil }
-        if session.privacyMode { return ("Change hidden", .secondary) }
         let day = UTCDay.start(of: baseline.sample.utcDay)
         let sameYear = UTCDay.calendar.component(.year, from: day) == UTCDay.calendar.component(.year, from: interval.end)
-        let phrase = day > UTCDay.start(of: interval.start) ? "since " + (sameYear ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)) : worthRange.phrase
+        let phrase = day > UTCDay.start(of: interval.start) ? "Since " + (sameYear ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)) : worthRange.spokenTitle
+        if session.privacyMode { return (phrase + "  Change hidden", .secondary) }
         let amount = current - baseline.value
-        return (UpOnlyFormat.change(amount, from: baseline.value) + " · " + phrase, UpOnlyTint.signed(amount))
+        return (phrase + "  " + UpOnlyFormat.movement(amount, fraction: baseline.value > 0 ? amount / baseline.value : nil, cents: false), UpOnlyTint.signed(amount))
+    }
+    /// "24h  +$66.59  ▲ 1.3%": a label, then the signed figure in green or red. Privacy mode hides the figure.
+    func metricLine(_ label: String, text: String, amount: Decimal, note: String? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).font(UpOnlyType.body).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
+            Text(session.privacyMode ? "Change hidden" : text).font(UpOnlyType.body.weight(.medium).monospacedDigit())
+                .foregroundStyle(session.privacyMode ? Color.secondary : UpOnlyTint.signed(amount)).lineLimit(1).minimumScaleFactor(0.8)
+            if let note, !session.privacyMode { Text(note).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail) }
+        }.accessibilityElement(children: .ignore).accessibilityLabel(label == "24h" ? "Change in 24 hours" : "All-time profit")
+            .accessibilityValue(session.privacyMode ? "Hidden value" : text + (note.map { ", " + $0 } ?? ""))
+    }
+    /// Green when the line ends at or above where it starts, red when below, the neutral tint with too little data.
+    func trendTint(_ points: [UpOnlyChartPoint]) -> Color {
+        DashboardChart.risesOrHolds(points.compactMap(\.value)).map { $0 ? UpOnlyTint.gain : UpOnlyTint.loss } ?? UpOnlyTint.netWorth
     }
     /// Prices and exchange rates that are out of date. A bank balance's age is normal and isn't mentioned.
     func staleNote(_ valuation: ValuationResult) -> (text: String, detail: String)? {
@@ -245,8 +287,49 @@ extension UpOnlyUnlockedPanel {
         guard then.count == parts.count, let start = AssetOwnership.sum(then), start > 0 else { return nil }
         return (total - start) / start
     }
+    /// One holding in a portfolio's table: what it is, its market price and 24-hour move, and what you hold.
+    struct HoldingLine: Identifiable {
+        var id: UUID
+        var assetID: String
+        var ticker: String
+        var name: String
+        var price: String?
+        var dayChange: Decimal?
+        var value: Decimal?
+        var valueText: String
+        var quantity: String?
+        var caption: String?
+    }
+    func holdingLines(_ portfolio: Portfolio, valuation: ValuationResult, at date: Date) -> [HoldingLine] {
+        guard let document = session.document else { return [] }
+        let metal = portfolio.kind == .metals
+        let lines = valuation.components.compactMap { component -> HoldingLine? in
+            guard let holding = document.holdings.first(where: { $0.id == component.id }) else { return nil }
+            let id = holding.assetID.rawValue
+            let metalKind = PreciousMetal.asset(holding.assetID)
+            let symbol = metalKind?.rawValue ?? (session.catalog.first(where: { $0.id == id }) ?? ImportCoins.common.first(where: { $0.id == id }))?.symbol.uppercased() ?? ""
+            let quantity = component.nativeAmount?.value
+            let value = component.usdValue?.value
+            return HoldingLine(
+                id: component.id, assetID: id,
+                // Metals read by name ("Gold", XAU underneath); coins by ticker ("BTC", Bitcoin underneath).
+                ticker: metalKind?.name ?? (symbol.isEmpty ? holding.assetName : symbol), name: metalKind != nil ? symbol : holding.assetName,
+                price: quantity.flatMap { q in value.flatMap { UpOnlyFormat.unitPrice(quantity: q, valueUSD: $0, metal: metal) } },
+                dayChange: DayChange.price(assetID: holding.assetID, quotes: document.quotes, now: date),
+                value: value,
+                valueText: value.map(UpOnlyFormat.exactMoney) ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"),
+                quantity: quantity.map { UpOnlyFormat.quantityText($0, symbol: symbol.isEmpty ? holding.assetName : symbol, metal: metal) },
+                caption: UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: component.id, valueUSD: value, document: document, at: date), metal: metal))
+        }
+        switch holdingSort {
+        case .value: return lines.sorted { ($0.value ?? -1) > ($1.value ?? -1) }
+        case .change: return lines.sorted { ($0.dayChange ?? -.greatestFiniteMagnitude) > ($1.dayChange ?? -.greatestFiniteMagnitude) }
+        case .name: return lines.sorted { $0.ticker.localizedStandardCompare($1.ticker) == .orderedAscending }
+        }
+    }
     func holdingsCard(_ portfolio: Portfolio, valuation: ValuationResult, at date: Date) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let lines = holdingLines(portfolio, valuation: valuation, at: date)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Holdings").font(UpOnlyType.section)
                 Spacer()
@@ -255,27 +338,70 @@ extension UpOnlyUnlockedPanel {
                 }.buttonStyle(.bordered).controlSize(.small)
             }
             // Every holding at zero still leaves a way to update them.
-            if valuation.components.isEmpty { Text("Every holding is at zero.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
-            ForEach(valuation.components, id: \.id) { component in
+            if lines.isEmpty { Text("Every holding is at zero.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
+            else {
+                // Column heads; the value head chooses the order.
+                HStack(spacing: 8) {
+                    Text("Asset").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Price").frame(width: 92, alignment: .trailing)
+                    Menu {
+                        ForEach(HoldingSort.allCases, id: \.self) { sort in
+                            Toggle(sort.title, isOn: Binding(get: { holdingSort == sort }, set: { _ in holdingSort = sort }))
+                        }
+                    } label: { Text(holdingSort == .value ? "Value ⌄" : holdingSort.title + " ⌄") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().frame(width: 96, alignment: .trailing)
+                        .accessibilityLabel("Sort holdings").accessibilityValue(holdingSort.title)
+                }.font(UpOnlyType.caption).foregroundStyle(.secondary).padding(.top, 2)
+            }
+            ForEach(lines) { line in
                 Divider().opacity(0.5)
-                VStack(alignment: .leading, spacing: 2) {
-                    UpOnlyValueRow(label: component.label, value: component.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"), primaryLabel: true)
-                    if let line = holdingLine(component, metal: portfolio.kind == .metals) {
-                        UpOnlyPrivateText(line).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    if let document = session.document, let caption = UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: component.id, valueUSD: component.usdValue?.value, document: document, at: date), metal: portfolio.kind == .metals) {
-                        UpOnlyPrivateText(caption).font(UpOnlyType.caption).foregroundStyle(.secondary)
-                    }
-                }
+                holdingRow(line)
             }
         }.padding(UpOnlyLayout.cardInset).modifier(UpOnlyContentSurface())
     }
-    /// "0.1 BTC · $59,000.00": the quantity with the coin's symbol (or its name when the symbol isn't known) and the unit price.
-    func holdingLine(_ component: ValuationComponent, metal: Bool) -> String? {
-        guard let quantity = component.nativeAmount?.value, let holding = session.document?.holdings.first(where: { $0.id == component.id }) else { return nil }
-        let id = holding.assetID.rawValue
-        let symbol = (session.catalog.first(where: { $0.id == id }) ?? ImportCoins.common.first(where: { $0.id == id }))?.symbol.uppercased() ?? ""
-        return UpOnlyFormat.holding(quantity: quantity, valueUSD: component.usdValue?.value, symbol: symbol.isEmpty ? holding.assetName : symbol, metal: metal)
+    /// Asset │ price and 24h move │ value and quantity. Prices and moves are public market data, so privacy mode
+    /// hides only what you hold.
+    func holdingRow(_ line: HoldingLine) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 8) {
+                HStack(spacing: 8) {
+                    UpOnlyAssetBadge(assetID: line.assetID, symbol: line.ticker, size: 26)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(line.ticker).font(UpOnlyType.row.weight(.semibold)).lineLimit(1)
+                        if !line.name.isEmpty { Text(line.name).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail) }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(line.price ?? "—").font(UpOnlyType.row.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
+                    if let change = line.dayChange {
+                        Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(change))
+                    }
+                }.frame(width: 92, alignment: .trailing)
+                VStack(alignment: .trailing, spacing: 1) {
+                    UpOnlyPrivateText(line.valueText).font(UpOnlyType.row.weight(.medium).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
+                    if let quantity = line.quantity { UpOnlyPrivateText(quantity).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7) }
+                }.frame(width: 96, alignment: .trailing)
+            }
+            if let caption = line.caption { UpOnlyPrivateText(caption).font(UpOnlyType.caption).foregroundStyle(.secondary).padding(.leading, 34) }
+        }.padding(.vertical, 2)
+            .accessibilityElement(children: .ignore).accessibilityLabel(line.ticker + (line.name.isEmpty ? "" : ", " + line.name))
+            .accessibilityValue(spokenHolding(line))
+    }
+    /// "price $59,000.00, up 2.1% in 24 hours, value $5,900.00, 0.1 BTC".
+    func spokenHolding(_ line: HoldingLine) -> String {
+        var parts: [String] = []
+        if let price = line.price { parts.append("price " + price) }
+        if let change = line.dayChange {
+            let percent = UpOnlyFormat.arrowPercent(change).replacingOccurrences(of: "▲ ", with: "").replacingOccurrences(of: "▼ ", with: "")
+            parts.append((change > 0 ? "up " : change < 0 ? "down " : "unchanged ") + (change == 0 ? "" : percent + " ") + "in 24 hours")
+        }
+        if session.privacyMode { parts.append("value hidden") }
+        else {
+            parts.append("value " + line.valueText)
+            if let quantity = line.quantity { parts.append(quantity) }
+            if let caption = line.caption { parts.append(caption) }
+        }
+        return parts.joined(separator: ", ")
     }
     var worthEmptyState: some View {
         VStack(alignment: .leading, spacing: 12) {

@@ -251,22 +251,23 @@ struct UpOnlyChart: View {
     }
     private var historyChart: some View {
         GeometryReader { geometry in
+            // The plot starts at the left edge and the value axis sits on the right, as in market apps.
             let plotWidth = max(1, geometry.size.width - axisWidth - edge)
             let visible = layout.visible
             ZStack(alignment: .topLeading) {
                 Canvas { context, size in
                     for tick in layout.scale.ticks where !layout.runs.isEmpty {
                         let yy = y(Decimal(tick))
-                        var grid = Path(); grid.move(to: CGPoint(x: axisWidth - 4, y: yy)); grid.addLine(to: CGPoint(x: axisWidth + plotWidth, y: yy))
+                        var grid = Path(); grid.move(to: CGPoint(x: 0, y: yy)); grid.addLine(to: CGPoint(x: plotWidth + edge, y: yy))
                         // Gridlines at 4.5% (the admin's rgba(255,255,255,0.045)); the zero line a little firmer on cash-flow charts.
                         let zero = tick == 0 && includesZero
                         context.stroke(grid, with: .color(.primary.opacity(zero ? 0.2 : contrast == .increased ? 0.14 : 0.06)), lineWidth: 1)
                         if !session.privacyMode {
-                            // Axis labels in the series colour at 68%, as the admin chart does.
-                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(tint.opacity(0.68)), at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
+                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
+                                         at: CGPoint(x: plotWidth + edge + 5, y: yy), anchor: .leading)
                         }
                     }
-                    var plot = context; plot.translateBy(x: axisWidth, y: 0)
+                    let plot = context
                     let zeroY = includesZero ? y(0) : plotHeight - 6
                     let loss = UpOnlyTint.loss
                     let solidStyle = StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round)
@@ -336,7 +337,7 @@ struct UpOnlyChart: View {
                 }.frame(height: plotHeight).accessibilityHidden(true)
                 if let hovered, visible.indices.contains(hovered) {
                     let point = visible[hovered]
-                    let anchor = axisWidth + x(hovered, width: plotWidth)
+                    let anchor = x(hovered, width: plotWidth)
                     // Beside the crosshair rather than over the point: to its right when there is room, else to its left.
                     let left = anchor + 160 <= geometry.size.width ? anchor + 10 : max(0, anchor - 160)
                     VStack(alignment: .leading, spacing: 4) {
@@ -356,7 +357,6 @@ struct UpOnlyChart: View {
                         switch phase { case .active(let location): hovered = nearest(location.x, width: plotWidth); case .ended: hovered = nil }
                     }
                     .gesture(SpatialTapGesture().onEnded { value in if let index = nearest(value.location.x, width: plotWidth) { onSelect?(visible[index].id) } })
-                    .offset(x: axisWidth)
                 ZStack(alignment: .topLeading) {
                     let ticks = layout.labelled.map { UpOnlyChartAxis.ticks(labelled: $0, widths: labelWidths, plotWidth: plotWidth) }
                         ?? UpOnlyChartAxis.ticks(widths: labelWidths, plotWidth: plotWidth)
@@ -365,7 +365,7 @@ struct UpOnlyChart: View {
                             .foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.5)).fixedSize()
                             .position(x: tick.center, y: 6)
                     }
-                }.frame(width: plotWidth, height: 14).offset(x: axisWidth, y: plotHeight + 6)
+                }.frame(width: plotWidth, height: 14).offset(y: plotHeight + 6)
             }
         }.frame(height: plotHeight + 20)
             .onChange(of: points) { hovered = nil }
@@ -449,22 +449,44 @@ enum UpOnlyFormat {
         let text = (whole > 0 ? "+" : "") + money(whole)
         return baseline > 0 ? text + " (" + percent(amount / baseline) + ")" : text
     }
-    /// "0.1 BTC · $59,000.00" for a coin. Metal is weighed in troy ounces from one ounce up, otherwise in grams,
-    /// and priced per that unit: "2 ozt · $2,650.00/ozt", "10 g · $100.00/g". `quantity` is grams for metal.
+    /// "+$66.59 ▲ 1.3%": a signed amount (with cents, or whole dollars for large figures) and, when known, the
+    /// percentage with an arrow that says the direction without relying on colour.
+    static func movement(_ amount: Decimal, fraction: Decimal?, cents: Bool) -> String {
+        let shown = cents ? exactMoney(amount) : money(amount)
+        let text = (rounded(amount, scale: cents ? 2 : 0) > 0 ? "+" : "") + shown
+        guard let fraction else { return text }
+        let value = rounded(fraction * 100, scale: 1)
+        let arrow = value > 0 ? "▲ " : value < 0 ? "▼ " : ""
+        return text + "  " + arrow + (oneDecimal.string(from: NSDecimalNumber(decimal: abs(value))) ?? "0.0") + "%"
+    }
+    /// "▲ 2.1%" for a price change: arrow, no sign, one decimal.
+    static func arrowPercent(_ fraction: Decimal) -> String {
+        let value = rounded(fraction * 100, scale: 1)
+        return (value > 0 ? "▲ " : value < 0 ? "▼ " : "") + (oneDecimal.string(from: NSDecimalNumber(decimal: abs(value))) ?? "0.0") + "%"
+    }
+    /// Metal is weighed in troy ounces from one ounce up, otherwise in grams. `quantity` is grams for metal.
+    private static func measure(_ quantity: Decimal, metal: Bool) -> (amount: Decimal, unit: String?) {
+        guard metal else { return (quantity, nil) }
+        let ounces = quantity / PreciousMetal.gramsPerTroyOunce
+        return ounces >= 1 ? (ounces, "ozt") : (quantity, "g")
+    }
+    /// "0.1 BTC", "2 ozt", "10 g".
+    static func quantityText(_ quantity: Decimal, symbol: String, metal: Bool) -> String {
+        let measured = measure(quantity, metal: metal)
+        return ((metal ? metalWeight : coinAmount).string(from: NSDecimalNumber(decimal: measured.amount)) ?? quantity.description) + " " + (measured.unit ?? symbol)
+    }
+    /// "$59,000.00", "$0.000012" (sub-dollar coins keep their significant digits), "$2,650.00/ozt" for metal.
+    static func unitPrice(quantity: Decimal, valueUSD: Decimal, metal: Bool) -> String? {
+        let measured = measure(quantity, metal: metal)
+        guard measured.amount > 0 else { return nil }
+        let price = valueUSD / measured.amount
+        return (price < 1 ? usdSmall.string(from: NSDecimalNumber(decimal: price)) ?? "—" : exactMoney(price)) + (measured.unit.map { "/" + $0 } ?? "")
+    }
+    /// "0.1 BTC · $59,000.00" for a coin; "2 ozt · $2,650.00/ozt", "10 g · $100.00/g" for metal.
     static func holding(quantity: Decimal, valueUSD: Decimal?, symbol: String, metal: Bool) -> String {
-        var amount = quantity, unit = symbol
-        if metal {
-            let ounces = quantity / PreciousMetal.gramsPerTroyOunce
-            if ounces >= 1 { amount = ounces; unit = "ozt" } else { unit = "g" }
-        }
-        let formatter = metal ? metalWeight : coinAmount
-        var text = (formatter.string(from: NSDecimalNumber(decimal: amount)) ?? quantity.description) + " " + unit
-        if let valueUSD, amount > 0 {
-            let price = valueUSD / amount
-            // Sub-dollar coins keep their significant digits: "$0.000012", not "$0.00".
-            text += " · " + (price < 1 ? usdSmall.string(from: NSDecimalNumber(decimal: price)) ?? "—" : exactMoney(price)) + (metal ? "/" + unit : "")
-        }
-        return text
+        let amount = quantityText(quantity, symbol: symbol, metal: metal)
+        guard let valueUSD, let price = unitPrice(quantity: quantity, valueUSD: valueUSD, metal: metal) else { return amount }
+        return amount + " · " + price
     }
     /// "Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", or nil when nothing is known.
     static func performance(_ summary: HoldingPerformance, metal: Bool = false) -> String? {

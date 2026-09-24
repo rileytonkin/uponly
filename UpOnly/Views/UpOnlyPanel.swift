@@ -110,6 +110,12 @@ struct UpOnlyUnlockedPanel: View {
     /// The company page a portfolio was opened from, so the portfolio's Back returns there.
     @State var portfolioReturn: CompanySelection?
     @State var worthRange: WorthRange = .year
+    @State var holdingSort: HoldingSort = .value
+    /// How a portfolio's holdings table is ordered.
+    enum HoldingSort: CaseIterable {
+        case value, change, name
+        var title: String { switch self { case .value: "Value"; case .change: "24h change"; case .name: "Name" } }
+    }
     @State var companyChart: CompanyChart = .balance
     @State var companyFocus: CompanyFocus = .all
     enum CompanyChart { case balance, profit }
@@ -119,7 +125,10 @@ struct UpOnlyUnlockedPanel: View {
     var selectedInterval: DateInterval {
         guard isWorthPage else { return model.selectedInterval() }
         let now = Date()
-        return DateInterval(start: now.addingTimeInterval(-worthRange.seconds), end: now)
+        if let seconds = worthRange.seconds { return DateInterval(start: now.addingTimeInterval(-seconds), end: now) }
+        // All starts at the first saved value, whichever page it's for.
+        let first = session.document?.dailyValuations.lazy.map(\.utcDay).min() ?? now
+        return DateInterval(start: min(UTCDay.start(of: first), now), end: now)
     }
 
     func shows(_ kind: TrackedKind) -> Bool { session.document?.shows(kind) == true }
@@ -326,20 +335,24 @@ struct UpOnlyUnlockedPanel: View {
             if !isWorthPage { periodSelector.layoutPriority(1) }
         }.frame(minHeight: 26)
     }
-    /// 1M 3M 1Y 2Y 5Y, directly under the chart as in Delta: equal widths, the chosen one filled.
-    func rangeChips(tint: Color) -> some View {
-        HStack(spacing: 4) {
+    /// 1W 1M 3M 1Y All above the chart: one track with the chosen segment raised, as market apps do.
+    var rangeControl: some View {
+        HStack(spacing: 2) {
             ForEach(WorthRange.allCases, id: \.self) { range in
                 let chosen = worthRange == range
                 Button { worthRange = range } label: {
-                    Text(range.title).font(.system(size: 11, weight: chosen ? .semibold : .medium))
+                    Text(range.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
                         .foregroundStyle(chosen ? Color.primary : Color.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 24)
-                        .background(chosen ? tint.opacity(0.16) : .clear, in: Capsule()).contentShape(Capsule())
+                        .frame(maxWidth: .infinity, minHeight: 22)
+                        .background {
+                            if chosen { Capsule().fill(Color(nsColor: .controlBackgroundColor)).shadow(color: .black.opacity(0.12), radius: 1, y: 0.5) }
+                        }
+                        .contentShape(Capsule())
                 }.buttonStyle(.plain)
                     .accessibilityLabel(range.spokenTitle).accessibilityAddTraits(chosen ? .isSelected : [])
             }
-        }.accessibilityElement(children: .contain).accessibilityLabel("Chart range")
+        }.padding(2).background(Color.primary.opacity(0.06), in: Capsule())
+            .accessibilityElement(children: .contain).accessibilityLabel("Chart range")
     }
     func eyebrow(_ title: String) -> some View {
         Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -423,8 +436,8 @@ struct UpOnlyUnlockedPanel: View {
     /// when the figure is an estimate, a note saying what it leaves out.
     func dailySeries(_ samples: [DailyValuation], interval: DateInterval, baselineMatches: (DailyValuation) -> Bool = { _ in true },
                              _ value: (DailyValuation) -> (Decimal, String?)?) -> (points: [UpOnlyChartPoint], baseline: Baseline?) {
-        let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays)
-        let labels = DashboardChart.axisLabels(stops.map { $0.day }, range: worthRange)
+        let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
+        let labels = DashboardChart.endLabels(stops.map { $0.day }, range: worthRange)
         let points = stops.enumerated().map { index, stop -> UpOnlyChartPoint in
             let sample = stop.sample.map { samples[$0] }
             let figure = sample.flatMap(value)
@@ -515,7 +528,7 @@ struct UpOnlyUnlockedPanel: View {
         if session.privacyMode { return "Hidden value" }
         var parts = [row.value]
         if let detail = row.detail { parts.append(detail) }
-        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + " over the " + worthRange.phrase) }
+        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + " " + worthRange.over) }
         return parts.joined(separator: ", ")
     }
 }

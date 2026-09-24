@@ -37,20 +37,47 @@ struct DashboardTests {
         #expect(DashboardChart.stops(sampleDays: [], rangeStart: utc(2026, 8, 20), strideDays: 7).isEmpty)
     }
 
-    @Test("Long charts label month starts, with January as its year; short ones label Mondays")
-    func axisLabels() {
-        // Weekly stops on Sundays from Sep 21, 2025 to Sep 20, 2026: every other month, January as the year.
+    @Test("The x-axis names only where the chart starts and ends; a year or more includes the year")
+    func endLabels() {
         let weekly = days(from: utc(2025, 9, 21), count: 53, every: 7)
-        let labels = DashboardChart.axisLabels(weekly, range: .year)
-        #expect(labels.compactMap { $0 } == ["Nov", "2026", "Mar", "May", "Jul", "Sep"])
-        #expect(labels[0] == nil)
-        if let january = weekly.firstIndex(of: utc(2026, 1, 4)) { #expect(labels[january] == "2026") }
-        // Five years in 30-day steps: only the years.
-        let monthly = (0..<61).map { utc(2026, 9, 24).addingTimeInterval(-Double(60 - $0) * 30 * 86400) }
-        #expect(DashboardChart.axisLabels(monthly, range: .fiveYears).compactMap { $0 } == ["2022", "2023", "2024", "2025", "2026"])
-        let daily = days(from: utc(2026, 8, 25), count: 31)
-        #expect(DashboardChart.axisLabels(daily, range: .month).compactMap { $0 } == ["Aug 31", "Sep 7", "Sep 14", "Sep 21"])
+        let labels = DashboardChart.endLabels(weekly, range: .year)
+        #expect(labels.first == "Sep 21, 2025" && labels.last == "Sep 20, 2026" && labels.dropFirst().dropLast().allSatisfy { $0 == nil })
+        let daily = days(from: utc(2026, 9, 17), count: 8)
+        #expect(DashboardChart.endLabels(daily, range: .week).compactMap { $0 } == ["Sep 17", "Sep 24"])
         #expect(UpOnlyFormat.utcDate(utc(2026, 8, 27, hour: 23)) == "Aug 27, 2026")
+    }
+
+    @Test("A chart is green when it ends at or above where it started, red when below")
+    func trend() {
+        #expect(DashboardChart.risesOrHolds([100, 90, 120]) == true)
+        #expect(DashboardChart.risesOrHolds([100, 100]) == true)
+        #expect(DashboardChart.risesOrHolds([100, 130, 99]) == false)
+        #expect(DashboardChart.risesOrHolds([100]) == nil)
+    }
+
+    @Test("Moves read as a signed amount with an arrow and one-decimal percent")
+    func movements() {
+        #expect(UpOnlyFormat.movement(Decimal(string: "66.59")!, fraction: Decimal(string: "0.0133")!, cents: true) == "+$66.59  ▲ 1.3%")
+        #expect(UpOnlyFormat.movement(-22953, fraction: Decimal(string: "-0.8198")!, cents: false) == "−$22,953  ▼ 82.0%")
+        #expect(UpOnlyFormat.movement(0, fraction: 0, cents: true) == "$0.00  0.0%")
+        #expect(UpOnlyFormat.movement(1310, fraction: nil, cents: false) == "+$1,310")
+        #expect(UpOnlyFormat.arrowPercent(Decimal(string: "-0.0585")!) == "▼ 5.9%")
+    }
+
+    @Test("Holdings split into quantity and unit price, metal switching to troy ounces from one ounce")
+    func holdingColumns() {
+        #expect(UpOnlyFormat.quantityText(Decimal(string: "0.1")!, symbol: "BTC", metal: false) == "0.1 BTC")
+        #expect(UpOnlyFormat.unitPrice(quantity: Decimal(string: "0.1")!, valueUSD: 5900, metal: false) == "$59,000.00")
+        #expect(UpOnlyFormat.quantityText(PreciousMetal.gramsPerTroyOunce * 2, symbol: "XAU", metal: true) == "2 ozt")
+        #expect(UpOnlyFormat.unitPrice(quantity: PreciousMetal.gramsPerTroyOunce * 2, valueUSD: 5300, metal: true) == "$2,650.00/ozt")
+        #expect(UpOnlyFormat.unitPrice(quantity: 0, valueUSD: 10, metal: false) == nil)
+    }
+
+    @Test("Coin badges keep their colour between launches")
+    func badgeColours() {
+        #expect(UpOnlyAssetBadge.colourIndex("bitcoin") == 0)  // Bitcoin orange
+        #expect(UpOnlyAssetBadge.colourIndex("some-new-coin") == UpOnlyAssetBadge.colourIndex("some-new-coin"))
+        #expect((0..<UpOnlyAssetBadge.palette.count).contains(UpOnlyAssetBadge.colourIndex("a-very-long-coin-identifier-from-coingecko")))
     }
 
     @Test("Marked axis labels are thinned evenly and never collide")
@@ -135,8 +162,12 @@ struct DashboardTests {
 
     @Test("Ranges are rolling and named the way the change line says them")
     func ranges() {
-        #expect(WorthRange.allCases.map(\.title) == ["1M", "3M", "1Y", "2Y", "5Y"])
-        #expect(WorthRange.year.phrase == "past year" && WorthRange.month.spokenTitle == "Past month")
-        #expect(WorthRange.month.seconds == 30 * 86400)
+        #expect(WorthRange.allCases.map(\.title) == ["1W", "1M", "3M", "1Y", "All"])
+        #expect(WorthRange.year.phrase == "past year" && WorthRange.month.spokenTitle == "Past month" && WorthRange.all.spokenTitle == "All time")
+        #expect(WorthRange.week.seconds == 7 * 86400 && WorthRange.month.seconds == 30 * 86400 && WorthRange.all.seconds == nil)
+        #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year" && WorthRange.all.over == "over all time")
+        // All samples by how long the history is.
+        #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 400 * 86400) == 7 && WorthRange.all.chartStepDays(span: 1500 * 86400) == 30)
+        #expect(WorthRange.all.months == nil && WorthRange.week.months == 1 && WorthRange.year.months == 12)
     }
 }

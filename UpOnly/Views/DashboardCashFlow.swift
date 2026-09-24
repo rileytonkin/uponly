@@ -116,7 +116,7 @@ extension UpOnlyUnlockedPanel {
     func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String) {
         let months = rangeMonths
         let rows = months.compactMap { key in book.months.first { $0.month == key.description } }
-        guard let firstRow = rows.first, let lastRow = rows.last else { return (nil, nil, nil, nil, "No accounting in the " + worthRange.phrase + ".") }
+        guard let firstRow = rows.first, let lastRow = rows.last else { return (nil, nil, nil, nil, "No accounting" + worthRange.within + ".") }
         let profit = rows.reduce(Decimal(0)) { $0 + $1.profitUSD }
         let revenue = rows.allSatisfy { $0.revenueUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.revenueUSD ?? 0) } : nil
         let expenses = rows.allSatisfy { $0.expensesUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.expensesUSD ?? 0) } : nil
@@ -131,10 +131,17 @@ extension UpOnlyUnlockedPanel {
         if rows.contains(where: \.estimated) { caption += " · current month is provisional" }
         return (revenue, expenses, profit, share, caption)
     }
-    /// The whole months the net worth range covers, ending with the current one.
+    /// The whole months the net worth range covers, ending with the current one. All reaches back to the first
+    /// reported accounting month (at most ten years).
     var rangeMonths: [MonthKey] {
+        let count = worthRange.months ?? {
+            guard let first = model.books.flatMap(\.months).compactMap({ MonthKey($0.month) }).min() else { return 1 }
+            var n = 1, cursor = MonthKey.current()
+            while cursor > first && n < 120 { cursor = cursor.previous; n += 1 }
+            return n
+        }()
         var months: [MonthKey] = [.current()]
-        while months.count < worthRange.months { months.insert(months[0].previous, at: 0) }
+        while months.count < count { months.insert(months[0].previous, at: 0) }
         return months
     }
     /// Monthly profit for the months inside the net worth range, so both company charts cover the same span.

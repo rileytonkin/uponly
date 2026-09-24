@@ -306,16 +306,18 @@ nonisolated enum PriceHistory {
         for quote in update.quotes where quoteKeys.insert(quote.assetID.rawValue + ":" + String(quote.providerTime.timeIntervalSince1970)).inserted {
             next.quotes.append(quote); touch(UTCDay.start(of: quote.providerTime))
         }
-        // A past day keeps only each asset's last quote, which is all a daily valuation reads; today keeps every quote.
+        // A past day keeps only each asset's last quote, which is all a daily valuation reads. Today and yesterday keep
+        // every quote, so a 24-hour change has a real price from 24 hours ago.
+        let intraday = today.addingTimeInterval(-86400)
         var lastOfDay: [DayKey: Date] = [:]
-        for quote in next.quotes where quote.providerTime < today {
+        for quote in next.quotes where quote.providerTime < intraday {
             let key = DayKey(id: quote.assetID.rawValue, day: UTCDay.start(of: quote.providerTime))
             lastOfDay[key] = max(lastOfDay[key] ?? quote.providerTime, quote.providerTime)
         }
         var kept = Set<DayKey>()
         next.quotes = next.quotes.filter { quote in
             let key = DayKey(id: quote.assetID.rawValue, day: UTCDay.start(of: quote.providerTime))
-            return key.day >= today || (quote.providerTime == lastOfDay[key] && kept.insert(key).inserted)
+            return key.day >= intraday || (quote.providerTime == lastOfDay[key] && kept.insert(key).inserted)
         }
         // One rate per currency and UTC day. A rate fetched while its day was still open is provisional (Frankfurter
         // blends in providers as they publish), so a later fetch replaces it; once fetched after the day closed it stays.

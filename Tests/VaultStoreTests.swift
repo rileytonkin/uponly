@@ -741,7 +741,7 @@ struct VaultStoreTests {
         #expect(quotes.map(\.priceUSD.value) == [1, 4])
     }
 
-    @Test("Past days keep only each asset's last quote; today keeps every quote")
+    @Test("Days before yesterday keep only each asset's last quote; yesterday and today keep every quote")
     func quotePruning() throws {
         let day = try ImportDateFormat.iso.date("2026-09-20"), today = day.addingTimeInterval(2 * 86400)
         func quote(_ asset: String, _ time: Date, _ price: Decimal) throws -> QuoteObservation {
@@ -754,6 +754,11 @@ struct VaultStoreTests {
         let saved = try PriceHistory.applying(update, to: emptyDocument(), now: today.addingTimeInterval(7200))
         #expect(saved.quotes.filter { $0.assetID.rawValue == "bitcoin" }.sorted { $0.providerTime < $1.providerTime }.map(\.priceUSD.value) == [123, 1, 2])
         #expect(saved.quotes.filter { $0.assetID.rawValue == "ethereum" }.count == 1)
+        // Yesterday's hourly quotes stay, so a 24-hour change has a real price from 24 hours ago.
+        var recent = PriceUpdate()
+        for hour in 0..<24 { recent.quotes.append(try quote("solana", day.addingTimeInterval(86400 + Double(hour) * 3600), Decimal(hour))) }
+        let kept = try PriceHistory.applying(recent, to: saved, now: today.addingTimeInterval(7200))
+        #expect(kept.quotes.filter { $0.assetID.rawValue == "solana" }.count == 24)
     }
 
     @Test("Going offline frees the background slot; a real failure retries after five minutes, then backs off")

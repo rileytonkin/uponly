@@ -7,22 +7,70 @@ struct UpOnlyAmount: View {
     var value: Decimal
     var signed = false
     var tint: Color = .primary
+    /// Shows cents, in secondary colour so the dollars still read first: "$13,710.42".
+    var cents = false
     private var sign: String { value < 0 ? "−" : signed && value > 0 ? "+" : "" }
+    /// "13,710" and ".42" (or "" without cents).
+    private var parts: (whole: String, fraction: String) {
+        let text = (cents ? UpOnlyFormat.exactMoney(abs(value)) : UpOnlyFormat.money(abs(value))).replacingOccurrences(of: "$", with: "")
+        guard cents, let dot = text.lastIndex(of: ".") else { return (text, "") }
+        return (String(text[..<dot]), String(text[dot...]))
+    }
     var body: some View {
         if session.privacyMode {
             Text("••••").font(.system(size: 40, weight: .semibold)).foregroundStyle(.primary)
                 .accessibilityLabel("Hidden value")
         } else {
+        let parts = parts
         ViewThatFits(in: .horizontal) {
         HStack(alignment: .firstTextBaseline, spacing: 1) {
             Text(sign + "$").fixedSize(horizontal: false, vertical: true)
                 .font(.system(size: 24, weight: .medium))
-            Text(UpOnlyFormat.money(abs(value)).replacingOccurrences(of: "$", with: "")).fixedSize(horizontal: false, vertical: true)
+            Text(parts.whole).fixedSize(horizontal: false, vertical: true)
                 .font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3)
+            if !parts.fraction.isEmpty {
+                Text(parts.fraction).font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
+            }
         }.fixedSize()
-            Text(sign + UpOnlyFormat.money(abs(value))).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .semibold).monospacedDigit())
+            Text(sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .semibold).monospacedDigit())
         }.foregroundStyle(tint)
-            .accessibilityElement(children: .ignore).accessibilityLabel(sign + UpOnlyFormat.money(abs(value)))
+            .accessibilityElement(children: .ignore).accessibilityLabel(sign + "$" + parts.whole + parts.fraction)
+        }
+    }
+}
+
+/// A coin, metal or bank at a glance, without fetching logos (that would tell a server what you hold): a coin shows
+/// its ticker's first letter (₿ for bitcoin) on a colour fixed by its id; metals use the bar icon in their own colour.
+struct UpOnlyAssetBadge: View {
+    var assetID: String
+    var symbol: String
+    var size: CGFloat = 24
+    static let palette: [Color] = [
+        Color(red: 0.95, green: 0.58, blue: 0.10), Color(red: 0.38, green: 0.49, blue: 0.92), Color(red: 0.16, green: 0.66, blue: 0.56),
+        Color(red: 0.86, green: 0.30, blue: 0.36), Color(red: 0.55, green: 0.36, blue: 0.86), Color(red: 0.13, green: 0.60, blue: 0.84),
+        Color(red: 0.84, green: 0.44, blue: 0.70), Color(red: 0.40, green: 0.62, blue: 0.24), Color(red: 0.62, green: 0.48, blue: 0.30),
+        Color(red: 0.36, green: 0.44, blue: 0.54)]
+    /// Coins people recognise by colour keep it; others get a stable index from the id's characters (Swift's
+    /// `hashValue` changes between launches).
+    static let known: [String: Int] = ["bitcoin": 0, "ethereum": 1, "tether": 2, "usd-coin": 5, "solana": 4, "ripple": 9, "cardano": 5, "dogecoin": 8]
+    static func colourIndex(_ id: String) -> Int { known[id] ?? id.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0xFFFF } % palette.count }
+    static func metalColour(_ metal: PreciousMetal) -> Color {
+        switch metal {
+        case .gold: Color(red: 0.83, green: 0.66, blue: 0.22)
+        case .silver: Color(red: 0.55, green: 0.58, blue: 0.62)
+        case .platinum: Color(red: 0.45, green: 0.52, blue: 0.58)
+        case .palladium: Color(red: 0.58, green: 0.50, blue: 0.44)
+        }
+    }
+    var body: some View {
+        if let metal = PreciousMetal.asset(CanonicalAssetID(rawValue: assetID)) {
+            UpOnlySymbolBadge(symbol: TrackedKind.metals.symbol, tint: Self.metalColour(metal), size: size)
+        } else {
+            let tint = Self.palette[Self.colourIndex(assetID)]
+            Text(assetID == "bitcoin" ? "₿" : String(symbol.prefix(1)).uppercased())
+                .font(.system(size: size * 0.5, weight: .bold, design: .rounded)).foregroundStyle(tint)
+                .frame(width: size, height: size).background(tint.opacity(0.15), in: Circle())
+                .accessibilityHidden(true)
         }
     }
 }
@@ -73,7 +121,7 @@ struct UpOnlyPrivacyButton: View {
         } label: {
             if inMenu { Label(session.privacyMode ? "Show values" : "Hide values", systemImage: session.privacyMode ? "eye.slash" : "eye") }
             else { Image(systemName: session.privacyMode ? "eye.slash" : "eye").font(.system(size: 13, weight: .medium)).frame(width: 16, height: 16) }
-        }.foregroundStyle(session.privacyMode ? Color.accentColor : Color.primary)
+        }.foregroundStyle(session.privacyMode ? Color.accentColor : inMenu ? Color.primary : Color.secondary)
             .accessibilityLabel(session.privacyMode ? "Show values" : "Hide values")
             .accessibilityValue(session.privacyMode ? "Privacy mode on" : "Privacy mode off")
             .accessibilityIdentifier("PrivacyMode")
@@ -147,33 +195,38 @@ struct PersonalAccountGroup: Identifiable {
 }
 /// How much net worth history the chart shows. The headline value is always today's.
 nonisolated enum WorthRange: CaseIterable {
-    case month, quarter, year, twoYears, fiveYears
-    /// The chip under the chart.
+    case week, month, quarter, year, all
+    /// The segment above the chart.
     var title: String {
-        switch self { case .month: "1M"; case .quarter: "3M"; case .year: "1Y"; case .twoYears: "2Y"; case .fiveYears: "5Y" }
+        switch self { case .week: "1W"; case .month: "1M"; case .quarter: "3M"; case .year: "1Y"; case .all: "All" }
     }
-    /// How the change line names the range: "+$4,599 (+50.5%) · past year".
+    /// How the chart caption names the range: "Past year  +$4,599 ▲ 50.5%".
     var phrase: String {
-        switch self { case .month: "past month"; case .quarter: "past 3 months"; case .year: "past year"; case .twoYears: "past 2 years"; case .fiveYears: "past 5 years" }
+        switch self { case .week: "past week"; case .month: "past month"; case .quarter: "past 3 months"; case .year: "past year"; case .all: "all time" }
     }
     var spokenTitle: String { phrase.prefix(1).uppercased() + String(phrase.dropFirst()) }
-    /// Whole months shown on monthly charts, ending with the current month.
-    var months: Int {
-        switch self { case .month: 1; case .quarter: 3; case .year: 12; case .twoYears: 24; case .fiveYears: 60 }
+    /// " in the past year", or nothing for All: "No saved values in the past year."
+    var within: String { self == .all ? "" : " in the " + phrase }
+    /// "over the past year", or "over all time".
+    var over: String { self == .all ? "over all time" : "over the " + phrase }
+    /// Whole months the company figures cover, ending with the current month. Nil for All: every reported month.
+    var months: Int? {
+        switch self { case .week, .month: 1; case .quarter: 3; case .year: 12; case .all: nil }
     }
-    /// Every range is rolling, ending now.
-    var seconds: TimeInterval {
-        switch self { case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .twoYears: 730 * 86400; case .fiveYears: 1826 * 86400 }
+    /// How far back a rolling range reaches. All starts at the first saved value instead.
+    var seconds: TimeInterval? {
+        switch self { case .week: 7 * 86400; case .month: 30 * 86400; case .quarter: 91 * 86400; case .year: 365 * 86400; case .all: nil }
     }
-    /// Days between chart points: daily up to three months, weekly for a year or two, monthly for five.
-    var chartStepDays: Int {
-        switch self { case .month, .quarter: 1; case .year, .twoYears: 7; case .fiveYears: 30 }
+    /// Days between chart points: daily up to three months, weekly for a year, and for All by how long the history is.
+    func chartStepDays(span: TimeInterval) -> Int {
+        switch self {
+        case .week, .month, .quarter: 1
+        case .year: 7
+        case .all: span <= 100 * 86400 ? 1 : span <= 800 * 86400 ? 7 : 30
+        }
     }
-    /// Longer ranges label every this many months on the x-axis, always including January (shown as its year).
-    /// Nil labels Mondays instead.
-    var axisMonthStep: Int? {
-        switch self { case .month, .quarter: nil; case .year: 2; case .twoYears: 3; case .fiveYears: 12 }
-    }
+    /// Short ranges name days ("Sep 17"); a year or more also names the year ("Sep 24, 2025").
+    var showsYear: Bool { self == .year || self == .all }
 }
 
 /// Dashboard arithmetic kept out of the views, so it can be tested on its own.
@@ -199,24 +252,18 @@ nonisolated enum DashboardChart {
         }
         return result
     }
-    /// X-axis labels for chart stops. Short ranges mark Mondays ("Sep 7"). Longer ones mark the first stop of every
-    /// `axisMonthStep`-th month ("Mar"), with January shown as its year ("2026"), so the labels are month starts
-    /// rather than whichever dates the stops happen to fall on.
-    static func axisLabels(_ days: [Date], range: WorthRange) -> [String?] {
-        let calendar = UTCDay.calendar
-        guard let step = range.axisMonthStep else {
-            return days.map { calendar.component(.weekday, from: $0) == 2 ? UpOnlyFormat.utcDay($0) : nil }
+    /// X-axis labels: only the first and last stops, so the axis says the span and the hover says the day.
+    static func endLabels(_ days: [Date], range: WorthRange) -> [String?] {
+        days.indices.map { index in
+            guard index == 0 || index == days.count - 1 else { return nil }
+            return range.showsYear ? UpOnlyFormat.utcDate(days[index]) : UpOnlyFormat.utcDay(days[index])
         }
-        var labels: [String?] = [], previous: Int?
-        for day in days {
-            let parts = calendar.dateComponents([.year, .month, .day], from: day)
-            let month = parts.month ?? 1
-            // The first stop in a month; the chart's first stop counts only if it's that close to the month's start.
-            let starts = previous.map { $0 != month } ?? ((parts.day ?? 99) <= range.chartStepDays)
-            labels.append(starts && (month - 1) % step == 0 ? (month == 1 ? String(parts.year ?? 0) : UpOnlyFormat.monthName(day)) : nil)
-            previous = month
-        }
-        return labels
+    }
+    /// Whether a chart's line ends at or above where it starts, for the green-up / red-down colour. Nil with fewer
+    /// than two values.
+    static func risesOrHolds(_ values: [Decimal]) -> Bool? {
+        guard values.count > 1, let first = values.first, let last = values.last else { return nil }
+        return last >= first
     }
     /// Whole percentages of each value that add up to exactly 100 (largest remainder first); zero and negative
     /// values get 0. For the allocation legend.

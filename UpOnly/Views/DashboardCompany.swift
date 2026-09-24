@@ -69,6 +69,7 @@ extension UpOnlyUnlockedPanel {
             // One chart. Assets shows the selected account, portfolio or everything; Profit / loss shows the accounting months.
             if hasAssetChart || companyID != nil {
                 VStack(alignment: .leading, spacing: 8) {
+                    rangeControl
                     if companyID != nil {
                         Picker("Chart", selection: $companyChart) {
                             Text("Assets").tag(CompanyChart.balance)
@@ -92,9 +93,8 @@ extension UpOnlyUnlockedPanel {
                     if showProfit {
                         UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow)
                     } else if hasAssetChart {
-                        UpOnlyChart(points: series.points, tint: UpOnlyTint.netWorth, spansRange: true)
+                        UpOnlyChart(points: series.points, tint: trendTint(series.points), spansRange: true)
                     } else { Text("No history yet for this selection.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
-                    rangeChips(tint: showProfit ? UpOnlyTint.cashFlow : UpOnlyTint.netWorth)
                 }.padding(.top, 6)
             }
             // Breakdown: one USD line per bank. Choosing a row focuses the chart and headline on it; the pencil on a
