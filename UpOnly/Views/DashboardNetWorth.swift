@@ -225,8 +225,8 @@ extension UpOnlyUnlockedPanel {
         case .name: return lines.sorted { $0.ticker.localizedStandardCompare($1.ticker) == .orderedAscending }
         }
     }
-    /// The portfolio's holdings as a market app lists them: Asset │ Price │ Value, one row per coin or metal, with a
-    /// way to update them underneath.
+    /// The portfolio's holdings as a market app lists them: Asset │ Price │ Value, one row per coin or metal. A row
+    /// opens that holding's update; the … menu updates them all.
     func holdingsList(_ portfolio: Portfolio, valuation: ValuationResult, snapshot: WorthSnapshot) -> some View {
         let lines = holdingLines(portfolio, valuation: valuation, snapshot: snapshot)
         return VStack(alignment: .leading, spacing: 0) {
@@ -252,12 +252,13 @@ extension UpOnlyUnlockedPanel {
                         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().frame(width: 96, alignment: .trailing)
                         .accessibilityLabel("Sort holdings").accessibilityValue(effectiveHoldingSort.title)
                 }.font(UpOnlyType.caption).foregroundStyle(.secondary).padding(.bottom, 2)
-                ForEach(lines) { holdingRow($0) }
+                // Clicking a holding updates it; updating them all is in the … menu.
+                ForEach(lines) { line in
+                    Button { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, prefill: true, portfolioID: portfolio.id, holdingID: line.id)) } label: {
+                        holdingRow(line)
+                    }.buttonStyle(UpOnlyRowButtonStyle()).accessibilityHint("Update " + line.ticker)
+                }
             }
-            Button {
-                showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, prefill: true, portfolioID: portfolio.id))
-            } label: { Label(portfolio.kind == .metals ? "Update weights" : "Update holdings", systemImage: "square.and.pencil") }
-                .buttonStyle(.bordered).controlSize(.small).padding(.top, 10)
         }
     }
     /// Asset and how much of it │ price and its move over the range │ value, centred on the row. Prices and moves are

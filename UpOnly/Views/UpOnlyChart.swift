@@ -192,6 +192,8 @@ struct UpOnlyChart: View {
     /// One x-axis label width per visible point (zero where a point has no label).
     private let labelWidths: [CGFloat]
     @State private var hovered: Int? = nil
+    /// Where the pointer is over the chart, so the hover card sits beside it.
+    @State private var pointer: CGPoint? = nil
     private let plotHeight: CGFloat = 120
     /// Room past the last point for the largest marker, so it isn't clipped at the right edge.
     private let edge: CGFloat = 6
@@ -400,15 +402,20 @@ struct UpOnlyChart: View {
                     // Beside the crosshair, to its right when there's room; level with the plot's emptier half so the
                     // card never covers the point.
                     let left = anchor + 14 + width <= geometry.size.width ? anchor + 14 : max(axisWidth, anchor - 14 - width)
-                    let low = point.value.map { y($0) > plotHeight / 2 } ?? true
+                    // Level with the pointer, kept inside the plot.
+                    let height: CGFloat = point.note == nil || session.privacyMode ? 58 : 88
+                    let top = min(max((pointer?.y ?? plotHeight / 2) - height / 2, 0), max(0, plotHeight - height))
                     hoverCard(point, index: hovered).frame(width: width, alignment: .leading)
-                        .frame(width: width, height: plotHeight, alignment: low ? .top : .bottom)
-                        .offset(x: left)
+                        .offset(x: left, y: top)
                         .allowsHitTesting(false)
                 }
-                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight).offset(x: axisWidth)
+                // Anywhere in a point's column counts, dates included: only the pointer's x picks the point.
+                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight + 20).offset(x: axisWidth)
                     .onContinuousHover { phase in
-                        switch phase { case .active(let location): hovered = nearest(location.x, width: plotWidth); case .ended: hovered = nil }
+                        switch phase {
+                        case .active(let location): hovered = nearest(location.x, width: plotWidth); pointer = location
+                        case .ended: hovered = nil; pointer = nil
+                        }
                     }
                     .gesture(SpatialTapGesture().onEnded { value in if let index = nearest(value.location.x, width: plotWidth) { onSelect?(visible[index].id) } })
                 ZStack(alignment: .topLeading) {
