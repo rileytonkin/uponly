@@ -54,6 +54,7 @@ struct UpOnlyImportView: View {
                     }
                 }
                 if !batch.rows.isEmpty {
+                    if let review, review.possibleDuplicates > 0 { duplicateChoices(review.possibleDuplicates) }
                     // Updating existing balances is one list of rows; anything else keeps a card per row.
                     let compact = isBalanceUpdate(batch)
                     if !usesSummary(batch) && batch.rows.count > 1 && !compact { rowActions(batch) }
@@ -231,6 +232,7 @@ struct UpOnlyImportView: View {
                                 }
                             }.padding(.vertical, 9)
                         }
+                        if editingStatementAccount != source.id, !batch.rows.isEmpty { fileQuestions(source, mode: batch.mode) }
                     }
                 }
                 if batch.rows.isEmpty {
@@ -246,10 +248,17 @@ struct UpOnlyImportView: View {
                         Text("Which account are these transactions from?").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Menu { accountChoices(source) } label: { Text("Choose an account").frame(maxWidth: .infinity) }
                             .menuStyle(.button).buttonStyle(.glassProminent).controlSize(.large).accessibilityLabel("Choose an account for " + source.filename)
+                    } else if let source = batch.sources.first(where: { review.needsFormat.contains($0.id) }) {
+                        // Also a question about the file, answered on its card above.
+                        Text("Choose how " + source.filename + " writes " + (source.unconfirmedDate != nil ? "dates" : "amounts") + " above to continue.")
+                            .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     } else if review.hasErrors || !mappingChanged.isEmpty {
-                        UpOnlyNotice(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.", style: .warning)
-                        primaryAction("Fix rows") {
-                            problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
+                        if review.possibleDuplicates > 0 { duplicateChoices(review.possibleDuplicates) }
+                        if review.possibleDuplicates == 0 || hasOtherProblems(review) {
+                            UpOnlyNotice(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.", style: .warning)
+                            primaryAction("Fix rows") { showProblems(review) }
+                        } else {
+                            Button("Check them one by one") { showProblems(review) }.buttonStyle(.bordered)
                         }
                     } else if review.learnedDays > 0 && review.readyRows == 0 {
                         Text("Dates added for \(review.learnedDays.formatted()) saved transactions").font(UpOnlyType.section)
@@ -282,6 +291,10 @@ struct UpOnlyImportView: View {
                         let skipped = [review.duplicates > 0 ? "\(review.duplicates.formatted()) " + (batch.mode == .statements ? "already imported" : "unchanged") : nil,
                                        excluded > 0 ? "\(excluded.formatted()) excluded" : nil].compactMap { $0 }.joined(separator: " · ")
                         if !skipped.isEmpty { Text(skipped).font(UpOnlyType.caption).foregroundStyle(.secondary) }
+                        if review.unarchivedFiles > 0 {
+                            Text("The archive of original files is full, so " + (review.unarchivedFiles == 1 ? "this file’s original isn’t" : "these files’ originals aren’t") + " kept. The transactions import as usual.")
+                                .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                         let count = review.readyRows
                         // Only the file itself, or a balance, is new: say so rather than "Import 0 transactions".
                         if count == 0 { Text(batch.mode == .statements ? "No new transactions" : "Already up to date").font(UpOnlyType.section) }
@@ -456,10 +469,7 @@ struct UpOnlyImportView: View {
                     }
                 }
             }
-            VStack(alignment: .leading, spacing: 8) {
-                if !mode.isHolding { Picker("Dates", selection: sourceBinding(source, \.dateFormat)) { ForEach(ImportDateFormat.allCases, id: \.self) { Text($0.title).fixedSize(horizontal: false, vertical: true).tag($0) } } }
-                Picker("Numbers", selection: sourceBinding(source, \.numberFormat)) { ForEach(ImportNumberFormat.allCases, id: \.self) { Text($0.rawValue).fixedSize(horizontal: false, vertical: true).tag($0) } }
-            }.font(.caption)
+            VStack(spacing: 0) { fileQuestions(source, mode: mode, all: true) }
             if !source.grid.isEmpty {
                 DisclosureGroup("Map columns · \(source.hasHeader ? "First row is a header" : "No header")") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -516,6 +526,80 @@ struct UpOnlyImportView: View {
             }
             session.importDraft = batch
         }
+    }
+    /// What a file leaves open, as rows of its card: a date or number format two readings fit, asked with a note until
+    /// one is chosen, and for a signed Amount column, which way positive amounts go. `all` shows every setting.
+    @ViewBuilder private func fileQuestions(_ source: ImportSourceDraft, mode: ImportMode, all: Bool = false) -> some View {
+        if !mode.isHolding, all || source.unconfirmedDate != nil {
+            Divider().opacity(0.5)
+            if let example = source.unconfirmedDate { UpOnlyNotice(dateQuestion(example)).padding(.top, 9) }
+            UpOnlyFormRow(label: "Dates") {
+                UpOnlyFormMenu(value: source.dateFormat.title, label: "Date format for " + source.filename) {
+                    ForEach(ImportDateFormat.allCases, id: \.self) { format in Button(format.title) { updateSource(source) { $0.dateFormat = format; $0.unconfirmedDate = nil } } }
+                }
+            }
+        }
+        if all || source.unconfirmedNumber != nil {
+            Divider().opacity(0.5)
+            if let example = source.unconfirmedNumber {
+                UpOnlyNotice("Amounts like " + example + " read differently in each number format. Choose the one this file uses.").padding(.top, 9)
+            }
+            UpOnlyFormRow(label: "Numbers") {
+                UpOnlyFormMenu(value: source.numberFormat.rawValue, label: "Number format for " + source.filename) {
+                    ForEach(ImportNumberFormat.allCases, id: \.self) { format in Button(format.rawValue) { updateSource(source) { $0.numberFormat = format; $0.unconfirmedNumber = nil } } }
+                }
+            }
+        }
+        // Known banks write money out as negative, so the summary only asks about other files.
+        if mode == .statements, source.hasSignedAmount, all || !ImportParser.signsKnown(source.grid) {
+            UpOnlyFormRow(label: "Positive amounts are money out", divided: true) {
+                Toggle("Positive amounts are money out", isOn: Binding(get: { source.positiveIsOutflow }, set: { value in updateSource(source) { $0.positiveIsOutflow = value } }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+            }.help("Card exports often list purchases as positive amounts and payments as negative.")
+        }
+    }
+    /// "03/04/2025 could be 3 April 2025 or 4 March 2025."
+    private func dateQuestion(_ example: String) -> String {
+        var readings: [String] = []
+        for format in ImportDateFormat.allCases {
+            guard let date = try? format.date(example) else { continue }
+            let text = date.formatted(Date.FormatStyle(date: .long, time: .omitted, timeZone: UTCDay.timeZone))
+            if !readings.contains(text) { readings.append(text) }
+        }
+        guard readings.count > 1 else { return "Check how this file writes dates." }
+        return example + " could be " + readings.joined(separator: " or ") + ". Choose how this file writes dates."
+    }
+    /// A file setting changed on the summary is checked straight away; in the details, with the other corrections.
+    private func updateSource(_ source: ImportSourceDraft, _ change: (inout ImportSourceDraft) -> Void) {
+        guard var batch = session.importDraft, let index = batch.sources.firstIndex(where: { $0.id == source.id }) else { return }
+        invalidateReview(); change(&batch.sources[index]); session.importDraft = batch
+        if usesSummary(batch), !importDetails { beginReview() }
+    }
+    /// Rows that repeat another (same day, description and amount), settled together rather than a click each.
+    private func duplicateChoices(_ count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            UpOnlyNotice(count == 1 ? "1 transaction has the same day, description and amount as another." : "\(count.formatted()) transactions have the same day, description and amount as others.")
+            ManageCard {
+                ManageRow(title: "Skip all duplicates", caption: "Leave them out of this import", action: busy ? nil : { settleDuplicates(keep: false) }) {
+                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 24)
+                } menu: { EmptyView() }
+                ManageRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", divided: true, action: busy ? nil : { settleDuplicates(keep: true) }) {
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 24)
+                } menu: { EmptyView() }
+            }
+        }
+    }
+    private func settleDuplicates(keep: Bool) {
+        guard let review, var batch = session.importDraft else { return }
+        batch.settleDuplicates(review, keep: keep)
+        invalidateReview(); session.importDraft = batch; beginReview()
+    }
+    /// Anything besides possible duplicates that stops saving.
+    private func hasOtherProblems(_ review: ImportEvaluation) -> Bool {
+        review.globalError != nil || !review.sourceErrors.isEmpty || !mappingChanged.isEmpty || review.states.values.contains { $0.blocksSave && $0 != .possibleDuplicate }
+    }
+    private func showProblems(_ review: ImportEvaluation) {
+        problemRows = Set(review.states.filter { $0.value.blocksSave }.map(\.key)); importDetails = true; page = 0
     }
     private func sourceBinding<T>(_ source: ImportSourceDraft, _ path: WritableKeyPath<ImportSourceDraft, T>) -> Binding<T> {
         Binding(get: { session.importDraft?.sources.first(where: { $0.id == source.id })?[keyPath: path] ?? source[keyPath: path] }, set: { value in

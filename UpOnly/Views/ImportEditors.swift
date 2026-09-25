@@ -112,8 +112,11 @@ struct ImportRowEditor: View {
             if let state {
                 Label(state.displayText(privacy: session.privacyMode), systemImage: state.blocksSave ? "exclamationmark.circle" : "checkmark.circle")
                     .fixedSize(horizontal: false, vertical: true).font(.system(size: 12)).foregroundStyle(state.blocksSave ? Color.orange : UpOnlyTint.cashFlow)
-                if case .needsReview = state {
-                    Button("This is a separate payment") { row.duplicateApproved = true }.font(.caption)
+                if state == .possibleDuplicate {
+                    HStack(spacing: 8) {
+                        Button("This is a separate payment") { row.duplicateApproved = true }
+                        Button("Skip it") { row.included = false }
+                    }.font(.caption)
                 }
             }
             if row.duplicateApproved { Label("Confirmed as a separate payment", systemImage: "checkmark").fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.secondary) }
@@ -137,9 +140,15 @@ struct ImportRowEditor: View {
                     UpOnlyValueField("Money out", text: $row.statement.debit)
                     UpOnlyValueField("Money in", text: $row.statement.credit)
                 } else { UpOnlyValueField("Amount", text: $row.statement.amount) }
-                Picker("Type", selection: Binding(get: { row.statement.kind }, set: { row.statement.kind = $0; row.statement.kindIsUserEdited = true })) {
-                    Text("Income").fixedSize(horizontal: false, vertical: true).tag(EntryKind.income); Text("Expense").fixedSize(horizontal: false, vertical: true).tag(EntryKind.expense); Text("Refund").fixedSize(horizontal: false, vertical: true).tag(EntryKind.refund); Text("Transfer").fixedSize(horizontal: false, vertical: true).tag(EntryKind.transfer)
-                }.frame(width: 155)
+                HStack(spacing: 8) {
+                    Picker("Type", selection: Binding(get: { row.statement.kind }, set: { row.statement.kind = $0; row.statement.kindIsUserEdited = true })) {
+                        Text("Income").fixedSize(horizontal: false, vertical: true).tag(EntryKind.income); Text("Expense").fixedSize(horizontal: false, vertical: true).tag(EntryKind.expense); Text("Refund").fixedSize(horizontal: false, vertical: true).tag(EntryKind.refund); Text("Transfer").fixedSize(horizontal: false, vertical: true).tag(EntryKind.transfer)
+                    }.frame(width: 155)
+                    // A chosen type also sets the direction; a transfer keeps the file's sign.
+                    if row.statement.kindIsUserEdited && row.statement.kind != .transfer {
+                        Text(row.statement.kind == .expense ? "Money out" : "Money in").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 TextField("Transaction ID (optional)", text: $row.statement.transactionID, axis: .vertical)
             }
         }

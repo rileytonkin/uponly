@@ -2,16 +2,19 @@ import Foundation
 
 nonisolated enum CSVReader {
     /// Rows of cells. Rows whose cells are all blank (Excel's trailing `,,,,` lines) are dropped.
-    /// Allows a header row plus 20,000 data rows.
+    /// Allows a header row plus 20,000 data rows. Sloppy quoting is read rather than rejected: spaces around a quoted
+    /// field are dropped, a quote inside an unquoted field (`12" pizza`) is an ordinary character, and text after a
+    /// closing quote is kept. Only a quoted field left open at the end of the file fails.
     static func parse(_ text: String, delimiter: Character = ",") throws -> [[String]] {
         var rows: [[String]] = [], row: [String] = []
-        var field = "", fieldLength = 0, quoted = false, afterQuote = false
+        var field = "", fieldLength = 0, quoted = false, afterQuote = false, trailing = ""
         var iterator = text.makeIterator(), pending: Character?
         var characterCount = 0
+        func endField() { row.append(field); field = ""; fieldLength = 0; afterQuote = false; trailing = "" }
         func endRow() {
-            row.append(field)
+            endField()
             if row.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) { rows.append(row) }
-            row = []; field = ""; fieldLength = 0; afterQuote = false
+            row = []
         }
         while let c = pending ?? iterator.next() {
             pending = nil
@@ -24,15 +27,16 @@ nonisolated enum CSVReader {
                         else { quoted = false; afterQuote = true; pending = next }
                     } else { quoted = false; afterQuote = true }
                 } else { field.append(c); fieldLength += 1 }
-            } else {
-                if afterQuote && c != delimiter && c != "\n" && c != "\r" && c != "\r\n" { throw StatementError.invalidCSV }
-                switch c {
-                case "\"": guard field.isEmpty else { throw StatementError.invalidCSV }; quoted = true
-                case delimiter: row.append(field); field = ""; fieldLength = 0; afterQuote = false
-                case "\n", "\r", "\r\n": endRow()
-                default: field.append(c); fieldLength += 1
-                }
-            }
+            } else if c == delimiter { endField() }
+            else if c == "\n" || c == "\r" || c == "\r\n" { endRow() }
+            else if afterQuote {
+                // Spaces after a closing quote are dropped; other text is kept, with the spaces before it.
+                if c == " " || c == "\t" { trailing.append(c) }
+                else { field += trailing + String(c); fieldLength += trailing.count + 1; trailing = "" }
+            } else if c == "\"" && field.allSatisfy({ $0 == " " || $0 == "\t" }) {
+                // A quote opens a quoted field only at its start, after any spaces.
+                field = ""; fieldLength = 0; quoted = true
+            } else { field.append(c); fieldLength += 1 }
             if rows.count > 20001 || row.count > 100 || fieldLength > 100000 { throw StatementError.tooLarge }
         }
         guard !quoted else { throw StatementError.invalidCSV }
@@ -132,18 +136,42 @@ nonisolated enum ImportDateFormat: String, CaseIterable, Sendable {
         let parts = UTCDay.calendar.dateComponents([.year, .month, .day], from: now)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
-    /// The first format that reads every date, trying `preferred` first, then ISO, then day or month first
-    /// in the order this Mac's region writes them.
-    static func detect(_ values: [String], preferred: [ImportDateFormat] = []) -> ImportDateFormat? {
-        let samples = values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// The end of today where it's latest (UTC+14), as a UTC day: a date written anywhere today is before it,
+    /// even when it's already tomorrow in UTC.
+    static func endOfToday(_ now: Date = Date()) -> Date { UTCDay.start(of: now.addingTimeInterval(14 * 3600)).addingTimeInterval(86400) }
+    /// The format that reads every date. A known bank's `preferred` format wins outright. When day and month could be
+    /// either way round, the reading whose dates are in order and span the shortest time wins; if that can't tell
+    /// (one row, or both equally plausible), `unconfirmed` is the first date the readings disagree on, to ask about.
+    /// Ties go to ISO, then to day or month first in the order this Mac's region writes them.
+    static func detection(_ values: [String], preferred: [ImportDateFormat] = []) -> (format: ImportDateFormat, unconfirmed: String?)? {
+        let samples = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         guard !samples.isEmpty else { return nil }
-        var order = preferred + [.iso, .dayFirst, .monthFirst, .dayFirstDash, .dayFirstDot]
+        if let known = preferred.first(where: { format in samples.allSatisfy { (try? format.date($0)) != nil } }) { return (known, nil) }
+        var order: [ImportDateFormat] = [.iso, .dayFirst, .monthFirst, .dayFirstDash, .dayFirstDot]
         let pattern = DateFormatter.dateFormat(fromTemplate: "yMd", options: 0, locale: .current) ?? ""
-        if let month = pattern.firstIndex(of: "M"), let day = pattern.firstIndex(of: "d"), month < day {
-            order = preferred + [.iso, .monthFirst, .dayFirst, .dayFirstDash, .dayFirstDot]
+        if let month = pattern.firstIndex(of: "M"), let day = pattern.firstIndex(of: "d"), month < day { order = [.iso, .monthFirst, .dayFirst, .dayFirstDash, .dayFirstDot] }
+        var readings: [(format: ImportDateFormat, dates: [Date], ordered: Bool, span: TimeInterval)] = []
+        for format in order {
+            var dates: [Date] = []
+            for sample in samples { guard let date = try? format.date(sample) else { break }; dates.append(date) }
+            guard dates.count == samples.count, let first = dates.min(), let last = dates.max() else { continue }
+            let pairs = zip(dates, dates.dropFirst())
+            readings.append((format, dates, pairs.allSatisfy { $0 <= $1 } || pairs.allSatisfy { $0 >= $1 }, last.timeIntervalSince(first)))
         }
-        return order.first { format in samples.allSatisfy { (try? format.date($0)) != nil } }
+        guard let first = readings.first else { return nil }
+        guard readings.count > 1 else { return (first.format, nil) }
+        // A statement lists its rows in date order and covers a short time.
+        let ranked = readings.enumerated().sorted { a, b in
+            if a.element.ordered != b.element.ordered { return a.element.ordered }
+            if a.element.span != b.element.span { return a.element.span < b.element.span }
+            return a.offset < b.offset
+        }.map(\.element)
+        let best = ranked[0], other = ranked[1]
+        guard let differ = best.dates.indices.first(where: { best.dates[$0] != other.dates[$0] }) else { return (best.format, nil) }
+        let decided = best.ordered && (!other.ordered || best.span < other.span)
+        return (best.format, decided ? nil : samples[differ])
     }
+    static func detect(_ values: [String], preferred: [ImportDateFormat] = []) -> ImportDateFormat? { detection(values, preferred: preferred)?.format }
 }
 nonisolated enum ImportNumberFormat: String, CaseIterable, Sendable {
     case point = "1,234.56", comma = "1.234,56"
@@ -182,6 +210,35 @@ nonisolated enum ImportNumberFormat: String, CaseIterable, Sendable {
         let normalized = (negative ? "-" : "") + whole.replacingOccurrences(of: String(grouping), with: "") + (parts.count == 2 ? "." + parts[1] : "")
         do { return try MoneyInput.parseExact(normalized) }
         catch { throw ImportFailure("Enter an exact number, without a currency symbol or formula.") }
+    }
+    /// The format a file's amounts are written in, found as dates are. An amount only one format reads (`12,50`,
+    /// `1.234,56` or `12.50`) decides; a semicolon delimiter, used where the comma is the decimal mark, means commas;
+    /// then other columns' numbers (a balance, a rate) decide. An amount both read differently (`1.234`) with none of
+    /// that to go on is returned as `unconfirmed`, to ask about. `others` is only read when it's needed.
+    static func detection(_ values: [String], others: () -> [String], delimiter: Character) -> (format: ImportNumberFormat, unconfirmed: String?) {
+        func tally(_ cells: [String]) -> (point: Int, comma: Int, either: String?) {
+            var point = 0, comma = 0, either: String?
+            for cell in cells {
+                let text = cell.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Only a number with a separator can tell the formats apart.
+                guard text.contains(where: { $0 == "." || $0 == "," }), text.allSatisfy({ $0.isNumber || ".,+-()' ’\u{00A0}\u{202F}\u{2212}".contains($0) }) else { continue }
+                let asPoint = try? ImportNumberFormat.point.decimal(text), asComma = try? ImportNumberFormat.comma.decimal(text)
+                switch (asPoint, asComma) {
+                case (_?, nil): point += 1
+                case (nil, _?): comma += 1
+                case let (a?, b?) where a != b: if either == nil { either = text }
+                default: break
+                }
+            }
+            return (point, comma, either)
+        }
+        let own = tally(values)
+        if own.point != own.comma { return (own.point > own.comma ? .point : .comma, nil) }
+        if delimiter == ";" { return (.comma, nil) }
+        guard let example = own.either else { return (.point, nil) }
+        let file = tally(others())
+        if (file.point > 0) != (file.comma > 0) { return (file.point > 0 ? .point : .comma, nil) }
+        return (.point, example)
     }
 }
 nonisolated struct ImportFailure: LocalizedError, Sendable {
@@ -258,6 +315,12 @@ nonisolated struct ImportSourceDraft: Identifiable, Sendable {
     var mapping: [ImportColumn: Int] = [:]
     var dateFormat: ImportDateFormat = .iso
     var numberFormat: ImportNumberFormat = .point
+    /// A date the detected format may have misread (`03/04/2025`), until a format is chosen; saving waits for it.
+    var unconfirmedDate: String?
+    /// An amount the detected number format may have misread (`1.234`), until a format is chosen.
+    var unconfirmedNumber: String?
+    /// Card exports list purchases as positive amounts and payments as negative.
+    var positiveIsOutflow = false
     var account = ImportAccount()
     var balance = ""
     var balanceDate = ImportDateFormat.today()
@@ -267,6 +330,8 @@ nonisolated struct ImportSourceDraft: Identifiable, Sendable {
     var digest: Data { VaultCrypto.sha256(bytes) }
     /// Typed in by hand rather than read from a file.
     var isManual: Bool { grid.isEmpty }
+    /// Amounts in one signed column, with no type column to say which way they go.
+    var hasSignedAmount: Bool { mapping[.amount] != nil && mapping[.type] == nil }
     var headers: [String] {
         guard let first = grid.first else { return [] }
         return first.indices.map { hasHeader ? first[$0] : "Column \($0 + 1)" }
@@ -286,6 +351,12 @@ nonisolated struct ImportBatchDraft: Identifiable, Sendable {
                   rows.filter({ $0.sourceID == source.id }).count <= 20000 else { throw StatementError.tooLarge }
         }
     }
+    /// Settles every row a review flagged as a possible duplicate at once: each kept as a separate payment, or skipped.
+    mutating func settleDuplicates(_ review: ImportEvaluation, keep: Bool) {
+        for index in rows.indices where review.states[rows[index].id] == .possibleDuplicate {
+            if keep { rows[index].duplicateApproved = true } else { rows[index].included = false }
+        }
+    }
 }
 nonisolated enum ImportParser {
     /// Every input is sniffed for its encoding and delimiter.
@@ -293,7 +364,8 @@ nonisolated enum ImportParser {
         guard bytes.count <= VaultLimits.maxBatchBytes else { throw StatementError.tooLarge }
         let text = try decode(bytes)
         let clean = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
-        let grid = try CSVReader.parse(clean, delimiter: delimiter(clean))
+        let separator = delimiter(clean)
+        let grid = try CSVReader.parse(clean, delimiter: separator)
         guard let first = grid.first, !first.isEmpty else { throw ImportFailure("This file has no rows.") }
         var source = ImportSourceDraft(filename: filename, bytes: bytes, grid: grid)
         source.hasHeader = looksLikeHeader(guessMapping(first, mode: mode))
@@ -307,7 +379,18 @@ nonisolated enum ImportParser {
             let monzo = isMonzoExport(first), wise = first.contains { $0.trimmingCharacters(in: .whitespaces).lowercased() == "transferwise id" }
             if monzo { source.account.name = "Monzo" } else if wise { source.account.name = "Wise" }
             let dates = data.map { column < $0.count ? $0[column] : "" }
-            source.dateFormat = ImportDateFormat.detect(dates, preferred: monzo ? [.dayFirst] : wise ? [.dayFirstDash, .dayFirst] : []) ?? (monzo || wise ? .dayFirst : .iso)
+            let detected = ImportDateFormat.detection(dates, preferred: monzo ? [.dayFirst] : wise ? [.dayFirstDash, .dayFirst] : [])
+            source.dateFormat = detected?.format ?? (monzo || wise ? .dayFirst : .iso)
+            source.unconfirmedDate = detected?.unconfirmed
+        }
+        let amounts = [ImportColumn.amount, .debit, .credit, .balance, .quantity].compactMap { source.mapping[$0] }
+        let numbers = ImportNumberFormat.detection(data.flatMap { cells in amounts.compactMap { $0 < cells.count ? cells[$0] : nil } },
+                                                   others: { data.prefix(500).flatMap { cells in cells.indices.filter { !amounts.contains($0) }.map { cells[$0] } } },
+                                                   delimiter: separator)
+        source.numberFormat = numbers.format; source.unconfirmedNumber = numbers.unconfirmed
+        // A card export whose amount column is headed "Charges", or American Express's (with its Card Member column).
+        if mode == .statements, source.hasHeader, source.hasSignedAmount, let amount = source.mapping[.amount] {
+            source.positiveIsOutflow = isChargeHeader(first[amount]) || first.contains { columnKey($0) == "cardmember" }
         }
         // A new account for this file starts in the file's own currency.
         if mode == .statements, let column = source.mapping[.currency] {
@@ -382,17 +465,24 @@ nonisolated enum ImportParser {
               !text.contains("\0") else { throw StatementError.invalidCSV }
         return text
     }
-    /// Whichever of comma, semicolon (common in Europe) or tab the first line uses most, outside quotes.
+    /// Whichever of comma, semicolon (common in Europe) or tab the first line uses most, outside quotes. As in `CSVReader`,
+    /// only a quote at a field's start opens a quoted field, so a stray `12"` doesn't swallow the line.
     static func delimiter(_ text: String) -> Character {
-        var counts: [Character: Int] = [:], quoted = false, started = false
-        for c in text {
-            if c == "\"" { quoted.toggle() }
-            else if !quoted && (c == "\n" || c == "\r" || c == "\r\n") { if started { break } else { continue } }
-            else if !quoted { counts[c, default: 0] += 1 }
-            started = true
-        }
         // Tab first, so pasted cells that also contain commas still split on tabs; `max(by:)` keeps the first of a tie.
         let candidates: [Character] = ["\t", ";", ","]
+        var counts: [Character: Int] = [:], quoted = false, started = false, fieldStart = true, closed = false
+        for c in text {
+            if quoted {
+                if c == "\"" { quoted = false; closed = true }
+                continue
+            }
+            // A quote right after a closing one is an escaped quote inside the field.
+            if c == "\"" && (fieldStart || closed) { quoted = true; closed = false; fieldStart = false; started = true; continue }
+            closed = false
+            if c == "\n" || c == "\r" || c == "\r\n" { if started { break } else { continue } }
+            started = true
+            if candidates.contains(c) { counts[c, default: 0] += 1; fieldStart = true } else if c != " " { fieldStart = false }
+        }
         guard let best = candidates.max(by: { counts[$0, default: 0] < counts[$1, default: 0] }), counts[best, default: 0] > 0 else { return "," }
         return best
     }
@@ -417,6 +507,15 @@ nonisolated enum ImportParser {
     static func isMonzoExport(_ header: [String]) -> Bool {
         Set(["transaction id", "emoji", "local amount"]).isSubset(of: Set(header.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }))
     }
+    /// Monzo and Wise exports, whose money out is known to be negative.
+    static func signsKnown(_ grid: [[String]]) -> Bool {
+        guard let header = grid.first else { return false }
+        return isMonzoSearch(grid) || isMonzoExport(header) || isWiseHistory(header) || header.contains { columnKey($0) == "transferwiseid" }
+    }
+    /// A column name as matched: lowercase letters and digits only, so "Money Out" and "money_out" agree.
+    static func columnKey(_ name: String) -> String { name.lowercased().filter { $0.isLetter || $0.isNumber } }
+    /// A card export's purchases column.
+    static func isChargeHeader(_ name: String) -> Bool { ["charge", "charges", "chargeamount", "amountcharged"].contains(columnKey(name)) }
     /// Two known column names, one of them a date or a value, make a header. One alone ("Deposit") can be data.
     static func looksLikeHeader(_ mapping: [ImportColumn: Int]) -> Bool {
         mapping.count >= 2 && mapping.keys.contains { [.date, .amount, .debit, .credit, .balance, .quantity].contains($0) }
@@ -424,8 +523,8 @@ nonisolated enum ImportParser {
     static func guessMapping(_ header: [String], mode: ImportMode) -> [ImportColumn: Int] {
         let aliases: [ImportColumn: [String]] = [
             .date: ["date", "observedon", "observedat", "transactiondate", "created"], .description: ["description", "name", "memo", "narrative", "title"],
-            .amount: ["amount", "transactionamount"], .debit: ["debit", "moneyout", "withdrawal", "withdrawals"],
-            .credit: ["credit", "moneyin", "deposit", "deposits"], .currency: ["currency", "currencycode"],
+            .amount: ["amount", "transactionamount"], .debit: ["debit", "debits", "moneyout", "withdrawal", "withdrawals"],
+            .credit: ["credit", "credits", "moneyin", "deposit", "deposits"], .currency: ["currency", "currencycode"],
             .transactionID: ["transactionid", "transferwiseid", "id"], .type: ["type", "kind"],
             .account: ["account", "accountname"], .balance: ["balance", "closingbalance", "currentbalance"],
             .portfolio: ["portfolio", "portfolioname"], .coin: ["coin", "coinid", "coingeckoid", "asset", "symbol", "ticker", "metal"],
@@ -433,8 +532,12 @@ nonisolated enum ImportParser {
         ]
         var result: [ImportColumn: Int] = [:]
         for (index, name) in header.enumerated() {
-            let normalized = name.lowercased().filter { $0.isLetter || $0.isNumber }
+            let normalized = columnKey(name)
             for column in mode.columns where aliases[column]?.contains(normalized) == true && result[column] == nil { result[column] = index }
+        }
+        // A card export's "Charges": beside a Credits column it's Money out; alone it's the amount. A real Amount column wins.
+        if mode == .statements, result[.amount] == nil, let charges = header.firstIndex(where: { isChargeHeader($0) }) {
+            if result[.credit] == nil { result[.amount] = charges } else if result[.debit] == nil { result[.debit] = charges }
         }
         return result
     }
@@ -482,7 +585,7 @@ nonisolated enum ImportParser {
             case .statements:
                 let rawType = field(.type).lowercased()
                 var input = StatementInput(date: field(.date), label: field(.description), amount: field(.amount), debit: field(.debit), credit: field(.credit), currency: field(.currency).isEmpty ? source.account.currency : field(.currency), transactionID: field(.transactionID), originalType: rawType)
-                signed = (try? ImportBatchProcessor.movement(input, format: source.numberFormat))?.signed
+                signed = (try? ImportBatchProcessor.movement(input, format: source.numberFormat, positiveOut: source.positiveIsOutflow))?.signed
                 let inferred: EntryKind = signed.map { $0 < 0 ? .expense : .income } ?? .expense
                 let category = cell(categoryIndex)
                 let isTransfer = category == "transfers" || cell(monzoType) == "pot transfer"
@@ -704,9 +807,14 @@ nonisolated enum ImportCoins {
     }
 }
 nonisolated enum ImportRowState: Sendable, Equatable {
-    case ready(String), duplicate, needsReview(String), error(String), excluded
+    case ready(String), duplicate, possibleDuplicate, error(String), excluded
     var text: String {
-        switch self { case .ready(let s), .needsReview(let s), .error(let s): s; case .duplicate: "Already saved · skipped"; case .excluded: "Excluded" }
+        switch self {
+        case .ready(let s), .error(let s): s
+        case .duplicate: "Already saved · skipped"
+        case .possibleDuplicate: "Same day, description and amount as another transaction. Keep it as a separate payment or skip it."
+        case .excluded: "Excluded"
+        }
     }
     func displayText(privacy: Bool) -> String {
         if privacy, case .ready(let description) = self, description.contains(" → ") {
@@ -714,7 +822,7 @@ nonisolated enum ImportRowState: Sendable, Equatable {
         }
         return text
     }
-    var blocksSave: Bool { switch self { case .error, .needsReview: true; default: false } }
+    var blocksSave: Bool { switch self { case .error, .possibleDuplicate: true; default: false } }
 }
 nonisolated struct ImportEvaluation: Sendable {
     /// Earliest day whose derived balances changed, so saved history is rebuilt from there.
@@ -725,14 +833,23 @@ nonisolated struct ImportEvaluation: Sendable {
     var sourceErrors: [UUID: String] = [:]
     /// Statement files with no account chosen yet; their rows wait until one is.
     var needsAccount = Set<UUID>()
+    /// Files whose date or number format two readings fit; nothing is saved until one is chosen.
+    var needsFormat = Set<UUID>()
+    /// Files imported without keeping their original, because the archive of originals is full.
+    var unarchivedFiles = 0
     var globalError: String?
     var added = 0
     var document: VaultDocument?
     var hasErrors: Bool { globalError != nil || !sourceErrors.isEmpty || states.values.contains(where: \.blocksSave) }
     var duplicates: Int { states.values.filter { $0 == .duplicate }.count }
+    var possibleDuplicates: Int { states.values.filter { $0 == .possibleDuplicate }.count }
     var readyRows: Int { states.values.filter { if case .ready = $0 { return true }; return false }.count }
 }
 nonisolated enum ImportBatchProcessor {
+    /// Bytes of original statement files kept in the vault. The vault writes them base64-encoded twice (in the document,
+    /// then in its encrypted envelope), so 40 MiB of originals take about 71 of its 128 MiB. Past this, a file is
+    /// remembered by its hash alone and its transactions still import.
+    static let archiveBudget = 40 * 1024 * 1024
     private static func cleanName(_ raw: String) throws -> String {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 100, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw ImportFailure("Enter a name of 1–100 characters.") }
@@ -745,8 +862,9 @@ nonisolated enum ImportBatchProcessor {
     }
     /// A statement row's signed amount and direction. Amount wins over Money in/out, and Money out may be written
     /// negative. An explicit type needs a positive amount, except a transfer, whose sign (`-` out, `+` in) is its direction;
-    /// an unsigned transfer has no known direction, so balance history leaves it out.
-    static func movement(_ input: StatementInput, format: ImportNumberFormat) throws -> (signed: Decimal, outflow: Bool?) {
+    /// an unsigned transfer has no known direction, so balance history leaves it out. `positiveOut` reads an untyped
+    /// amount as card exports write it: purchases positive, payments and refunds negative.
+    static func movement(_ input: StatementInput, format: ImportNumberFormat, positiveOut: Bool = false) throws -> (signed: Decimal, outflow: Bool?) {
         if input.amount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !input.debit.isEmpty || !input.credit.isEmpty {
             let debit = try input.debit.isEmpty ? 0 : abs(format.decimal(input.debit))
             let credit = try input.credit.isEmpty ? 0 : format.decimal(input.credit)
@@ -755,7 +873,7 @@ nonisolated enum ImportBatchProcessor {
             return (signed, signed < 0)
         }
         let amount = try format.decimal(input.amount)
-        guard !input.originalType.isEmpty else { return (amount, amount < 0) }
+        guard !input.originalType.isEmpty else { let signed = positiveOut ? -amount : amount; return (signed, signed < 0) }
         guard let type = EntryKind(rawValue: input.originalType), amount >= 0 || type == .transfer else {
             throw ImportFailure("Use income, expense, refund or transfer as the type, with a positive amount. Only a transfer can be negative, for money out.")
         }
@@ -766,259 +884,347 @@ nonisolated enum ImportBatchProcessor {
         }
     }
     static func evaluate(_ batch: ImportBatchDraft, document: VaultDocument, now: Date = Date(), catalog: [CatalogCoin] = []) -> ImportEvaluation {
-        var result = ImportEvaluation(), next = document
-        var touchedAccounts = Set<UUID>()
+        var result = ImportEvaluation()
         do { try batch.checkLimits(); try Task.checkCancellation() }
         catch { result.globalError = error.localizedDescription; return result }
         guard !batch.rows.isEmpty else { result.globalError = "Add at least one row."; return result }
-        var createdAccounts: [String: UUID] = [:], createdPortfolios: [String: UUID] = [:]
-        var sourceAccounts: [UUID: UUID] = [:], importedSources = Set<UUID>(), duplicateSources = Set<UUID>()
-        let coins = ImportCoins.available(document: document, catalog: catalog)
-        var seenReferences = Dictionary(document.entries.compactMap { entry in entry.sourceRef.map { ($0, entry) } }, uniquingKeysWith: { first, _ in first })
-        // Saved entries by reference, so re-imported rows find theirs without a scan.
-        let savedIndex = Dictionary(document.entries.indices.compactMap { index in document.entries[index].sourceRef.map { ($0, index) } }, uniquingKeysWith: { first, _ in first })
-        var fingerprints = Set(document.entries.compactMap { entry -> String? in
-            guard let fingerprint = entry.importFingerprint, let ref = entry.sourceRef, let account = ref.split(separator: ":").first else { return nil }
-            return String(account) + ":" + fingerprint
-        })
-        var balanceKeys = Set<String>(), holdingKeys = Set<String>()
-        // Hashing a file is costly; do it once per file, not once per row.
-        var digests: [UUID: Data] = [:]
-        func digest(_ source: ImportSourceDraft) -> Data {
-            if let known = digests[source.id] { return known }
-            let value = source.digest; digests[source.id] = value
-            return value
-        }
-        func resolveAccount(_ input: ImportAccount, in doc: inout VaultDocument) throws -> UUID {
-            let currency = try MoneyInput.normalizeCurrency(input.currency)
-            if let id = input.existingID {
-                guard let account = doc.accounts.first(where: { $0.id == id }), account.currency == currency else { throw ImportFailure("Choose an existing account with this currency.") }
-                return id
-            }
-            let name = try cleanName(input.name), key = name.lowercased() + ":" + currency
-            if let id = createdAccounts[key] {
-                guard doc.accounts.first(where: { $0.id == id })?.ownerBusinessID == input.ownerBusinessID else { throw ImportFailure("Rows in one account must have the same owner.") }
-                return id
-            }
-            guard !document.accounts.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.currency == currency }) else { throw ImportFailure("You already have an account with this name and currency. Choose it instead.") }
-            if let owner = input.ownerBusinessID, !(doc.businessAccounting ?? []).contains(where: { $0.id == owner }) { throw ImportFailure("Choose a company with ownership history.") }
-            let account = Account(name: name, currency: currency, ownerBusinessID: input.ownerBusinessID); doc.accounts.append(account)
-            doc.track(.banks); createdAccounts[key] = account.id
-            return account.id
-        }
-        func recordBalance(accountID: UUID, amount: Decimal, date inputDate: Date, in doc: inout VaultDocument) throws -> Bool {
-            let date = UTCDay.isSameDay(inputDate, now) ? now : inputDate
-            guard date <= now.addingTimeInterval(300) else { throw ImportFailure("The observation date cannot be in the future.") }
-            let key = accountID.uuidString + ":" + String(date.timeIntervalSince1970)
-            let existing = doc.bankBalances.filter { $0.accountID == accountID && $0.observedAt == date }
-            if existing.contains(where: { $0.amount.value != amount }) { throw ImportFailure("A different balance exists at this time. Correct the date or amount.") }
-            if !existing.isEmpty || balanceKeys.contains(key) { return false }
-            guard let account = doc.accounts.first(where: { $0.id == accountID }) else { throw ImportFailure("Choose an account.") }
-            if !doc.bankTracking.contains(where: { $0.accountID == accountID }) && !doc.trackedBankAccountIDs.contains(accountID) { doc.setBankTracked(accountID, tracked: true, at: date) }
-            doc.bankBalances.append(BankBalanceObservation(id: UUID(), accountID: accountID, amount: PreciseDecimal(amount), currency: account.currency, observedAt: date, source: "Import", sourceIdentity: accountID.uuidString))
-            // A balance older than the account's first tracked day moves that start back.
-            doc.backdateBankTracking(accountID, to: date)
-            balanceKeys.insert(key); doc.track(.banks)
-            touchedAccounts.insert(accountID)
-            return true
-        }
+        var pass = Pass(batch: batch, document: document, now: now, coins: ImportCoins.available(document: document, catalog: catalog))
+        pass.checkFormats()
         for row in batch.rows {
-            if Task.isCancelled { result.globalError = "Import cancelled."; return result }
-            guard row.included else { result.states[row.id] = .excluded; continue }
-            guard let source = batch.sources.first(where: { $0.id == row.sourceID }) else { result.states[row.id] = .error("The source file is missing."); continue }
-            // Typed-in values read a lone comma or point as a decimal where it can't separate thousands.
-            let typed = source.isManual
+            if Task.isCancelled { pass.result.globalError = "Import cancelled."; return pass.result }
+            guard row.included else { pass.result.states[row.id] = .excluded; continue }
+            guard let source = batch.sources.first(where: { $0.id == row.sourceID }) else { pass.result.states[row.id] = .error("The source file is missing."); continue }
             do {
                 if let error = row.parseError { throw ImportFailure(error) }
                 switch row.content {
-                case .statement(let input):
-                    let fileDigest = digest(source)
-                    if document.importedStatements.contains(where: { $0.digest == fileDigest && $0.accountID == nil }) { result.states[row.id] = .duplicate; continue }
-                    guard batch.mode == .statements else { throw ImportFailure("The row does not match this import type.") }
-                    let accountID: UUID
-                    if let id = sourceAccounts[source.id] { accountID = id }
-                    else {
-                        // The account is a question about the file, asked once rather than on every row.
-                        guard source.account.existingID != nil || !source.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                            result.sourceErrors[source.id] = "Choose an account for " + source.filename + "."; result.needsAccount.insert(source.id); continue
-                        }
-                        // One currency's part of a split file belongs in an account of that currency.
-                        if let code = source.splitCurrency, source.account.currency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != code {
-                            result.sourceErrors[source.id] = "Choose an account in " + code + " for " + source.filename + "."; continue
-                        }
-                        do { accountID = try resolveAccount(source.account, in: &next) }
-                        catch { result.sourceErrors[source.id] = error.localizedDescription; continue }
-                        sourceAccounts[source.id] = accountID
-                        let duplicate = document.importedStatements.contains { $0.digest == fileDigest && ($0.accountID == nil || $0.accountID == accountID) }
-                            || batch.sources.contains { other in importedSources.contains(other.id) && sourceAccounts[other.id] == accountID && digest(other) == fileDigest }
-                        if duplicate { duplicateSources.insert(source.id) }
-                    }
-                    let date = try source.dateFormat.date(input.date)
-                    if duplicateSources.contains(source.id) {
-                        // The file was imported before its rows kept a day. Teach the saved rows now and move on.
-                        let external = input.transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let outflow = (try? movement(input, format: source.numberFormat))?.outflow
-                        if !external.isEmpty, let index = savedIndex[accountID.uuidString + ":" + external],
-                           next.entries[index].day == nil || (next.entries[index].outflow == nil && outflow != nil) {
-                            next.entries[index].day = ImportDateFormat.today(date)
-                            if next.entries[index].outflow == nil { next.entries[index].outflow = outflow }
-                            touchedAccounts.insert(accountID); result.learnedDays += 1
-                        }
-                        result.states[row.id] = .duplicate; continue
-                    }
-                    guard date <= now else { throw ImportFailure("The transaction date cannot be in the future.") }
-                    let currency = try MoneyInput.normalizeCurrency(input.currency)
-                    let label = input.label.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !label.isEmpty, label.count <= 500 else { throw ImportFailure("Enter a description of 1–500 characters.") }
-                    let (signed, outflow) = try movement(input, format: source.numberFormat)
-                    guard signed != 0 else { throw ImportFailure("This transaction has no amount. Correct it or exclude the row.") }
-                    let components = UTCDay.calendar.dateComponents([.year, .month], from: date)
-                    guard let month = MonthKey(String(format: "%04d-%02d", components.year!, components.month!)), month.year >= 1900 else { throw ImportFailure("Use a transaction date from 1900 onwards.") }
-                    let fingerprint = fingerprint(date: date, label: label, signedAmount: signed, currency: currency)
-                    let external = input.transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard external.count <= 200, !external.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw ImportFailure("Check the transaction ID.") }
-                    let reference = accountID.uuidString + ":" + (external.isEmpty ? "import-row/" + row.id.uuidString : external)
-                    if let existing = seenReferences[reference] {
-                        let same = existing.importFingerprint.map { $0 == fingerprint } ?? (existing.month == month.description && existing.amount == abs(signed) && existing.currency == currency && existing.label == label)
-                        guard same else { throw ImportFailure("This transaction ID has different saved details. Correct it or exclude the row.") }
-                        // Re-importing an older statement teaches existing rows their day and direction.
-                        if let index = savedIndex[reference], next.entries[index].day == nil || (next.entries[index].outflow == nil && outflow != nil) {
-                            next.entries[index].day = ImportDateFormat.today(date)
-                            if next.entries[index].outflow == nil { next.entries[index].outflow = outflow }
-                            touchedAccounts.insert(accountID)
-                        }
-                        result.states[row.id] = .duplicate; continue
-                    }
-                    let fingerprintKey = accountID.uuidString + ":" + fingerprint
-                    if external.isEmpty && fingerprints.contains(fingerprintKey) && !row.duplicateApproved {
-                        result.states[row.id] = .needsReview("Looks like another transaction. Confirm it is a separate payment or exclude it."); continue
-                    }
-                    // The sign decides income or expense now, so a corrected amount or number format is never stale.
-                    // A type from the file or the user, or a Monzo refund or transfer, stays.
-                    var kind = input.kind
-                    if !input.kindIsUserEdited && input.originalType.isEmpty && (kind == .income || kind == .expense) { kind = signed < 0 ? .expense : .income }
-                    var entry = Entry(month: month, kind: kind, amount: abs(signed), currency: currency, label: label, source: .csv, sourceRef: reference)
-                    // An account set to Personal ("") keeps its rows personal.
-                    if let account = next.accounts.first(where: { $0.id == accountID }), AssetOwnership.businessID(for: account, in: next) != nil { entry.bucket = .otherBusiness }
-                    if !input.kindIsUserEdited && input.originalType.isEmpty { entry.kind = OwnerPayments.classify(entry.kind, label: label, month: month.description, document: next) }
-                    entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
-                    entry.importFingerprint = fingerprint
-                    entry.day = ImportDateFormat.today(date); entry.outflow = outflow
-                    touchedAccounts.insert(accountID)
-                    next.entries.append(entry); next.track(.cashFlow)
-                    seenReferences[reference] = entry; fingerprints.insert(fingerprintKey)
-                    importedSources.insert(source.id); result.states[row.id] = .ready("New transaction"); result.added += 1
-                case .bankBalance(let input):
-                    guard batch.mode == .bankBalances else { throw ImportFailure("The row does not match this import type.") }
-                    let accountID = try resolveAccount(input.account, in: &next)
-                    let amount = try source.numberFormat.decimal(input.balance, typed: typed), date = try source.dateFormat.date(input.date)
-                    // "Update all balances" fills in every account; one left as it was is not a new observation.
-                    if typed, batch.rows.count > 1, UTCDay.isSameDay(date, now),
-                       next.bankBalances.filter({ $0.accountID == accountID }).max(by: { $0.observedAt < $1.observedAt })?.amount.value == amount {
-                        result.states[row.id] = .duplicate; continue
-                    }
-                    let added = try recordBalance(accountID: accountID, amount: amount, date: date, in: &next)
-                    result.states[row.id] = added ? .ready("Record dated balance") : .duplicate
-                    if added { result.added += 1 }
-                case .holding(let input):
-                    guard batch.mode.isHolding else { throw ImportFailure("The row does not match this import type.") }
-                    let coin: CatalogCoin
-                    let quantity: Decimal
-                    if batch.mode == .metals {
-                        let metal = try PreciousMetal.resolve(input.coin)
-                        coin = CatalogCoin(id: metal.assetID.rawValue, symbol: metal.rawValue, name: metal.name)
-                        quantity = try MetalWeightUnit.resolve(input.unit).grams(source.numberFormat.decimal(input.quantity, typed: typed))
-                    } else {
-                        coin = try ImportCoins.resolve(input, coins: coins)
-                        guard !coin.id.hasPrefix("metal-") else { throw ImportFailure("Add gold and other metals under Metals.") }
-                        quantity = try source.numberFormat.decimal(input.quantity, typed: typed)
-                    }
-                    guard MoneyInput.isFinite(quantity), quantity >= 0 else { throw ImportFailure("Enter zero or a positive quantity.") }
-                    // The app writes this date itself, so it is always ISO. Today means now, as for balances,
-                    // so an edit made earlier today can't outrank this one.
-                    let day = try ImportDateFormat.iso.date(input.date)
-                    let date = UTCDay.isSameDay(day, now) ? now : day
-                    guard date <= now else { throw ImportFailure("Choose today or an earlier date.") }
-                    var cost: (paid: Decimal, currency: String)?
-                    let paidText = input.paid.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !paidText.isEmpty {
-                        let paid = try source.numberFormat.decimal(paidText, typed: typed)
-                        guard MoneyInput.isFinite(paid), paid >= 0 else { throw ImportFailure("Enter zero or a positive amount paid.") }
-                        let currency = try MoneyInput.normalizeCurrency(input.paidCurrency)
-                        cost = (paid, currency)
-                    }
-                    let portfolioID: UUID
-                    if let id = input.portfolioID {
-                        guard let portfolio = next.portfolio(id: id), portfolio.isActive(at: now), portfolio.kind == batch.mode.kind else { throw ImportFailure("Choose an active portfolio for this asset type.") }
-                        portfolioID = id
-                    } else {
-                        let name = try cleanName(input.portfolioName), key = name.lowercased()
-                        if let owner = input.ownerBusinessID, !(next.businessAccounting ?? []).contains(where: { $0.id == owner }) {
-                            throw ImportFailure("Choose a company with ownership history.")
-                        }
-                        if let id = createdPortfolios[key] {
-                            guard next.portfolio(id: id)?.ownerBusinessID == input.ownerBusinessID else { throw ImportFailure("Rows in one portfolio must have the same owner.") }
-                            portfolioID = id
-                        }
-                        else {
-                            // Unique within an owner: a personal "Crypto" and a company's "Crypto" are different portfolios.
-                            let owner = input.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
-                            guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { throw ImportFailure("This portfolio exists. Choose it from your portfolios.") }
-                            let portfolio = Portfolio(name: name, createdAt: now, kind: batch.mode.kind, ownerBusinessID: input.ownerBusinessID); next.portfolios.append(portfolio)
-                            portfolioID = portfolio.id; createdPortfolios[key] = portfolio.id
-                        }
-                    }
-                    let key = portfolioID.uuidString + ":" + coin.id
-                    guard holdingKeys.insert(key).inserted else { throw ImportFailure("This coin appears twice in the same portfolio. Keep one total quantity.") }
-                    let existing = next.holdings.first { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id && $0.archivedAt == nil }
-                    let previous = existing.flatMap { next.effectiveQuantity(holdingID: $0.id, at: now) }
-                    // The same total on the chosen date is nothing new, unless a cost is being recorded for the first time that day.
-                    let onDate = existing.flatMap { next.effectiveQuantity(holdingID: $0.id, at: date) }
-                    let sameDayLot = existing.flatMap { holding in next.purchases?.firstIndex { $0.holdingID == holding.id && UTCDay.isSameDay($0.at, date) } }
-                    if onDate == quantity, cost == nil || sameDayLot.map({ next.purchases?[$0].paid.value == cost?.paid && next.purchases?[$0].currency == cost?.currency }) == true {
-                        result.states[row.id] = .duplicate; continue
-                    }
-                    next = try HoldingMutations.addHolding(portfolioID: portfolioID, assetID: CanonicalAssetID(coin.id), assetName: coin.name, quantity: quantity, at: date, document: next)
-                    next.track(batch.mode.kind)
-                    if let cost, let holdingID = (existing ?? next.holdings.last { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id })?.id {
-                        // The lot covers the increase on that date. Restating a total without an increase records the cost of the
-                        // whole position, replacing a cost already recorded that day rather than counting it twice.
-                        let before = onDate ?? 0
-                        var lot = PurchaseLot(holdingID: holdingID, quantity: PreciseDecimal(quantity > before ? quantity - before : quantity), paid: PreciseDecimal(cost.paid), currency: cost.currency, at: date)
-                        var purchases = next.purchases ?? []
-                        if quantity <= before, let index = sameDayLot, purchases.indices.contains(index) { lot.id = purchases[index].id; purchases[index] = lot }
-                        else { purchases.append(lot) }
-                        next.purchases = purchases
-                    }
-                    result.states[row.id] = .ready("\(previous.map { NSDecimalNumber(decimal: $0).stringValue } ?? "New") → \(NSDecimalNumber(decimal: quantity).stringValue) \(coin.name)\(batch.mode == .metals ? " · fine grams" : "")")
-                    result.added += 1
+                case .statement(let input): try pass.statement(row, input, from: source)
+                case .bankBalance(let input): try pass.bankBalance(row, input, from: source)
+                case .holding(let input): try pass.holding(row, input, from: source)
                 }
-            } catch { result.states[row.id] = .error((error as? LocalizedError)?.errorDescription ?? "Check the name, currency, date and exact amount.") }
+            } catch { pass.result.states[row.id] = .error((error as? LocalizedError)?.errorDescription ?? "Check the name, currency, date and exact amount.") }
         }
-        if batch.mode == .statements {
+        if batch.mode == .statements { pass.finishStatements() }
+        return pass.finish()
+    }
+    /// One evaluation's working state: the document as it would be saved, and what the batch has created and seen so far.
+    private struct Pass {
+        /// Rows sharing an account and fingerprint: saved before, and met or added per file of this batch.
+        struct Copies {
+            var saved = 0, savedWithoutID = 0
+            var seen: [UUID: Int] = [:], seenWithID: [UUID: Int] = [:], added: [UUID: Int] = [:], addedWithoutID: [UUID: Int] = [:]
+        }
+        let batch: ImportBatchDraft, document: VaultDocument, now: Date, coins: [CatalogCoin]
+        var result = ImportEvaluation(), next: VaultDocument
+        var touchedAccounts = Set<UUID>()
+        var createdAccounts: [String: UUID] = [:], createdPortfolios: [String: UUID] = [:]
+        var sourceAccounts: [UUID: UUID] = [:], importedSources = Set<UUID>(), duplicateSources = Set<UUID>()
+        var seenReferences: [String: Entry]
+        /// Saved entries by reference, so re-imported rows find theirs without a scan.
+        let savedIndex: [String: Int]
+        /// By `<account>:<fingerprint>`.
+        var copies: [String: Copies]
+        var balanceKeys = Set<String>(), holdingKeys = Set<String>()
+        /// Hashing a file is costly; do it once per file, not once per row.
+        let digests: [UUID: Data]
+        init(batch: ImportBatchDraft, document: VaultDocument, now: Date, coins: [CatalogCoin]) {
+            self.batch = batch; self.document = document; self.now = now; self.coins = coins; next = document
+            seenReferences = Dictionary(document.entries.compactMap { entry in entry.sourceRef.map { ($0, entry) } }, uniquingKeysWith: { first, _ in first })
+            savedIndex = Dictionary(document.entries.indices.compactMap { index in document.entries[index].sourceRef.map { ($0, index) } }, uniquingKeysWith: { first, _ in first })
+            var copies: [String: Copies] = [:]
+            for entry in document.entries {
+                guard let fingerprint = entry.importFingerprint, let ref = entry.sourceRef else { continue }
+                let parts = ref.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                let key = String(parts[0]) + ":" + fingerprint
+                copies[key, default: Copies()].saved += 1
+                if parts.count > 1, parts[1].hasPrefix("import-row/") { copies[key, default: Copies()].savedWithoutID += 1 }
+            }
+            self.copies = copies
+            digests = batch.mode == .statements ? Dictionary(batch.sources.map { ($0.id, $0.digest) }, uniquingKeysWith: { first, _ in first }) : [:]
+        }
+        func digest(_ source: ImportSourceDraft) -> Data { digests[source.id] ?? source.digest }
+        /// A date or number format that two readings fit waits for the user's choice, before anything is saved.
+        mutating func checkFormats() {
+            for source in batch.sources where source.unconfirmedDate != nil || source.unconfirmedNumber != nil {
+                guard batch.rows.contains(where: { $0.sourceID == source.id && $0.included }) else { continue }
+                let what = [source.unconfirmedDate.map { _ in "dates" }, source.unconfirmedNumber.map { _ in "amounts" }].compactMap { $0 }.joined(separator: " and ")
+                result.needsFormat.insert(source.id)
+                result.sourceErrors[source.id] = "Choose how " + source.filename + " writes " + what + "."
+            }
+        }
+        mutating func resolveAccount(_ input: ImportAccount) throws -> UUID {
+            let currency = try MoneyInput.normalizeCurrency(input.currency)
+            if let id = input.existingID {
+                guard let account = next.accounts.first(where: { $0.id == id }), account.currency == currency else { throw ImportFailure("Choose an existing account with this currency.") }
+                return id
+            }
+            let name = try ImportBatchProcessor.cleanName(input.name), key = name.lowercased() + ":" + currency
+            if let id = createdAccounts[key] {
+                guard next.accounts.first(where: { $0.id == id })?.ownerBusinessID == input.ownerBusinessID else { throw ImportFailure("Rows in one account must have the same owner.") }
+                return id
+            }
+            guard !document.accounts.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.currency == currency }) else { throw ImportFailure("You already have an account with this name and currency. Choose it instead.") }
+            if let owner = input.ownerBusinessID, !(next.businessAccounting ?? []).contains(where: { $0.id == owner }) { throw ImportFailure("Choose a company with ownership history.") }
+            let account = Account(name: name, currency: currency, ownerBusinessID: input.ownerBusinessID); next.accounts.append(account)
+            next.track(.banks); createdAccounts[key] = account.id
+            return account.id
+        }
+        mutating func recordBalance(accountID: UUID, amount: Decimal, date inputDate: Date) throws -> Bool {
+            // Today, wherever it's already today, is observed now; earlier days keep their date.
+            let date = inputDate >= UTCDay.start(of: now) && inputDate < ImportDateFormat.endOfToday(now) ? now : inputDate
+            guard date <= now.addingTimeInterval(300) else { throw ImportFailure("The observation date cannot be in the future.") }
+            let key = accountID.uuidString + ":" + String(date.timeIntervalSince1970)
+            let existing = next.bankBalances.filter { $0.accountID == accountID && $0.observedAt == date }
+            if existing.contains(where: { $0.amount.value != amount }) { throw ImportFailure("A different balance exists at this time. Correct the date or amount.") }
+            if !existing.isEmpty || balanceKeys.contains(key) { return false }
+            guard let account = next.accounts.first(where: { $0.id == accountID }) else { throw ImportFailure("Choose an account.") }
+            if !next.bankTracking.contains(where: { $0.accountID == accountID }) && !next.trackedBankAccountIDs.contains(accountID) { next.setBankTracked(accountID, tracked: true, at: date) }
+            next.bankBalances.append(BankBalanceObservation(id: UUID(), accountID: accountID, amount: PreciseDecimal(amount), currency: account.currency, observedAt: date, source: "Import", sourceIdentity: accountID.uuidString))
+            // A balance older than the account's first tracked day moves that start back.
+            next.backdateBankTracking(accountID, to: date)
+            balanceKeys.insert(key); next.track(.banks)
+            touchedAccounts.insert(accountID)
+            return true
+        }
+        /// The statement's account, asked about once for the file rather than on every row; nil while it can't be imported.
+        mutating func account(for source: ImportSourceDraft, digest fileDigest: Data) -> UUID? {
+            if let id = sourceAccounts[source.id] { return id }
+            guard source.account.existingID != nil || !source.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                result.sourceErrors[source.id] = "Choose an account for " + source.filename + "."; result.needsAccount.insert(source.id); return nil
+            }
+            // One currency's part of a split file belongs in an account of that currency.
+            if let code = source.splitCurrency, source.account.currency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != code {
+                result.sourceErrors[source.id] = "Choose an account in " + code + " for " + source.filename + "."; return nil
+            }
+            let accountID: UUID
+            do { accountID = try resolveAccount(source.account) }
+            catch { result.sourceErrors[source.id] = error.localizedDescription; return nil }
+            sourceAccounts[source.id] = accountID
+            let imported = importedSources, accounts = sourceAccounts, hashes = self.digests
+            let duplicate = document.importedStatements.contains { $0.digest == fileDigest && ($0.accountID == nil || $0.accountID == accountID) }
+                || batch.sources.contains { other in imported.contains(other.id) && accounts[other.id] == accountID && (hashes[other.id] ?? other.digest) == fileDigest }
+            if duplicate { duplicateSources.insert(source.id) }
+            return accountID
+        }
+        mutating func statement(_ row: ImportDraftRow, _ input: StatementInput, from source: ImportSourceDraft) throws {
+            let fileDigest = digest(source)
+            if document.importedStatements.contains(where: { $0.digest == fileDigest && $0.accountID == nil }) { result.states[row.id] = .duplicate; return }
+            guard batch.mode == .statements else { throw ImportFailure("The row does not match this import type.") }
+            guard let accountID = account(for: source, digest: fileDigest) else { return }
+            let date = try source.dateFormat.date(input.date)
+            let format = source.numberFormat, positiveOut = source.positiveIsOutflow
+            if duplicateSources.contains(source.id) {
+                // The file was imported before its rows kept a day. Teach the saved rows now and move on.
+                let external = input.transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let outflow = (try? ImportBatchProcessor.movement(input, format: format, positiveOut: positiveOut))?.outflow
+                if !external.isEmpty, let index = savedIndex[accountID.uuidString + ":" + external],
+                   next.entries[index].day == nil || (next.entries[index].outflow == nil && outflow != nil) {
+                    next.entries[index].day = ImportDateFormat.today(date)
+                    if next.entries[index].outflow == nil { next.entries[index].outflow = outflow }
+                    touchedAccounts.insert(accountID); result.learnedDays += 1
+                }
+                result.states[row.id] = .duplicate; return
+            }
+            guard date < ImportDateFormat.endOfToday(now) else { throw ImportFailure("The transaction date cannot be in the future.") }
+            let currency = try MoneyInput.normalizeCurrency(input.currency)
+            let label = input.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty, label.count <= 500 else { throw ImportFailure("Enter a description of 1–500 characters.") }
+            let (signed, fileOutflow) = try ImportBatchProcessor.movement(input, format: format, positiveOut: positiveOut)
+            guard signed != 0 else { throw ImportFailure("This transaction has no amount. Correct it or exclude the row.") }
+            let components = UTCDay.calendar.dateComponents([.year, .month], from: date)
+            guard let month = MonthKey(String(format: "%04d-%02d", components.year!, components.month!)), month.year >= 1900 else { throw ImportFailure("Use a transaction date from 1900 onwards.") }
+            // The fingerprint follows the file as written, so reading its signs the other way still finds saved rows.
+            let written = try positiveOut ? ImportBatchProcessor.movement(input, format: format).signed : signed
+            let fingerprint = ImportBatchProcessor.fingerprint(date: date, label: label, signedAmount: written, currency: currency)
+            let external = input.transactionID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard external.count <= 200, !external.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw ImportFailure("Check the transaction ID.") }
+            let reference = accountID.uuidString + ":" + (external.isEmpty ? "import-row/" + row.id.uuidString : external)
+            if let existing = seenReferences[reference] {
+                let same = existing.importFingerprint.map { $0 == fingerprint } ?? (existing.month == month.description && existing.amount == abs(signed) && existing.currency == currency && existing.label == label)
+                guard same else { throw ImportFailure("This transaction ID has different saved details. Correct it or exclude the row.") }
+                // Re-importing an older statement teaches existing rows their day and direction.
+                if let index = savedIndex[reference], next.entries[index].day == nil || (next.entries[index].outflow == nil && fileOutflow != nil) {
+                    next.entries[index].day = ImportDateFormat.today(date)
+                    if next.entries[index].outflow == nil { next.entries[index].outflow = fileOutflow }
+                    touchedAccounts.insert(accountID)
+                }
+                result.states[row.id] = .duplicate; return
+            }
+            let key = accountID.uuidString + ":" + fingerprint
+            if isRepeat(row, key: key, withID: !external.isEmpty, source: source.id) { return }
+            // The sign decides income or expense now, so a corrected amount or number format is never stale.
+            // A type from the file or the user, or a Monzo refund or transfer, stays.
+            var kind = input.kind
+            if !input.kindIsUserEdited && input.originalType.isEmpty && (kind == .income || kind == .expense) { kind = signed < 0 ? .expense : .income }
+            var entry = Entry(month: month, kind: kind, amount: abs(signed), currency: currency, label: label, source: .csv, sourceRef: reference)
+            // An account set to Personal ("") keeps its rows personal.
+            if let account = next.accounts.first(where: { $0.id == accountID }), AssetOwnership.businessID(for: account, in: next) != nil { entry.bucket = .otherBusiness }
+            if !input.kindIsUserEdited && input.originalType.isEmpty { entry.kind = OwnerPayments.classify(entry.kind, label: label, month: month.description, document: next) }
+            entry.kindIsUserEdited = input.kindIsUserEdited || !input.originalType.isEmpty
+            entry.importFingerprint = fingerprint
+            entry.day = ImportDateFormat.today(date)
+            // A type chosen in review also says which way the money went; a transfer keeps the file's direction.
+            entry.outflow = input.kindIsUserEdited && kind != .transfer ? (kind == .expense) : fileOutflow
+            touchedAccounts.insert(accountID)
+            next.entries.append(entry); next.track(.cashFlow)
+            seenReferences[reference] = entry
+            copies[key, default: Copies()].added[source.id, default: 0] += 1
+            if external.isEmpty { copies[key, default: Copies()].addedWithoutID[source.id, default: 0] += 1 }
+            importedSources.insert(source.id); result.states[row.id] = .ready("New transaction"); result.added += 1
+        }
+        /// Whether a row repeats one already saved or added, marking it if so. As many identical rows as are saved, or
+        /// were added from another file in this batch, are those same payments and are skipped; a further copy in the
+        /// file may be a second payment, so it's asked about. A row with an ID only repeats rows saved without one.
+        mutating func isRepeat(_ row: ImportDraftRow, key: String, withID: Bool, source: UUID) -> Bool {
+            var tally = copies[key] ?? Copies()
+            defer { copies[key] = tally }
+            func others(_ counts: [UUID: Int]) -> Int { counts.reduce(0) { $1.key == source ? $0 : $0 + $1.value } }
+            if withID {
+                let copy = tally.seenWithID[source, default: 0]; tally.seenWithID[source] = copy + 1
+                // Saved from an export without IDs: the same payment, now with one.
+                guard copy < tally.savedWithoutID + others(tally.addedWithoutID) else { return false }
+                result.states[row.id] = .duplicate; return true
+            }
+            let copy = tally.seen[source, default: 0]; tally.seen[source] = copy + 1
+            if row.duplicateApproved { return false }
+            if copy < tally.saved + others(tally.added) { result.states[row.id] = .duplicate; return true }
+            if copy > 0 { result.states[row.id] = .possibleDuplicate; return true }
+            return false
+        }
+        mutating func bankBalance(_ row: ImportDraftRow, _ input: BankBalanceInput, from source: ImportSourceDraft) throws {
+            guard batch.mode == .bankBalances else { throw ImportFailure("The row does not match this import type.") }
+            // Typed-in values read a lone comma or point as a decimal where it can't separate thousands.
+            let typed = source.isManual
+            let accountID = try resolveAccount(input.account)
+            let amount = try source.numberFormat.decimal(input.balance, typed: typed), date = try source.dateFormat.date(input.date)
+            // "Update all balances" fills in every account; one left as it was is not a new observation.
+            if typed, batch.rows.count > 1, UTCDay.isSameDay(date, now),
+               next.bankBalances.filter({ $0.accountID == accountID }).max(by: { $0.observedAt < $1.observedAt })?.amount.value == amount {
+                result.states[row.id] = .duplicate; return
+            }
+            let added = try recordBalance(accountID: accountID, amount: amount, date: date)
+            result.states[row.id] = added ? .ready("Record dated balance") : .duplicate
+            if added { result.added += 1 }
+        }
+        mutating func holding(_ row: ImportDraftRow, _ input: HoldingInput, from source: ImportSourceDraft) throws {
+            guard batch.mode.isHolding else { throw ImportFailure("The row does not match this import type.") }
+            let typed = source.isManual
+            let coin: CatalogCoin
+            let quantity: Decimal
+            if batch.mode == .metals {
+                let metal = try PreciousMetal.resolve(input.coin)
+                coin = CatalogCoin(id: metal.assetID.rawValue, symbol: metal.rawValue, name: metal.name)
+                quantity = try MetalWeightUnit.resolve(input.unit).grams(source.numberFormat.decimal(input.quantity, typed: typed))
+            } else {
+                coin = try ImportCoins.resolve(input, coins: coins)
+                guard !coin.id.hasPrefix("metal-") else { throw ImportFailure("Add gold and other metals under Metals.") }
+                quantity = try source.numberFormat.decimal(input.quantity, typed: typed)
+            }
+            guard MoneyInput.isFinite(quantity), quantity >= 0 else { throw ImportFailure("Enter zero or a positive quantity.") }
+            // The app writes this date itself, so it is always ISO. Today means now, as for balances,
+            // so an edit made earlier today can't outrank this one.
+            let day = try ImportDateFormat.iso.date(input.date)
+            let date = UTCDay.isSameDay(day, now) ? now : day
+            guard date <= now else { throw ImportFailure("Choose today or an earlier date.") }
+            var cost: (paid: Decimal, currency: String)?
+            let paidText = input.paid.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !paidText.isEmpty {
+                let paid = try source.numberFormat.decimal(paidText, typed: typed)
+                guard MoneyInput.isFinite(paid), paid >= 0 else { throw ImportFailure("Enter zero or a positive amount paid.") }
+                let currency = try MoneyInput.normalizeCurrency(input.paidCurrency)
+                cost = (paid, currency)
+            }
+            let portfolioID: UUID
+            if let id = input.portfolioID {
+                guard let portfolio = next.portfolio(id: id), portfolio.isActive(at: now), portfolio.kind == batch.mode.kind else { throw ImportFailure("Choose an active portfolio for this asset type.") }
+                portfolioID = id
+            } else {
+                let name = try ImportBatchProcessor.cleanName(input.portfolioName), key = name.lowercased()
+                if let owner = input.ownerBusinessID, !(next.businessAccounting ?? []).contains(where: { $0.id == owner }) {
+                    throw ImportFailure("Choose a company with ownership history.")
+                }
+                if let id = createdPortfolios[key] {
+                    guard next.portfolio(id: id)?.ownerBusinessID == input.ownerBusinessID else { throw ImportFailure("Rows in one portfolio must have the same owner.") }
+                    portfolioID = id
+                }
+                else {
+                    // Unique within an owner: a personal "Crypto" and a company's "Crypto" are different portfolios.
+                    let owner = input.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }
+                    guard !document.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == owner && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else { throw ImportFailure("This portfolio exists. Choose it from your portfolios.") }
+                    let portfolio = Portfolio(name: name, createdAt: now, kind: batch.mode.kind, ownerBusinessID: input.ownerBusinessID); next.portfolios.append(portfolio)
+                    portfolioID = portfolio.id; createdPortfolios[key] = portfolio.id
+                }
+            }
+            let key = portfolioID.uuidString + ":" + coin.id
+            guard holdingKeys.insert(key).inserted else { throw ImportFailure("This coin appears twice in the same portfolio. Keep one total quantity.") }
+            let before = next
+            let existing = before.holdings.first { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id && $0.archivedAt == nil }
+            let previous = existing.flatMap { before.effectiveQuantity(holdingID: $0.id, at: now) }
+            // The same total on the chosen date is nothing new, unless a cost is being recorded for the first time that day.
+            let onDate = existing.flatMap { before.effectiveQuantity(holdingID: $0.id, at: date) }
+            let sameDayLot = existing.flatMap { holding in before.purchases?.firstIndex { $0.holdingID == holding.id && UTCDay.isSameDay($0.at, date) } }
+            if onDate == quantity, cost == nil || sameDayLot.map({ before.purchases?[$0].paid.value == cost?.paid && before.purchases?[$0].currency == cost?.currency }) == true {
+                result.states[row.id] = .duplicate; return
+            }
+            next = try HoldingMutations.addHolding(portfolioID: portfolioID, assetID: CanonicalAssetID(coin.id), assetName: coin.name, quantity: quantity, at: date, document: next)
+            next.track(batch.mode.kind)
+            let after = next
+            if let cost, let holdingID = (existing ?? after.holdings.last { $0.portfolioID == portfolioID && $0.assetID.rawValue == coin.id })?.id {
+                // The lot covers the increase on that date. Restating a total without an increase records the cost of the
+                // whole position, replacing a cost already recorded that day rather than counting it twice.
+                let held = onDate ?? 0
+                var lot = PurchaseLot(holdingID: holdingID, quantity: PreciseDecimal(quantity > held ? quantity - held : quantity), paid: PreciseDecimal(cost.paid), currency: cost.currency, at: date)
+                var purchases = next.purchases ?? []
+                if quantity <= held, let index = sameDayLot, purchases.indices.contains(index) { lot.id = purchases[index].id; purchases[index] = lot }
+                else { purchases.append(lot) }
+                next.purchases = purchases
+            }
+            result.states[row.id] = .ready("\(previous.map { NSDecimalNumber(decimal: $0).stringValue } ?? "New") → \(NSDecimalNumber(decimal: quantity).stringValue) \(coin.name)\(batch.mode == .metals ? " · fine grams" : "")")
+            result.added += 1
+        }
+        /// Once every row is read: each statement's typed balance, and its original file, archived once. A file kept for
+        /// one account (a Wise history split by currency) is only noted for the others, and past the budget by its hash.
+        mutating func finishStatements() {
+            compactArchive()
+            var archived = next.importedStatements.reduce(0) { $0 + $1.originalBytes.count }
             for source in batch.sources where !duplicateSources.contains(source.id) {
                 guard let accountID = sourceAccounts[source.id], batch.rows.contains(where: { $0.sourceID == source.id && $0.included }) else { continue }
                 if !source.balance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
                         let amount = try source.numberFormat.decimal(source.balance, typed: true), date = try ImportDateFormat.iso.date(source.balanceDate)
-                        if try recordBalance(accountID: accountID, amount: amount, date: date, in: &next) { result.added += 1 }
+                        if try recordBalance(accountID: accountID, amount: amount, date: date) { result.added += 1 }
                     } catch { result.sourceErrors[source.id] = error.localizedDescription }
                 }
                 // Archive reviewed files even when their transactions were all already present.
                 let fileDigest = digest(source)
-                if !source.bytes.isEmpty && !result.hasErrors && !next.importedStatements.contains(where: { $0.digest == fileDigest && ($0.accountID == nil || $0.accountID == accountID) }) {
-                    next.importedStatements.append(ImportedStatement(digest: fileDigest, originalBytes: source.bytes, importedAt: now, accountID: accountID))
-                    result.added += 1
-                }
+                guard !source.bytes.isEmpty, !result.hasErrors,
+                      !next.importedStatements.contains(where: { $0.digest == fileDigest && ($0.accountID == nil || $0.accountID == accountID) }) else { continue }
+                let kept = next.importedStatements.contains { $0.digest == fileDigest && !$0.originalBytes.isEmpty }
+                let fits = archived + source.bytes.count <= ImportBatchProcessor.archiveBudget
+                if !kept && !fits { result.unarchivedFiles += 1 }
+                let bytes = kept || !fits ? Data() : source.bytes
+                next.importedStatements.append(ImportedStatement(digest: fileDigest, originalBytes: bytes, importedAt: now, accountID: accountID))
+                archived += bytes.count; result.added += 1
             }
         }
-        if !result.hasErrors {
-            // Statements move the balance history of the accounts they touch.
-            if !touchedAccounts.isEmpty { result.historyStart = BalanceReconstruction.apply(accountIDs: touchedAccounts, to: &next, now: now) }
-            // Learned dates and a rebuilt history are worth saving even when no row is new.
-            if result.learnedDays > 0 || result.historyStart != nil { result.added += max(result.learnedDays, 1) }
-            result.document = next
+        /// Older versions kept a split file's bytes once per account; the first copy is enough.
+        mutating func compactArchive() {
+            var holders: [Data: Int] = [:]
+            for index in next.importedStatements.indices where !next.importedStatements[index].originalBytes.isEmpty {
+                let hash = next.importedStatements[index].digest
+                guard let first = holders[hash] else { holders[hash] = index; continue }
+                if next.importedStatements[first].originalBytes == next.importedStatements[index].originalBytes { next.importedStatements[index].originalBytes = Data() }
+            }
         }
-        return result
+        mutating func finish() -> ImportEvaluation {
+            if !result.hasErrors {
+                // Statements move the balance history of the accounts they touch.
+                let accounts = touchedAccounts, moment = now
+                if !accounts.isEmpty { result.historyStart = BalanceReconstruction.apply(accountIDs: accounts, to: &next, now: moment) }
+                // Learned dates and a rebuilt history are worth saving even when no row is new.
+                if result.learnedDays > 0 || result.historyStart != nil { result.added += max(result.learnedDays, 1) }
+                result.document = next
+            }
+            return result
+        }
     }
 }

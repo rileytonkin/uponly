@@ -728,7 +728,8 @@ struct BulkInputTests {
         #expect(saved.entries.map(\.day) == ["2026-08-03", "2026-08-01", "2026-07-31", "2026-08-01", "2026-06-30"])
         #expect(saved.entries.map(\.month) == ["2026-08", "2026-08", "2026-07", "2026-08", "2026-06"])
         #expect(saved.entries.map(\.accountID) == [saved.accounts[0].id, saved.accounts[0].id, saved.accounts[1].id, saved.accounts[1].id, saved.accounts[1].id])
-        #expect(saved.importedStatements.count == 2 && saved.importedStatements.allSatisfy { $0.originalBytes == bytes })
+        // The file is archived once, and noted for the other account it covered.
+        #expect(saved.importedStatements.map(\.originalBytes) == [bytes, Data()] && saved.importedStatements.compactMap(\.accountID) == saved.accounts.map(\.id))
         // An account chosen before picking the file applies only to the part in its currency.
         let joint = Account(name: "Joint", currency: "EUR")
         let chosen = ImportAccount(existingID: joint.id, name: joint.name, currency: joint.currency)
@@ -810,6 +811,9 @@ struct BulkInputTests {
     @Test("Income or expense follows the amount as finally read, after the number format changes")
     func kindFollowsNumberFormat() throws {
         var draft = try batch("Date,Description,Amount,Currency\n2026-01-02,Salary,\"2500,00\",EUR\n2026-01-03,Coffee,\"-12,50\",EUR", mode: .statements)
+        // Decimal commas are detected; read with decimal points instead, the amounts are wrong.
+        #expect(draft.sources[0].numberFormat == .comma)
+        draft.sources[0].numberFormat = .point
         #expect(ImportBatchProcessor.evaluate(draft, document: empty()).hasErrors)
         draft.sources[0].numberFormat = .comma
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
@@ -909,6 +913,155 @@ struct BulkInputTests {
         let review = ImportBatchProcessor.evaluate(ImportBatchDraft(mode: .bankBalances, sources: [manual], rows: rows), document: doc)
         #expect(review.duplicates == 1 && review.readyRows == 1)
         #expect(review.document?.bankBalances.filter { $0.accountID == checking.id }.count == 1)
+    }
+    @Test("Day-first or month-first dates follow the reading that's in order over the shortest time, and review asks when that can't tell")
+    func ambiguousDates() throws {
+        let september = (1...12).map { String(format: "%02d/09/2025", $0) }
+        #expect(ImportDateFormat.detection(september).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
+        #expect(ImportDateFormat.detection(Array(september.reversed())).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
+        let uk = try batch("Date,Description,Amount,Currency\n" + september.map { $0 + ",Coffee,-3,USD" }.joined(separator: "\n"), mode: .statements)
+        #expect(uk.sources[0].dateFormat == .dayFirst && uk.sources[0].unconfirmedDate == nil)
+        let saved = try #require(ImportBatchProcessor.evaluate(uk, document: empty()).document)
+        #expect(saved.entries.compactMap(\.day) == (1...12).map { String(format: "2025-09-%02d", $0) })
+        // Month first when that reading is the short one, and in order one way only is enough.
+        #expect(ImportDateFormat.detection(["12/01/2025", "12/02/2025", "12/03/2025"]).map { $0.format == .monthFirst && $0.unconfirmed == nil } == true)
+        #expect(ImportDateFormat.detection(["02/01/2025", "01/02/2025", "03/02/2025"]).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
+        // Dates that read the same either way need no question.
+        #expect(ImportDateFormat.detection(["05/05/2025", "07/07/2025"]).map { $0.unconfirmed == nil } == true)
+        // One row reads either way, so its file's card asks before anything is saved.
+        var single = try batch("Date,Description,Amount,Currency\n03/04/2025,Coffee,-3,USD", mode: .statements)
+        #expect(single.sources[0].unconfirmedDate == "03/04/2025")
+        let waiting = ImportBatchProcessor.evaluate(single, document: empty())
+        #expect(waiting.needsFormat == [single.sources[0].id] && waiting.document == nil)
+        single.sources[0].dateFormat = .monthFirst; single.sources[0].unconfirmedDate = nil
+        #expect(try #require(ImportBatchProcessor.evaluate(single, document: empty()).document).entries.first?.day == "2025-03-04")
+    }
+    @Test("The number format is read from the amounts, then a semicolon or other columns, and review asks when nothing tells")
+    func numberDetection() throws {
+        let comma = try batch("Date,Description,Amount\n2026-01-02,Rent,\"-1.250,00\"\n2026-01-03,Coffee,\"-3,50\"", mode: .statements)
+        #expect(comma.sources[0].numberFormat == .comma && comma.sources[0].unconfirmedNumber == nil)
+        let point = try batch("Date,Description,Amount\n2026-01-02,Rent,\"-1,250.00\"\n2026-01-03,Coffee,-3.50", mode: .statements)
+        #expect(point.sources[0].numberFormat == .point && point.sources[0].unconfirmedNumber == nil)
+        // 1.250 reads both ways: a semicolon file means decimal commas, and so does a balance written 8.750,50.
+        let semicolon = try batch("Date;Description;Amount\n2026-01-02;Rent;-1.250\n2026-01-03;Coffee;-3", mode: .statements)
+        #expect(semicolon.sources[0].numberFormat == .comma && semicolon.sources[0].unconfirmedNumber == nil)
+        #expect(try #require(ImportBatchProcessor.evaluate(semicolon, document: empty()).document).entries.map(\.amount) == [1250, 3])
+        let balance = try batch("Date,Description,Amount,Balance\n2026-01-02,Rent,-1.250,\"8.750,50\"", mode: .statements)
+        #expect(balance.sources[0].numberFormat == .comma && balance.sources[0].unconfirmedNumber == nil)
+        // With nothing to go on, review asks.
+        var unclear = try batch("Date,Description,Amount\n2026-01-02,Rent,-1.250\n2026-01-03,Coffee,-3", mode: .statements)
+        #expect(unclear.sources[0].numberFormat == .point && unclear.sources[0].unconfirmedNumber == "-1.250")
+        #expect(ImportBatchProcessor.evaluate(unclear, document: empty()).needsFormat == [unclear.sources[0].id])
+        unclear.sources[0].numberFormat = .comma; unclear.sources[0].unconfirmedNumber = nil
+        #expect(try #require(ImportBatchProcessor.evaluate(unclear, document: empty()).document).entries.map(\.amount) == [1250, 3])
+        // Whole numbers read the same either way.
+        #expect(try batch("Date,Description,Amount\n2026-01-02,Rent,-900", mode: .statements).sources[0].unconfirmedNumber == nil)
+    }
+    @Test("Card exports whose purchases are positive read as money out, and a type chosen in review sets the direction")
+    func positiveMoneyOut() throws {
+        // American Express's Card Member column, or a column headed Charges, marks a card export.
+        let amex = try batch("Date,Description,Card Member,Account #,Amount\n2026-01-02,Coffee,A EXAMPLE,-11001,4.50\n2026-01-05,Payment received,A EXAMPLE,-11001,-200.00", mode: .statements)
+        #expect(amex.sources[0].positiveIsOutflow)
+        let saved = try #require(ImportBatchProcessor.evaluate(amex, document: empty()).document)
+        #expect(saved.entries.map(\.kind) == [.expense, .income] && saved.entries.map(\.outflow) == [true, false] && saved.entries.map(\.amount) == [Decimal(string: "4.5")!, 200])
+        let charges = try batch("Date,Description,Charges\n2026-01-02,Coffee,4.50", mode: .statements)
+        #expect(charges.sources[0].mapping[.amount] == 2 && charges.sources[0].positiveIsOutflow)
+        // Beside a Credits column, Charges are money out.
+        let split = try batch("Date,Description,Charges,Credits\n2026-01-02,Coffee,4.50,\n2026-01-03,Payment,,200", mode: .statements)
+        #expect(split.sources[0].mapping[.debit] == 2 && split.sources[0].mapping[.credit] == 3 && split.sources[0].mapping[.amount] == nil)
+        #expect(try #require(ImportBatchProcessor.evaluate(split, document: empty()).document).entries.map(\.outflow) == [true, false])
+        // Any other file can be switched, which doesn't change which rows count as already saved.
+        var generic = try batch("Date,Description,Amount\n2026-01-02,Coffee,4.50\n2026-01-03,Payment,-200", mode: .statements)
+        #expect(!generic.sources[0].positiveIsOutflow && !ImportParser.signsKnown(generic.sources[0].grid))
+        let asWritten = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
+        generic.sources[0].positiveIsOutflow = true
+        let flipped = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
+        #expect(flipped.entries.map(\.kind) == [.expense, .income] && flipped.entries.map(\.importFingerprint) == asWritten.entries.map(\.importFingerprint))
+        // A type chosen in review sets the direction: an expense is money out whatever its sign.
+        var edited = try batch("Date,Description,Amount\n2026-01-02,Coffee,4.50", mode: .statements)
+        edited.rows[0].statement.kind = .expense; edited.rows[0].statement.kindIsUserEdited = true
+        let entry = try #require(ImportBatchProcessor.evaluate(edited, document: empty()).document?.entries.first)
+        #expect(entry.kind == .expense && entry.outflow == true && BalanceReconstruction.signed(entry) == Decimal(string: "-4.5")!)
+    }
+    @Test("Rows without IDs skip as many identical rows as are saved and ask only about extra copies, which can be settled at once")
+    func countedDuplicates() throws {
+        let first = try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee,-5,USD", mode: .statements)
+        let saved = try #require(ImportBatchProcessor.evaluate(first, document: empty()).document)
+        let account = ImportAccount(existingID: saved.accounts[0].id, name: saved.accounts[0].name, currency: "USD")
+        // A later export repeats the saved coffee, has a second one that day, and a new lunch.
+        var overlap = try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee,-5,USD\n2026-01-02,Coffee,-5,USD\n2026-01-03,Lunch,-9,USD", mode: .statements)
+        overlap.sources[0].account = account
+        let review = ImportBatchProcessor.evaluate(overlap, document: saved)
+        #expect(review.states[overlap.rows[0].id] == .duplicate && review.states[overlap.rows[1].id] == .possibleDuplicate && review.states[overlap.rows[2].id] == .ready("New transaction"))
+        #expect(review.possibleDuplicates == 1 && review.document == nil)
+        var kept = overlap; kept.settleDuplicates(review, keep: true)
+        let both = try #require(ImportBatchProcessor.evaluate(kept, document: saved).document)
+        #expect(both.entries.map(\.label) == ["Coffee", "Coffee", "Lunch"])
+        var skipped = overlap; skipped.settleDuplicates(review, keep: false)
+        #expect(!skipped.rows[1].included && ImportBatchProcessor.evaluate(skipped, document: saved).document?.entries.count == 2)
+        // With both coffees saved, the same rows again need no decision.
+        var again = try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee,-5,USD\n2026-01-02,Coffee,-5,USD", mode: .statements)
+        again.sources[0].account = account
+        let repeated = ImportBatchProcessor.evaluate(again, document: both)
+        #expect(repeated.duplicates == 2 && !repeated.hasErrors)
+        // An export format that adds IDs doesn't double up rows saved without them; its extra rows are new.
+        var withIDs = try batch("TransactionID,Date,Description,Amount,Currency\na,2026-01-02,Coffee,-5,USD\nb,2026-01-02,Coffee,-5,USD\nc,2026-01-02,Coffee,-5,USD", mode: .statements)
+        withIDs.sources[0].account = account
+        let identified = ImportBatchProcessor.evaluate(withIDs, document: both)
+        #expect(identified.duplicates == 2 && identified.readyRows == 1 && !identified.hasErrors)
+        // Two overlapping files in one batch add each payment once.
+        var pair = try batch("Date,Description,Amount,Currency\n2026-02-02,Tea,-3,USD", mode: .statements)
+        let second = try batch("Date,Description,Amount,Currency\n2026-02-02,Tea,-3,USD\n2026-02-03,Cake,-4,USD", mode: .statements)
+        pair.sources += second.sources; pair.rows += second.rows
+        let merged = try #require(ImportBatchProcessor.evaluate(pair, document: empty()).document)
+        #expect(merged.entries.map(\.label) == ["Tea", "Cake"])
+    }
+    @Test("An original file is archived once, older duplicate copies are dropped, and past the budget only its hash is kept")
+    func archiveOnce() throws {
+        var doc = empty()
+        let bytes = Data("Date,Description,Amount,Currency\n2026-01-02,Old,-1,USD".utf8), digest = VaultCrypto.sha256(bytes)
+        let one = Account(name: "One", currency: "USD"), two = Account(name: "Two", currency: "USD"); doc.accounts = [one, two]
+        doc.importedStatements = [one, two].map { ImportedStatement(digest: digest, originalBytes: bytes, importedAt: Date(), accountID: $0.id) }
+        var draft = try batch("Date,Description,Amount,Currency\n2026-01-03,Coffee,-4,USD", mode: .statements)
+        draft.sources[0].account = ImportAccount(existingID: one.id, name: one.name, currency: "USD")
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
+        #expect(saved.importedStatements.filter { $0.digest == digest }.map(\.originalBytes) == [bytes, Data()])
+        #expect(saved.importedStatements.last?.originalBytes == draft.sources[0].bytes && saved.importedStatements.last?.accountID == one.id)
+        // The same file for another account is noted there without storing it again.
+        var other = draft; other.sources[0].account = ImportAccount(existingID: two.id, name: two.name, currency: "USD")
+        let noted = try #require(ImportBatchProcessor.evaluate(other, document: saved).document)
+        #expect(noted.importedStatements.filter { $0.digest == draft.sources[0].digest }.map(\.originalBytes) == [draft.sources[0].bytes, Data()])
+        // Past the budget, a new file's transactions still import and only its hash is kept.
+        var full = empty()
+        full.importedStatements = [ImportedStatement(digest: Data([1]), originalBytes: Data(count: ImportBatchProcessor.archiveBudget), importedAt: Date())]
+        let review = ImportBatchProcessor.evaluate(try batch("Date,Description,Amount,Currency\n2026-01-03,Coffee,-4,USD", mode: .statements), document: full)
+        #expect(review.unarchivedFiles == 1 && review.document?.entries.count == 1 && review.document?.importedStatements.last?.originalBytes.isEmpty == true)
+    }
+    @Test("A statement row or balance dated today anywhere on Earth is accepted, even when it's already tomorrow in UTC")
+    func todayEastOfUTC() throws {
+        let day = try ImportDateFormat.iso.date("2026-03-10"), evening = day.addingTimeInterval(22 * 3600)
+        var draft = try batch("Date,Description,Amount,Currency\n2026-03-11,Coffee,-4,USD", mode: .statements)
+        #expect(ImportBatchProcessor.evaluate(draft, document: empty(), now: evening).document?.entries.first?.day == "2026-03-11")
+        // The limit is the end of today in UTC+14, where 11 March begins at 10:00 UTC on the 10th.
+        #expect(ImportBatchProcessor.evaluate(draft, document: empty(), now: day.addingTimeInterval(10 * 3600 - 60)).hasErrors)
+        #expect(!ImportBatchProcessor.evaluate(draft, document: empty(), now: day.addingTimeInterval(10 * 3600)).hasErrors)
+        draft.rows[0].statement.date = "2026-03-12"
+        #expect(ImportBatchProcessor.evaluate(draft, document: empty(), now: evening).hasErrors)
+        // A balance dated today there is observed now.
+        let balances = try batch("Account,Currency,Balance,ObservedOn\nChecking,USD,100,2026-03-11", mode: .bankBalances)
+        let doc = try #require(ImportBatchProcessor.evaluate(balances, document: empty(), now: evening).document)
+        #expect(doc.bankBalances.first?.observedAt == evening)
+    }
+    @Test("Spaces around quoted fields and quotes inside unquoted ones are read rather than rejecting the file")
+    func lenientQuotes() throws {
+        #expect(try CSVReader.parse("A,B,C\n \"x,y\" , 5\" screen ,\"z\"\n") == [["A", "B", "C"], ["x,y", " 5\" screen ", "z"]])
+        #expect(try CSVReader.parse("a,b\"c\"d,\"Best\" coffee") == [["a", "b\"c\"d", "Best coffee"]])
+        #expect(throws: StatementError.self) { _ = try CSVReader.parse("A,B\n\"unfinished") }
+        // A stray quote in the first line doesn't hide its delimiters.
+        #expect(ImportParser.delimiter("12\" pizza;9;x\nb;c;d") == ";")
+        let draft = try batch("Date, Description, Amount, Currency\n2026-01-02, \"Coffee, large\" , -4.50, USD\n2026-01-03,12\" pizza,-9,USD", mode: .statements)
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        #expect(saved.entries.map(\.label) == ["Coffee, large", "12\" pizza"] && saved.entries.map(\.amount) == [Decimal(string: "4.5")!, 9])
     }
 }
 
@@ -1440,8 +1593,9 @@ struct WiseInputTests {
             doc.importedStatements = [ImportedStatement(digest: Data([1]), originalBytes: Data(repeating: 0, count: 70 * 1024 * 1024), importedAt: Date())]
         }
         let generation = try #require(session.document?.generation)
-        let notes = String(repeating: "x", count: 2048)
-        let csv = "TransactionID,Date,Description,Amount,Currency,Notes\n" + (0..<1600).map { "\($0),2026-01-02,Sample,1,USD,\(notes)" }.joined(separator: "\n")
+        // The archive of originals is already past its budget, so this file isn't kept; its transactions cross the limit.
+        let label = String(repeating: "x", count: 480)
+        let csv = "TransactionID,Date,Description,Amount,Currency\n" + (0..<8000).map { "\($0),2026-01-02,\(label),1,USD" }.joined(separator: "\n")
         var source = try ImportParser.source(bytes: Data(csv.utf8), filename: "large.csv", mode: .statements)
         source.account = ImportAccount(name: "Must not remain")
         let draft = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
