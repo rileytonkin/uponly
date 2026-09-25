@@ -148,10 +148,10 @@ extension UpOnlyUnlockedPanel {
         let showYear = months.first?.year != months.last?.year
         return months.map { key -> UpOnlyChartPoint in
             let row = model.history.first { $0.month == key } ?? (key, nil, false)
-            // Say where the figure came from, so it can be checked against the sheet. The chart hides it in privacy mode.
+            // What the profit is made of. The chart hides it in privacy mode.
             let sheet = book?.months.first { $0.month == key.description }
             let parts = [sheet?.revenueUSD.map { "Net revenue " + UpOnlyFormat.money($0) }, sheet?.expensesUSD.map { "expenses " + UpOnlyFormat.money($0) }].compactMap { $0 }
-            let note = sheet.map { (parts.isEmpty ? "" : parts.joined(separator: " − ") + " · ") + $0.sourceRange + ($0.estimated ? " · provisional" : "") }
+            let note = parts.isEmpty ? nil : parts.joined(separator: " − ")
             return UpOnlyChartPoint(id: key.description, label: UpOnlyFormat.monthName(key) + (showYear ? " " + String(key.year).suffix(2) : ""), value: row.net, provisional: !row.settled, detailLabel: key.title, note: note)
         }
     }

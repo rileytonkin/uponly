@@ -177,16 +177,18 @@ nonisolated enum AccountingSheets {
         guard !months.isEmpty else { throw ImportFailure("No accounting months were found.") }
         return months
     }
+    /// Whether the Data Health tab says a check failed. Its explanation uses ✗ and ~ as a legend, so only its VERDICT
+    /// row counts, or without one, a ✗ in the status column.
     static func healthWarning(_ range: Range?) -> String? {
         guard let rows = range?.values, !rows.isEmpty else { return "Accounting checks are unavailable." }
-        let lines = rows.map { $0.map(\.text).filter { !$0.isEmpty }.joined(separator: " · ") }
-        if lines.contains(where: { $0.uppercased().contains("FAILING") || $0.contains("✗") }) {
-            return "The accounting sheet reports a failed check. Profit is provisional; review Data Health."
+        let failing: Bool
+        if let verdict = rows.first(where: { $0.first?.text.trimmingCharacters(in: .whitespaces).uppercased() == "VERDICT" }) {
+            let text = verdict.dropFirst().map(\.text).joined(separator: " ").uppercased()
+            failing = text.contains("FAILING") || text.contains("✗")
+        } else {
+            failing = rows.contains { $0.first?.text.trimmingCharacters(in: .whitespaces) == "✗" }
         }
-        if lines.contains(where: { $0.lowercased().contains("estimate") || $0.lowercased().contains("accrued") }) {
-            return "Some store revenue is estimated. See the accounting sheet's Data Health checks."
-        }
-        return nil
+        return failing ? "The accounting sheet reports a failed check. Profit is provisional; review Data Health." : nil
     }
     static func column(_ index: Int) -> String {
         var n = index + 1, result = ""

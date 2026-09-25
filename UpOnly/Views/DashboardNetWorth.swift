@@ -26,10 +26,10 @@ extension UpOnlyUnlockedPanel {
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
         let valuation = AssetOwnership.personalValue(at: interval.end, scope: scope, document: document)
         let estimates = session.chartEstimates() ?? ChartEstimates(document: document)
-        // Whatever a saved day lacks (a price, a rate, a balance, a company's share that month) is estimated from the
-        // nearest saved values and named on hover, so the line never dips or cuts across for want of one.
+        // Whatever a saved day lacks (a price, a rate, a balance, a company's share that month) is filled from the
+        // nearest saved values, so the line never dips or cuts across for want of one.
         func figure(_ result: (total: Decimal, estimated: [String])?) -> (Decimal, String?)? {
-            result.map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
+            result.map { ($0.total, nil) }
         }
         let yourShare = { (components: [ValuationComponent], moment: Date) in figure(estimates.personalTotal(components, day: moment, at: moment)) }
         // Finest first: intraday prices once fetched, then the saved hours of the past day, then saved days.
@@ -66,14 +66,14 @@ extension UpOnlyUnlockedPanel {
                     if valuation.total == nil, let last = valuation.lastComplete {
                         Text("Last complete value · " + UpOnlyFormat.utcDate(last.at)).font(UpOnlyType.body).foregroundStyle(.secondary)
                     } else {
-                        // How the total moved over the chart's range, then how the holdings stand against what was paid.
-                        if let change = snapshot.change { changeLine(change) }
-                        if let allTime = snapshot.allTime { allTimeLine(allTime) }
+                        // How the total moved over the chart's range, beside how the holdings stand against what was paid.
+                        let stats = [snapshot.change.map(changeStat), snapshot.allTime.map(allTimeStat)].compactMap { $0 }
+                        if !stats.isEmpty { headlineStats(stats) }
                     }
                     if let stale = staleNote(valuation) {
                         Text(stale.text).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(2).help(stale.detail)
                     }
-                }.fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                }.fixedSize(horizontal: false, vertical: true).padding(.top, 8)
             }
             if let valuation, valuation.missing.contains(where: { $0.reason == "ownership" }) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -129,26 +129,21 @@ extension UpOnlyUnlockedPanel {
             }
         }
     }
-    /// "All-time  +$1,310 ▲ 31.2%  on $4,200 paid": profit on cost, which doesn't change with the range. The note wraps
-    /// rather than losing how many holdings it covers. Privacy mode hides the amounts but keeps the percentage.
-    func allTimeLine(_ allTime: (gain: Decimal, cost: Decimal, covered: Int, total: Int)) -> some View {
+    /// "All-time  ▲ 31.2%  +$1,310": profit on cost, which doesn't change with the range. What it's measured on (what
+    /// was paid, and how many holdings have a cost) is the tooltip, marked when only some holdings count. Privacy mode
+    /// keeps the percentage and shows a stand-in amount.
+    func allTimeStat(_ allTime: (gain: Decimal, cost: Decimal, covered: Int, total: Int)) -> HeadlineStat {
         let fraction = allTime.cost > 0 ? allTime.gain / allTime.cost : nil
-        // Privacy mode: stand-in figures, scaled like the total above.
         let scale = session.privacyMode ? session.standInFactor : 1
-        let text = scale.map { UpOnlyFormat.movement(allTime.gain * $0, fraction: fraction, cents: false) } ?? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: fraction)
-        // One short line: the profit. What it's measured on (what was paid, and how many holdings have a cost) is the
-        // tooltip, with a small mark when only some holdings are counted.
+        let amount = scale.map { UpOnlyFormat.movement(allTime.gain * $0, fraction: nil, cents: false) } ?? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: nil)
         let partial = allTime.covered < allTime.total
         let note = [scale.map { "On " + UpOnlyFormat.money(allTime.cost * $0) + " paid" }, partial ? "\(allTime.covered) of \(allTime.total) holdings have a cost" : nil]
             .compactMap { $0 }.joined(separator: " · ")
-        return HStack(spacing: 6) {
-            Text("All-time").foregroundStyle(.secondary)
-            Text(text).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(allTime.gain))
-            if partial { Image(systemName: "info.circle").font(.system(size: 10)).foregroundStyle(.tertiary) }
-        }.font(UpOnlyType.body).lineLimit(1).help(note)
-            .accessibilityElement(children: .ignore).accessibilityLabel("All-time profit")
-            .accessibilityValue([session.privacyMode ? "amount hidden" : UpOnlyFormat.movement(allTime.gain, fraction: nil, cents: false),
-                                 fraction.map(UpOnlyFormat.percent), note.isEmpty ? nil : note.trimmingCharacters(in: .whitespaces)].compactMap { $0 }.joined(separator: ", "))
+        let spoken = [session.privacyMode ? "amount hidden" : UpOnlyFormat.movement(allTime.gain, fraction: nil, cents: false), fraction.map(UpOnlyFormat.percent), note.isEmpty ? nil : note]
+            .compactMap { $0 }.joined(separator: ", ")
+        guard let fraction else { return HeadlineStat(label: "All-time", value: amount, tint: UpOnlyTint.signed(allTime.gain), qualified: partial, help: note, spoken: spoken) }
+        return HeadlineStat(label: "All-time", value: UpOnlyFormat.arrowPercent(fraction), tint: UpOnlyTint.signed(allTime.gain), detail: amount,
+                            qualified: partial, help: note, spoken: "All-time profit, " + spoken)
     }
     /// Green when the line ends at or above where it starts, red when below, the neutral tint with too little data.
     func trendTint(_ points: [UpOnlyChartPoint]) -> Color {

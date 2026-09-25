@@ -689,22 +689,53 @@ struct UpOnlyUnlockedPanel: View {
         return RangeChange(change: PeriodChange(from: previous, to: now), since: worthRange.previous,
                            span: index == 0 && worthRange != .all ? "over the " + worthRange.phrase : "since " + label)
     }
-    /// "(↑ 21.0%)  vs $10,000.00 prev 1M": the change over the range, as on the admin dashboard. The percentage
-    /// stays in privacy mode; the amounts don't.
-    func changeLine(_ range: RangeChange) -> some View {
+    /// One figure beside another under the headline total: what it is, then how it moved, "▲ 13.3%  +$4,036.90".
+    struct HeadlineStat: Identifiable {
+        var label: String
+        var value: String
+        var tint: Color
+        var detail: String? = nil
+        /// A small mark after the label when the tooltip qualifies the figure (only some holdings have a cost).
+        var qualified = false
+        var help = ""
+        var spoken: String
+        var id: String { label }
+    }
+    /// The figures under the headline, side by side across the page rather than stacked on its left: the change over
+    /// the chart's range, and the all-time profit or your share. One figure keeps to the left half.
+    func headlineStats(_ stats: [HeadlineStat]) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(stats) { stat in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(stat.label).lineLimit(1)
+                        if stat.qualified { Image(systemName: "info.circle").font(.system(size: 9)).foregroundStyle(.tertiary) }
+                    }.font(UpOnlyType.caption).foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(stat.value).font(UpOnlyType.body.weight(.semibold).monospacedDigit()).foregroundStyle(stat.tint)
+                        if let detail = stat.detail { Text(detail).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary) }
+                    }.lineLimit(1).minimumScaleFactor(0.8)
+                }.frame(maxWidth: .infinity, alignment: .leading).help(stat.help)
+                    .accessibilityElement(children: .ignore).accessibilityLabel(stat.label).accessibilityValue(stat.spoken)
+            }
+            if stats.count == 1 { Color.clear.frame(maxWidth: .infinity, maxHeight: 0) }
+        }
+    }
+    /// "Past 7 days  ▲ 13.3%  +$4,036.90": the change over the range. The percentage stays in privacy mode; the
+    /// amounts become stand-ins. What it's measured against ("vs $30,245.08 prev 7D") is the tooltip.
+    func changeStat(_ range: RangeChange) -> HeadlineStat {
         let change = range.change
-        // Privacy mode: the stand-in figures, scaled like the total above.
         let scale = session.privacyMode ? session.standInFactor : 1
         let previous = scale.map { UpOnlyFormat.exactMoney(change.previous * $0) } ?? "••••"
         let moved = scale.map { UpOnlyFormat.movement(change.amount * $0, fraction: nil, cents: true) } ?? UpOnlyFormat.hiddenMovement(change.amount, fraction: nil)
-        return HStack(spacing: 7) {
-            if let fraction = change.fraction { UpOnlyChangeBadge(fraction: fraction) }
-            else { Text(moved).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(change.amount)) }
-            Text("vs " + previous + " " + range.since).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.85)
-        }.help(session.privacyMode ? "" : moved + " " + range.span)
-            .accessibilityElement(children: .ignore).accessibilityLabel("Change " + range.span)
-            .accessibilityValue([session.privacyMode ? "amount hidden" : moved, change.fraction.map(UpOnlyFormat.percent), session.privacyMode ? nil : "from " + previous]
-                .compactMap { $0 }.joined(separator: ", "))
+        let label = worthRange == .all ? "Since start" : worthRange.spokenTitle
+        let spoken = [session.privacyMode ? "amount hidden" : moved, change.fraction.map(UpOnlyFormat.percent), session.privacyMode ? nil : "from " + previous]
+            .compactMap { $0 }.joined(separator: ", ")
+        guard let fraction = change.fraction else {
+            return HeadlineStat(label: label, value: moved, tint: UpOnlyTint.signed(change.amount), help: session.privacyMode ? "" : "vs " + previous + " " + range.since, spoken: spoken)
+        }
+        return HeadlineStat(label: label, value: UpOnlyFormat.arrowPercent(fraction), tint: UpOnlyTint.signed(UpOnlyFormat.roundedPercent(fraction)), detail: moved,
+                            help: session.privacyMode ? "" : "vs " + previous + " " + range.since, spoken: spoken)
     }
 
     // MARK: Rows
