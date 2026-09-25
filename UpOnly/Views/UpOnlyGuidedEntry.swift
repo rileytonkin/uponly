@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 import AppKit
 
 struct UpOnlyGuidedEntry: View {
@@ -338,12 +339,16 @@ struct UpOnlyGuidedEntry: View {
         return rounded
     }
     private func fetchClosePrice() async {
-        guard let key = closeKey, closePrice?.key != key, let settings = session.document?.settings,
-              mode == .metals ? (settings.automaticMetals || session.isFixture) : (settings.automaticPrices || session.isFixture) else { return }
+        guard let key = closeKey, closePrice?.key != key, let settings = session.document?.settings else { return }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
         guard !asset.isEmpty else { return }
-        let price = await PublicPrices.closingPrice(assetID: asset, symbol: coin?.symbol, day: holdingDate.wrappedValue, today: unitPrice, key: settings.coinGeckoKey)
-        if let price, !Task.isCancelled, key == closeKey { closePrice = (key, price) }
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(4)) }
+            guard !Task.isCancelled, key == closeKey else { return }
+            let price = await PublicPrices.closingPrice(assetID: asset, symbol: coin?.symbol, day: holdingDate.wrappedValue, today: unitPrice, key: settings.coinGeckoKey)
+            if let price, !Task.isCancelled, key == closeKey { closePrice = (key, price); return }
+        }
+        Logger(subsystem: "org.uponly", category: "entry").notice("no closing price for \(key, privacy: .private)")
     }
     /// Pressing Review with the cost still empty records the estimate, in dollars, as what was paid.
     private func fillCostFromClose() {
@@ -374,27 +379,34 @@ struct UpOnlyGuidedEntry: View {
         default: return latestPrice(CanonicalAssetID(rawValue: row.holding.resolvedCoinID))
         }
     }
-    /// Fetches today's price once the coin, metal or currency is known, using the same requests (and the same on/off
-    /// switches) as the app's own price updates: coins from CoinGecko's top-coins list, so it can't tell which you add.
-    /// (The preview window, whose sample vault has them off, always looks.)
+    /// Fetches today's price once the coin, metal or currency is known, using the same requests as the app's own price
+    /// updates: coins from CoinGecko's top-coins list, so it can't tell which you add.
     private func fetchLivePrice() async {
         let key = priceKey
         guard let settings = session.document?.settings, livePrice?.key != key else { return }
-        let price: Decimal?
-        switch mode {
-        case .bankBalances:
-            let currency = row.bank.account.currency.uppercased()
-            guard settings.automaticFX || session.isFixture, currency.count == 3, currency != "USD" else { return }
-            price = try? await PublicPrices.currencyRate(currency).max { $0.providerTime < $1.providerTime }?.rate.value
-        case .metals:
-            guard settings.automaticMetals || session.isFixture, let metal = try? PreciousMetal.resolve(row.holding.coin) else { return }
-            price = try? await PublicPrices.metalSpot(metal, fetchedAt: Date()).priceUSD.value
-        default:
-            let id = row.holding.resolvedCoinID
-            guard settings.automaticPrices || session.isFixture, !id.isEmpty else { return }
-            price = try? await PublicPrices.quotes(ids: [id], key: settings.coinGeckoKey).first?.priceUSD.value
+        // A lookup you asked for by choosing it: tried a few times, as a source may be busy (the dashboard's charts use
+        // the same ones), with Binance as the coins' second source.
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(4)) }
+            guard !Task.isCancelled, key == priceKey else { return }
+            let price: Decimal?
+            switch mode {
+            case .bankBalances:
+                let currency = row.bank.account.currency.uppercased()
+                guard currency.count == 3, currency != "USD" else { return }
+                price = try? await PublicPrices.currencyRate(currency).max { $0.providerTime < $1.providerTime }?.rate.value
+            case .metals:
+                guard let metal = try? PreciousMetal.resolve(row.holding.coin) else { return }
+                price = try? await PublicPrices.metalSpot(metal, fetchedAt: Date()).priceUSD.value
+            default:
+                let id = row.holding.resolvedCoinID
+                guard !id.isEmpty else { return }
+                let listed = try? await PublicPrices.quotes(ids: [id], key: settings.coinGeckoKey).first?.priceUSD.value
+                if let listed { price = listed } else if let symbol = coin?.symbol { price = await PublicPrices.binancePrice(symbol: symbol) } else { price = nil }
+            }
+            if let price, !Task.isCancelled, key == priceKey { livePrice = (key, price); return }
         }
-        if let price, !Task.isCancelled, key == priceKey { livePrice = (key, price) }
+        Logger(subsystem: "org.uponly", category: "entry").notice("no current price for \(key, privacy: .private)")
     }
     /// What the amount is worth now, as each digit is typed: today's price once fetched, else the latest saved one.
     private var approxUSD: Decimal? {

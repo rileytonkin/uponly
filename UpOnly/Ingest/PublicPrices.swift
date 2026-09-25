@@ -118,7 +118,48 @@ nonisolated enum PublicPrices {
             return QuoteObservation(assetID: try CanonicalAssetID(id), priceUSD: PreciseDecimal(value), providerTime: time, fetchedAt: fetchedAt, provider: "CoinGecko")
         }
     }
-    static func quotes(ids: [String], key: String) async throws -> [QuoteObservation] { try await marketQuotes(ids: ids, key: key).quotes }
+    static func quotes(ids: [String], key: String) async throws -> [QuoteObservation] { try await cryptoQuotes(ids: ids, key: key).quotes }
+    /// Every price Binance trades against USDT, from one request (so it can't tell which coins you hold), kept for a
+    /// minute so the refresh, the charts and the Add form share it.
+    static func binanceBook() async throws -> [String: Decimal] {
+        if let cached = await BinanceBook.shared.fresh() { return cached }
+        let data = try await request(host: "api.binance.com", path: "/api/v3/ticker/price", query: [], limit: 4 * 1024 * 1024)
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw PriceError.invalidResponse }
+        var book: [String: Decimal] = [:]
+        for row in rows {
+            guard let symbol = row["symbol"] as? String, symbol.hasSuffix("USDT"), let text = row["price"] as? String,
+                  let price = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), MoneyInput.isFinite(price), price > 0 else { continue }
+            book[symbol] = price
+        }
+        guard !book.isEmpty else { throw PriceError.invalidResponse }
+        await BinanceBook.shared.store(book)
+        return book
+    }
+    /// Current coin prices, Binance first: one request for all its prices, used for coins whose ticker is known to be
+    /// theirs (CoinGecko's top coins) and, when a saved price is given, agrees with it. CoinGecko's top-coins list
+    /// prices the rest, and everything when Binance can't be reached (it blocks some countries, the US among them).
+    static func cryptoQuotes(ids: [String], key: String, saved: [String: Decimal] = [:]) async throws -> (quotes: [QuoteObservation], symbols: [String: String]) {
+        let wanted = Set(ids)
+        var symbols = knownSymbols, quotes: [QuoteObservation] = []
+        if let book = try? await binanceBook() {
+            let now = Date()
+            for id in wanted.sorted() {
+                guard let symbol = knownSymbols[id], let pair = binancePair(symbol), let price = book[pair] else { continue }
+                // A price far from the last saved one means the ticker isn't this coin here; CoinGecko decides.
+                if let last = saved[id], last > 0, abs(NSDecimalNumber(decimal: price / last).doubleValue - 1) > 0.5 { continue }
+                quotes.append(QuoteObservation(assetID: CanonicalAssetID(rawValue: id), priceUSD: PreciseDecimal(price), providerTime: now, fetchedAt: now, provider: "Binance"))
+            }
+        }
+        let rest = wanted.subtracting(quotes.map(\.assetID.rawValue))
+        if !rest.isEmpty {
+            do {
+                let listed = try await marketQuotes(ids: rest.sorted(), key: key)
+                quotes += listed.quotes
+                symbols.merge(listed.symbols) { _, latest in latest }
+            } catch { if quotes.isEmpty { throw error } }
+        }
+        return (quotes, symbols)
+    }
     /// Current prices without naming the coins you hold: the 250 largest by market cap in one request, then the next
     /// 250 if a coin is still missing, and only a coin outside those is asked for by name. Also returns each listed
     /// coin's ticker, for finding its long history on an exchange.
@@ -463,12 +504,19 @@ extension PublicPrices {
         if includeCurrent && document.settings.automaticMetals && metals.isEmpty { result.sourceIssues["metals"] = "No gold or silver is tracked yet. Add a holding under Manage." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
             do {
-                let listed = try await marketQuotes(ids: crypto, key: document.settings.coinGeckoKey)
+                // Each coin's last saved price, to check Binance's against.
+                let held = Set(crypto)
+                var latest: [String: QuoteObservation] = [:]
+                for quote in document.quotes where held.contains(quote.assetID.rawValue) && (latest[quote.assetID.rawValue].map { $0.providerTime < quote.providerTime } ?? true) {
+                    latest[quote.assetID.rawValue] = quote
+                }
+                let saved = latest.mapValues(\.priceUSD.value)
+                let listed = try await cryptoQuotes(ids: crypto, key: document.settings.coinGeckoKey, saved: saved)
                 let quotes = listed.quotes
                 symbols.merge(listed.symbols) { _, latest in latest }
                 result.quotes += quotes
                 let missing = Set(crypto).subtracting(quotes.map(\.assetID.rawValue)).sorted()
-                if !missing.isEmpty { result.sourceIssues["crypto"] = "CoinGecko has no price for " + missing.joined(separator: ", ") + ". Check the coin ID matches CoinGecko's." }
+                if !missing.isEmpty { result.sourceIssues["crypto"] = "No price for " + missing.joined(separator: ", ") + ". Check the coin ID matches CoinGecko's." }
             } catch { try Task.checkCancellation(); note(error, .crypto); result.messages.append(message(error)); result.sourceIssues["crypto"] = message(error) }
         }
         if includeCurrent && document.settings.automaticMetals {
@@ -505,31 +553,37 @@ extension PublicPrices {
             (result.quotes + document.quotes).filter { $0.assetID.rawValue == id }.max { $0.providerTime < $1.providerTime }?.priceUSD.value
         }
         for item in pending where !offline && !limited.contains(item.source) {
-            if item.source == .crypto, item.start < coinGeckoStart {
-                guard exchangeCount < 24 else { queued = true; continue }
-                exchangeCount += 1
-                do {
-                    try Task.checkCancellation()
-                    let asset = try CanonicalAssetID(item.identifier)
-                    guard let symbol = symbols[item.identifier], let pair = binancePair(symbol), let price = reference(item.identifier) else {
-                        // No exchange history to be had: record the stretch as checked so it isn't asked for again soon.
-                        result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue
-                    }
-                    if matched[pair] == nil { matched[pair] = await binanceMatches(pair: pair, reference: price, now: now) }
-                    guard matched[pair] == true else {
-                        result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue
-                    }
-                    try await Task.sleep(for: .milliseconds(250))
-                    let data = try await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(item.start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(item.end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1000")])
-                    let quotes = try decodeKlines(data, asset: asset, start: item.start, end: item.end, fetchedAt: now)
-                    result.quotes += quotes
-                    result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: PriceHistory.isComplete(item, observations: quotes.map(\.providerTime), now: now)))
-                } catch {
-                    try Task.checkCancellation(); note(error, item.source)
-                    if offline { continue }
-                    result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false))
+            // Coins: Binance's daily closes first, at any age, for a coin whose pair checks out; CoinGecko covers the
+            // past year for the rest, and any recent stretch Binance couldn't serve (it blocks some countries).
+            if item.source == .crypto {
+                let recent = item.start >= coinGeckoStart
+                var pair: String?
+                if exchangeCount < 24, let symbol = symbols[item.identifier], let candidate = binancePair(symbol), let price = reference(item.identifier) {
+                    if matched[candidate] == nil { matched[candidate] = await binanceMatches(pair: candidate, reference: price, now: now) }
+                    if matched[candidate] == true { pair = candidate }
                 }
-                continue
+                if let pair {
+                    exchangeCount += 1
+                    do {
+                        try Task.checkCancellation()
+                        let asset = try CanonicalAssetID(item.identifier)
+                        try await Task.sleep(for: .milliseconds(250))
+                        let data = try await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(item.start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(item.end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1000")])
+                        let quotes = try decodeKlines(data, asset: asset, start: item.start, end: item.end, fetchedAt: now)
+                        result.quotes += quotes
+                        result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: PriceHistory.isComplete(item, observations: quotes.map(\.providerTime), now: now)))
+                        continue
+                    } catch {
+                        try Task.checkCancellation()
+                        if isOffline(error) { offline = true; continue }
+                        // A failed Binance call doesn't hold back CoinGecko: a recent stretch falls through to it below.
+                        if !recent { result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue }
+                    }
+                } else if !recent {
+                    // No exchange history to be had: record the stretch as checked so it isn't asked for again soon.
+                    if exchangeCount >= 24 { queued = true; continue }
+                    result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue
+                }
             }
             // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
             // Prices stay at eight calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.
@@ -628,8 +682,8 @@ extension PublicPrices {
 
     /// Binance's pair against USDT for a ticker, or nil when it can't be one.
     /// A past day's closing price in dollars, per coin or per gram of gold, for filling in what a purchase cost.
-    /// Coins: CoinGecko's prices for that day within the past year, else the coin's Binance pair (checked against
-    /// today's price, since a ticker can belong to two coins). Gold: Binance's PAXG. Nil when none is published.
+    /// Coins: Binance's daily close for the coin's pair (checked, since a ticker can belong to two coins), else
+    /// CoinGecko's prices for that day within the past year. Gold: Binance's PAXG. Nil when none is published.
     static func closingPrice(assetID: String, symbol: String?, day: Date, today: Decimal?, key: String, now: Date = Date()) async -> Decimal? {
         let start = UTCDay.start(of: day), end = start.addingTimeInterval(86400)
         guard end <= now else { return nil }
@@ -641,13 +695,26 @@ extension PublicPrices {
             guard metal == .gold, let ounce = await binanceClose("PAXGUSDT") else { return nil }
             return try? PriceHistory.pricePerGram(ounce)
         }
+        // Binance first: its pair, checked against today's price, or trusted as one of CoinGecko's top coins' tickers.
+        if let symbol, let pair = binancePair(symbol) {
+            var checks = knownSymbols[assetID] == symbol.lowercased()
+            if let today { checks = await binanceMatches(pair: pair, reference: today, now: now) }
+            if checks, let close = await binanceClose(pair) { return close }
+        }
         if now.timeIntervalSince(start) < 364 * 86400,
            let data = try? await request(host: "api.coingecko.com", path: "/api/v3/coins/" + assetID + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(end.timeIntervalSince1970)))], key: key),
            let price = (try? PriceHistory.decodeCrypto(data, request: PriceHistoryRequest(source: .crypto, key: "asset:" + assetID, identifier: assetID, start: start, end: end), fetchedAt: now))?.last?.priceUSD.value {
             return price
         }
-        guard let symbol, let pair = binancePair(symbol), let today, await binanceMatches(pair: pair, reference: today, now: now) else { return nil }
-        return await binanceClose(pair)
+        return nil
+    }
+    /// A coin's current price from its Binance pair: the fallback when CoinGecko is busy or unreachable.
+    static func binancePrice(symbol: String) async -> Decimal? {
+        guard let pair = binancePair(symbol),
+              let data = try? await request(host: "api.binance.com", path: "/api/v3/ticker/price", query: [URLQueryItem(name: "symbol", value: pair)]),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let text = object["price"] as? String,
+              let price = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), MoneyInput.isFinite(price), price > 0 else { return nil }
+        return price
     }
     static func binancePair(_ symbol: String) -> String? {
         let upper = symbol.uppercased()
@@ -1051,4 +1118,13 @@ extension PublicPrices {
         let data = try await self.request(host: "api.frankfurter.dev", path: "/v2/rates", query: [URLQueryItem(name: "base", value: request.identifier), URLQueryItem(name: "quotes", value: "USD"), URLQueryItem(name: "from", value: ImportDateFormat.today(request.start)), URLQueryItem(name: "to", value: ImportDateFormat.today(request.end.addingTimeInterval(-1)))])
         return try decodeFX(data, currency: request.identifier, fetchedAt: Date(), start: request.start, end: request.end)
     }
+}
+
+/// The last Binance price list and when it came, shared for a minute.
+actor BinanceBook {
+    static let shared = BinanceBook()
+    private var book: [String: Decimal] = [:]
+    private var fetched = Date.distantPast
+    func fresh(now: Date = Date()) -> [String: Decimal]? { now.timeIntervalSince(fetched) < 60 && !book.isEmpty ? book : nil }
+    func store(_ next: [String: Decimal], now: Date = Date()) { book = next; fetched = now }
 }

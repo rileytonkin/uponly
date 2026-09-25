@@ -214,7 +214,7 @@ struct UpOnlySetup: View {
             }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
             DisclosureGroup("What providers receive", isExpanded: $showSourceDetails) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("CoinGecko receives a request for the largest coins, so it can’t tell which you hold. Frankfurter receives currency codes and Gold API metal symbols. They see your IP address; none receives balances, quantities or names.")
+                    Text("Binance and CoinGecko receive requests for all or the largest coins, so they can’t tell which you hold. Frankfurter receives currency codes and Gold API metal symbols. They see your IP address; none receives balances, quantities or names.")
                 }.font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
             }.font(UpOnlyType.body).foregroundStyle(.secondary)
             VStack(spacing: 9) {
@@ -290,7 +290,7 @@ struct UpOnlySourceStatus: View {
         guard let doc = session.document else { return nil }
         switch kind {
         case .wise: return doc.bankBalances.filter { $0.source == "Wise" }.map(\.observedAt).max()
-        case .crypto: return doc.quotes.filter { $0.provider.hasPrefix("CoinGecko") }.map(\.fetchedAt).max()
+        case .crypto: return doc.quotes.filter { PreciousMetal.asset($0.assetID) == nil && ($0.provider.hasPrefix("CoinGecko") || $0.provider.hasPrefix("Binance")) }.map(\.fetchedAt).max()
         case .metals: return doc.quotes.filter { $0.provider.hasPrefix("Gold API") }.map(\.fetchedAt).max()
         case .fx: return doc.fx.filter { $0.provider.hasPrefix("Frankfurter") }.map(\.fetchedAt).max()
         }
@@ -393,7 +393,7 @@ struct UpOnlySources: View {
                     UpOnlySourceStatus(kind: .crypto, savedOn: session.document?.settings.automaticPrices == true, interval: "Updates every hour",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
                     DisclosureGroup("What the price services receive") {
-                        Text("CoinGecko gets a request for the 250 largest coins, so it can’t tell which you hold; only a coin outside the top 500 is asked for by name. History older than a year comes from Binance, which sees that coin’s ticker and dates. Your quantities, portfolio names and balances stay private.")
+                        Text("Prices come from Binance first, in one request for every coin it trades, so it can’t tell which you hold. CoinGecko prices the rest from its list of the largest coins (only a coin outside its top 500 is asked for by name), and everything when Binance can’t be reached. Daily history comes from Binance, or CoinGecko for the past year; each sees a coin’s ticker or ID and the dates. Your quantities, portfolio names and balances stay private.")
                             .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                     }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
