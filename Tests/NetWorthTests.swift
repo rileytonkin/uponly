@@ -607,6 +607,37 @@ struct NetWorthTests {
         #expect(!rebuilt.dailyValuations.contains { $0.scope == .banks })
     }
 
+    @Test("Looked-up balances and rates match the scans they replace: latest by then, the later record on a tie, a week back for past days")
+    func indexedLookups() throws {
+        let now = utc(2026, 9, 20)
+        var doc = document()
+        let account = Account(name: "Savings", currency: "EUR")
+        doc.accounts = [account]
+        doc.trackedBankAccountIDs = [account.id]
+        func balance(_ amount: Decimal, _ at: Date) -> BankBalanceObservation {
+            BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(amount), currency: "EUR", observedAt: at, source: "manual", sourceIdentity: "savings")
+        }
+        func rate(_ value: Decimal, _ at: Date) -> FXObservation {
+            FXObservation(sourceCurrency: "EUR", targetCurrency: "USD", rate: PreciseDecimal(value), providerTime: at, fetchedAt: at, provider: "test")
+        }
+        // Saved out of order, with two balances at the same moment: the one saved later counts.
+        doc.bankBalances = [balance(300, utc(2026, 9, 3)), balance(50, utc(2026, 8, 25)), balance(200, utc(2026, 9, 3)), balance(999, utc(2026, 9, 15))]
+        doc.fx = [rate(2, utc(2026, 9, 2)), rate(3, utc(2026, 8, 20)), rate(5, utc(2026, 9, 5))]
+        let day = utc(2026, 9, 4)
+        #expect(NetWorthCalculator.value(at: day, scope: .banks, document: doc, now: day).total == 400)
+        // A past day takes a rate from the week before it; today takes the latest, however old.
+        #expect(NetWorthCalculator.value(at: utc(2026, 8, 26), scope: .banks, document: doc, now: now).total == 150)
+        #expect(NetWorthCalculator.value(at: utc(2026, 8, 30), scope: .banks, document: doc, now: now).total == nil)
+        #expect(NetWorthCalculator.value(at: utc(2026, 8, 30), scope: .banks, document: doc, now: utc(2026, 8, 30)).total == 150)
+        // Rebuilding with one shared index gives each day exactly what valuing it alone does.
+        let index = ValuationIndex(document: doc)
+        for offset in 0..<25 {
+            let at = UTCDay.start(of: utc(2026, 8, 22)).addingTimeInterval(Double(offset) * 86400 + 86399)
+            #expect(NetWorthCalculator.rebuiltSample(at: at, scope: .banks, document: doc, now: now, index: index)
+                    == NetWorthCalculator.sample(from: NetWorthCalculator.value(at: at, scope: .banks, document: doc, now: now)))
+        }
+    }
+
     @Test("Months are Gregorian UTC months, whatever calendar or time zone the Mac uses")
     func gregorianUTCMonths() throws {
         let lateSeptember = utc(2026, 9, 30, hour: 23, minute: 30)
@@ -899,11 +930,88 @@ struct PurchaseLotTests {
         doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 1, at: utc(2026, 5, 1), document: doc)
         let sold = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 70000, document: doc, at: utc(2026, 9, 4))
         #expect(sold.costUSD == 30000 && sold.gainUSD == 40000 && sold.coveredQuantity == nil)
-        // Only 2 of 8 have a recorded price: report what those cost, and no gain.
+        // The sale took half of what was bought, so only 1 of 8 has a recorded price: report what it cost, and no gain.
         doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 8, at: utc(2026, 6, 1), document: doc)
         let partial = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 560000, document: doc, at: utc(2026, 9, 4))
-        #expect(partial.costUSD == 60000 && partial.gainUSD == nil && partial.returnFraction == nil)
-        #expect(partial.coveredQuantity == 2 && partial.heldQuantity == 8)
+        #expect(partial.costUSD == 30000 && partial.gainUSD == nil && partial.returnFraction == nil)
+        #expect(partial.coveredQuantity == 1 && partial.heldQuantity == 8)
+    }
+    @Test("Cost is replayed in date order: selling out and buying back starts afresh, and a later buy averages with what's left")
+    func costFollowsOrder() throws {
+        var doc = document()
+        let portfolio = Portfolio(name: "Ledger", createdAt: utc(2026, 1, 1))
+        doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: utc(2026, 1, 10), document: doc)
+        let holding = try #require(doc.holdings.first)
+        func lot(_ quantity: Decimal, _ paid: Decimal, _ at: Date) -> PurchaseLot {
+            PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(quantity), paid: PreciseDecimal(paid), currency: "USD", at: at)
+        }
+        // Buy 1 for $10k, sell it all, buy 1 for $60k: what's held cost $60k, not the $35k average of both.
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 0, at: utc(2026, 3, 1), document: doc)
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 1, at: utc(2026, 6, 1), document: doc)
+        doc.purchases = [lot(1, 10000, utc(2026, 1, 10)), lot(1, 60000, utc(2026, 6, 1))]
+        let rebought = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 70000, document: doc, at: utc(2026, 9, 4))
+        #expect(rebought.costUSD == 60000 && rebought.gainUSD == 10000 && rebought.coveredQuantity == nil)
+        // Before the sale, the first coin's cost is what's held.
+        #expect(HoldingPerformance.summary(holdingID: holding.id, valueUSD: 20000, document: doc, at: utc(2026, 2, 1)).costUSD == 10000)
+        // Sold out and bought back at the same moment: the new purchase counts.
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 0, at: utc(2026, 7, 1), document: doc)
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 1, at: utc(2026, 7, 1), document: doc)
+        doc.purchases?.append(lot(1, 50000, utc(2026, 7, 1)))
+        #expect(HoldingPerformance.summary(holdingID: holding.id, valueUSD: 70000, document: doc, at: utc(2026, 9, 4)).costUSD == 50000)
+        // Buy 2 for $20k, sell 1, buy 1 for $30k: the coin kept cost $10k, so the two held cost $40k.
+        var averaged = document()
+        averaged.portfolios = [portfolio]
+        averaged = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("ethereum"), assetName: "Ethereum", quantity: 2, at: utc(2026, 1, 10), document: averaged)
+        let ether = try #require(averaged.holdings.first)
+        averaged = try HoldingMutations.setQuantity(holdingID: ether.id, quantity: 1, at: utc(2026, 2, 1), document: averaged)
+        averaged = try HoldingMutations.setQuantity(holdingID: ether.id, quantity: 2, at: utc(2026, 3, 1), document: averaged)
+        averaged.purchases = [PurchaseLot(holdingID: ether.id, quantity: PreciseDecimal(2), paid: PreciseDecimal(20000), currency: "USD", at: utc(2026, 1, 10)),
+                              PurchaseLot(holdingID: ether.id, quantity: PreciseDecimal(1), paid: PreciseDecimal(30000), currency: "USD", at: utc(2026, 3, 1))]
+        let average = HoldingPerformance.summary(holdingID: ether.id, valueUSD: 50000, document: averaged, at: utc(2026, 9, 4))
+        #expect(average.costUSD == 40000 && average.gainUSD == 10000)
+    }
+    @Test("Coins moved to another portfolio take their share of the cost with them")
+    func moveCarriesCost() throws {
+        var doc = document()
+        let cold = Portfolio(name: "Cold", createdAt: utc(2026, 1, 1)), hot = Portfolio(name: "Hot", createdAt: utc(2026, 1, 1))
+        doc.portfolios = [cold, hot]
+        let bitcoin = try CanonicalAssetID("bitcoin")
+        doc = try HoldingMutations.addHolding(portfolioID: cold.id, assetID: bitcoin, assetName: "Bitcoin", quantity: 2, at: utc(2026, 1, 10), document: doc)
+        let source = try #require(doc.holdings.first)
+        doc.purchases = [PurchaseLot(holdingID: source.id, quantity: PreciseDecimal(2), paid: PreciseDecimal(60000), currency: "USD", at: utc(2026, 1, 10))]
+        doc = try HoldingMutations.moveHolding(assetID: bitcoin, quantity: Decimal(string: "0.5")!, from: cold.id, to: hot.id, at: utc(2026, 2, 1), document: doc)
+        let destination = try #require(doc.holdings.first { $0.portfolioID == hot.id })
+        let kept = HoldingPerformance.summary(holdingID: source.id, valueUSD: 75000, document: doc, at: utc(2026, 9, 4))
+        let moved = HoldingPerformance.summary(holdingID: destination.id, valueUSD: 25000, document: doc, at: utc(2026, 9, 4))
+        #expect(kept.costUSD == 45000 && kept.gainUSD == 30000)
+        #expect(moved.costUSD == 15000 && moved.gainUSD == 10000 && moved.coveredQuantity == nil)
+        // Without a recorded cost, nothing is carried.
+        var plain = doc; plain.purchases = nil
+        plain = try HoldingMutations.moveHolding(assetID: bitcoin, quantity: Decimal(string: "0.5")!, from: cold.id, to: hot.id, at: utc(2026, 3, 1), document: plain)
+        #expect(plain.purchases == nil)
+    }
+    @Test("A purchase in another currency converts at the rate on its day, not the month's closing rate")
+    func purchaseDayRate() throws {
+        var doc = document()
+        let portfolio = Portfolio(name: "Ledger", createdAt: utc(2026, 1, 1))
+        doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: utc(2026, 1, 15), document: doc)
+        let holding = try #require(doc.holdings.first)
+        func rate(_ value: String, _ at: Date) -> FXObservation {
+            FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: value)!), providerTime: at, fetchedAt: at, provider: "test")
+        }
+        doc.fx = [rate("1.2", utc(2026, 1, 12)), rate("1.4", utc(2026, 1, 31))]
+        doc.purchases = [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(1), paid: PreciseDecimal(1000), currency: "GBP", at: utc(2026, 1, 15))]
+        let summary = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 1500, document: doc, at: utc(2026, 9, 4))
+        #expect(summary.costUSD == 1200 && summary.gainUSD == 300)
+        // The day's own rate counts, even one published later that day.
+        doc.fx.append(rate("1.3", utc(2026, 1, 15).addingTimeInterval(4 * 3600)))
+        #expect(HoldingPerformance.summary(holdingID: holding.id, valueUSD: 1500, document: doc, at: utc(2026, 9, 4)).costUSD == 1300)
+        // No rate in the week before: no dollar cost, only what was paid in pounds.
+        doc.fx = [rate("1.2", utc(2026, 1, 5)), rate("1.4", utc(2026, 1, 31))]
+        let unpriced = HoldingPerformance.summary(holdingID: holding.id, valueUSD: 1500, document: doc, at: utc(2026, 9, 4))
+        #expect(unpriced.costUSD == nil && unpriced.costNative == 1000 && unpriced.costCurrency == "GBP")
     }
 }
 
@@ -964,6 +1072,59 @@ struct PurchaseLotTests {
         let model = PopoverModel(); model.replace(with: doc); model.select(month); model.selectPeriod(.annual)
         #expect(model.state.totals == nil && model.state.unavailable == .exchangeRates(["GBP"]))
     }
+    @Test("A company's payments stay income in All until its profit for the month is reported")
+    func unreportedCompanyKeepsPayments() {
+        var doc = document(); let month = MonthKey("2025-09")!
+        doc.businessAccounting = [BusinessBook(id: "acme", name: "Acme", ownership: [OwnershipPeriod(fromMonth: "2025-01", numerator: 1, denominator: 2)], firstMonth: "2025-01", sourceURL: "", basis: "",
+                                               months: [BusinessMonth(month: "2025-08", profitUSD: 8000, sourceRange: "test")], fetchedAt: Date(), transferCounterparties: ["Acme Ltd"])]
+        doc.entries = [Entry(month: month, kind: .income, amount: 3000, currency: "USD", label: "Acme Ltd"),
+                       Entry(month: month, kind: .income, amount: 1000, currency: "USD", label: "Freelance"),
+                       Entry(month: month, kind: .expense, amount: 2500, currency: "USD", label: "Rent")]
+        let personal = MonthlyLedger.personal(month, document: doc)
+        #expect(personal.totals?.net == 1500 && personal.totals?.ownerPaymentsByCompany["acme"] == 3000)
+        // September isn't reported: All has no complete figure, and its partial one still counts what Acme paid you.
+        let all = MonthlyLedger.evaluate(month, document: doc)
+        #expect(all.totals == nil && all.unavailable == .accounting(["Acme"]))
+        #expect(all.partialTotals?.net == 1500 && all.partialTotals?.personalIncome == 4000)
+        let model = PopoverModel(); model.replace(with: doc); model.select(month)
+        #expect(model.availableTotals?.net == 1500)
+        // Once it's reported, the payment is swapped for your share of the profit.
+        doc.businessAccounting?[0].months.append(BusinessMonth(month: "2025-09", profitUSD: 10000, sourceRange: "test"))
+        let reported = MonthlyLedger.evaluate(month, document: doc)
+        #expect(reported.totals?.personalIncome == 1000 && reported.totals?.otherBusiness == 5000 && reported.totals?.net == 3500)
+        model.replace(with: doc)
+        #expect(model.availableTotals?.net == 3500)
+    }
+    @Test("A company owned before its accounting starts keeps its payments as income while another company's profit is added")
+    func paymentsBeforeAccountingStarts() {
+        var doc = document(); let month = MonthKey("2025-09")!
+        doc.businessAccounting = [
+            BusinessBook(id: "acme", name: "Acme", ownership: [OwnershipPeriod(fromMonth: "2025-01", numerator: 1, denominator: 2)], firstMonth: "2025-10", sourceURL: "", basis: "",
+                         fetchedAt: Date(), transferCounterparties: ["Acme Ltd"]),
+            BusinessBook(id: "beta", name: "Beta", ownership: [OwnershipPeriod(fromMonth: "2025-01", numerator: 1, denominator: 1)], firstMonth: "2025-01", sourceURL: "", basis: "",
+                         months: [BusinessMonth(month: "2025-09", profitUSD: 2000, sourceRange: "test")], fetchedAt: Date())]
+        doc.entries = [Entry(month: month, kind: .income, amount: 3000, currency: "USD", label: "Acme Ltd"),
+                       Entry(month: month, kind: .income, amount: 1000, currency: "USD", label: "Freelance"),
+                       Entry(month: month, kind: .expense, amount: 2500, currency: "USD", label: "Rent")]
+        let all = MonthlyLedger.evaluate(month, document: doc)
+        #expect(all.businesses.map(\.book.id) == ["beta"])
+        #expect(all.totals?.personalIncome == 4000 && all.totals?.otherBusiness == 2000 && all.totals?.net == 3500)
+    }
+    @Test("A stale accounting fetch only asks for a refresh on the current month and an unreported last month")
+    func staleAccountingOnlyRecent() {
+        var doc = document()
+        let current = MonthKey.current(), previous = current.previous, settled = previous.previous
+        doc.businessAccounting = [BusinessBook(id: "acme", name: "Acme", ownership: [OwnershipPeriod(fromMonth: "2020-01", numerator: 1, denominator: 2)], firstMonth: "2020-01", sourceURL: "", basis: "",
+                                               months: [BusinessMonth(month: settled.description, profitUSD: 1000, sourceRange: "test")], fetchedAt: Date().addingTimeInterval(-3 * 86400))]
+        doc.reviewedMonths = [settled.description]
+        let old = MonthlyLedger.evaluate(settled, document: doc)
+        #expect(old.warnings.isEmpty && !old.isEstimated && old.totals?.net == 500)
+        #expect(MonthlyLedger.evaluate(previous, document: doc).warnings.contains { $0.contains("refresh needed") })
+        #expect(MonthlyLedger.evaluate(current, document: doc).warnings.contains { $0.contains("refresh needed") })
+        // Last month, once reported, is settled too.
+        doc.businessAccounting?[0].months.append(BusinessMonth(month: previous.description, profitUSD: 1000, sourceRange: "test"))
+        #expect(MonthlyLedger.evaluate(previous, document: doc).warnings.isEmpty)
+    }
 }
 
 struct ChartEstimatesTests {
@@ -986,15 +1147,19 @@ struct ChartEstimatesTests {
         #expect(ChartEstimates.nearest(series, to: day(-45), within: 30 * 86400)?.value == nil)
         #expect(ChartEstimates.nearest([], to: now) == nil)
     }
-    @Test("A price is used as saved when close, drawn between its neighbours when not, carried when one-sided")
+    @Test("A price is used as saved when close, drawn between neighbours up to 90 days apart, carried when one-sided; a longer gap stays a gap")
     func estimate() {
-        let series: ChartEstimates.Series = [(day(-100), 100), (day(0), 200)]
+        let series: ChartEstimates.Series = [(day(-80), 100), (day(0), 200)]
         let close = ChartEstimates.estimate(series, at: day(-2))
         #expect(close?.value == 200 && close?.to == nil)
-        let between = ChartEstimates.estimate(series, at: day(-25))
-        #expect(between?.value == 175 && between?.from == day(-100) && between?.to == day(0))
+        let between = ChartEstimates.estimate(series, at: day(-20))
+        #expect(between?.value == 175 && between?.from == day(-80) && between?.to == day(0))
         #expect(ChartEstimates.estimate(series, at: day(60))?.value == 200)    // after the last, within 90 days
         #expect(ChartEstimates.estimate(series, at: day(-200)) == nil)        // before the first, too far
+        // Saved prices 100 days apart: no line across and nothing carried into the gap, except right beside a saved one.
+        let sparse: ChartEstimates.Series = [(day(-100), 100), (day(0), 200)]
+        #expect(ChartEstimates.estimate(sparse, at: day(-25)) == nil && ChartEstimates.estimate(sparse, at: day(-90)) == nil)
+        #expect(ChartEstimates.estimate(sparse, at: day(-99))?.value == 100)
     }
     @Test("A saved day's missing price, rate or balance is estimated and named; nothing to go on leaves it incomplete")
     func filled() throws {
@@ -1090,16 +1255,33 @@ struct PeriodChangeTests {
         ValuationComponent(id: id, kind: .bank, label: "Part", currency: "USD", nativeAmount: PreciseDecimal(1), usdValue: value.map(PreciseDecimal.init),
                            quoteTime: nil, fxTime: nil, isStale: false, missing: value == nil ? "balance" : nil)
     }
-    @Test("A change over the range is today's figure against the range's first, and new money counts")
+    @Test("A change over the range is today's figure against the range's first; a part added or gone during it doesn't count")
     func change() {
         let change = PeriodChange(from: 4000, to: 5000)
         #expect(change.amount == 1000 && change.fraction == Decimal(string: "0.25") && change.previous == 4000)
         #expect(PeriodChange(from: 0, to: 50).fraction == nil)
-        let a = UUID(), b = UUID()
-        let parts = PeriodChange(parts: [part(a, 60), part(b, 40)], then: [part(a, 80)])
-        #expect(parts?.amount == 20 && parts?.fraction == Decimal(string: "0.25"))
-        // Nothing then, or a part that can't be valued, gives no change.
+        let a = UUID(), b = UUID(), c = UUID()
+        // b was added during the range and c is gone: only a is compared.
+        let parts = PeriodChange(parts: [part(a, 60), part(b, 40)], then: [part(a, 80), part(c, 50)])
+        #expect(parts?.amount == -20 && parts?.fraction == Decimal(string: "-0.25") && parts?.previous == 80)
+        // A new part that can't be valued yet doesn't block the change.
+        #expect(PeriodChange(parts: [part(a, 60), part(b, nil)], then: [part(a, 80)])?.amount == -20)
+        // Nothing in common, or a shared part that can't be valued, gives no change.
         #expect(PeriodChange(parts: [part(a, 60)], then: []) == nil)
+        #expect(PeriodChange(parts: [part(b, 60)], then: [part(a, 80)]) == nil)
         #expect(PeriodChange(parts: [part(a, nil)], then: [part(a, 80)]) == nil)
+    }
+    @Test("A rolling range opens at the close of the day before it starts, not that day's")
+    func rangeOpensAtPreviousClose() {
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
+        let first = UTCDay.start(of: Date(timeIntervalSince1970: 1_790_000_000))
+        func saved(_ offset: Double) -> DailyValuation {
+            DailyValuation(utcDay: first.addingTimeInterval(offset * 86400), scope: .allTracked, total: PreciseDecimal(100), isComplete: true, components: [],
+                           computedAt: first.addingTimeInterval(offset * 86400 + 86399), includedAccountIDs: [], includedPortfolioIDs: [])
+        }
+        doc.dailyValuations = [saved(7), saved(-2), saved(0), saved(-1)]
+        // 7D from 2 pm: the day it starts in closes inside the range, so the range opens at the day before's close.
+        let week = DateInterval(start: first.addingTimeInterval(14 * 3600), end: first.addingTimeInterval(7 * 86400 + 14 * 3600))
+        #expect(DashboardPeriod.samples(in: week, scope: .allTracked, document: doc).map(\.utcDay) == [first.addingTimeInterval(-86400), first, first.addingTimeInterval(7 * 86400)])
     }
 }

@@ -143,7 +143,7 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
             let ownership = book.ownership(at: month.description)
             let share = row.flatMap { row in ownership.flatMap { try? $0.portion(row.profitUSD) } }
             let contribution = BusinessContribution(book: book, observation: row, share: share, ownershipLabel: ownership?.label ?? "Ownership missing")
-            let warnings = [book.warning, row?.warning, Date().timeIntervalSince(book.fetchedAt) > 86400 ? "Showing saved accounting; refresh needed." : nil].compactMap { $0 }
+            let warnings = [book.warning, row?.warning, book.needsRefresh(for: month) ? "Showing saved accounting; refresh needed." : nil].compactMap { $0 }
             return PanelState(totals: row.map { MonthTotals(otherBusiness: $0.profitUSD) }, isEstimated: month == .current() || row?.estimated == true || !warnings.isEmpty,
                               waitingCaption: row == nil ? "No accounting result for this month." : book.basis,
                               unavailable: row == nil ? .accounting([book.name]) : nil,
@@ -207,6 +207,9 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
                     totals.moneyOut = try MoneyInput.add(totals.moneyOut, value.moneyOut)
                     totals.otherBusiness = try MoneyInput.add(totals.otherBusiness, value.otherBusiness)
                     totals.ownerPayments = try MoneyInput.add(totals.ownerPayments, value.ownerPayments)
+                    for (company, paid) in value.ownerPaymentsByCompany {
+                        totals.ownerPaymentsByCompany[company] = try MoneyInput.add(totals.ownerPaymentsByCompany[company] ?? 0, paid)
+                    }
                     known += 1
                 }
                 estimated = estimated || result.isEstimated
@@ -231,13 +234,6 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
                                waitingCaption: missing > 0 ? "Partial result · \(missing) month\(missing == 1 ? "" : "s") unavailable" : "All recorded months in this period",
                                unavailable: unavailable, businesses: contributions.values.sorted { $0.book.name < $1.book.name }, warnings: warnings.sorted(), missingMonths: missing)
         } catch { return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount) }
-    }
-    func breakdown(_ kind: EntryKind) -> [(label: String, amount: Decimal)] {
-        guard let document else { return [] }
-        return document.entries.filter { $0.month == month.description && $0.kind == kind && $0.bucket == .personal }.compactMap { entry in
-            guard let rate = MonthlyLedger.rate(currency: entry.currency, month: month, document: document), let value = try? MoneyInput.multiply(entry.amount, rate) else { return nil }
-            return (entry.label, value)
-        }.sorted { $0.amount > $1.amount }
     }
     func markReviewed() { Task { await owner?.perform { doc in if !doc.reviewedMonths.contains(month.description) { doc.reviewedMonths.append(month.description) } } } }
 }
@@ -303,10 +299,15 @@ nonisolated enum DashboardPeriod {
               let next = UTCDay.calendar.date(byAdding: period == .annual ? .year : .month, value: 1, to: start) else { return DateInterval(start: now, end: now) }
         return DateInterval(start: min(start, now), end: min(now, next.addingTimeInterval(-1)))
     }
+    /// The saved days a range is drawn from, opening with the close before it starts. A day's sample is its close, so
+    /// the day the range starts in already includes hours inside the range: 7D from 2 pm on the 18th opens at the
+    /// 17th's close, not the 18th's.
     static func samples(in interval: DateInterval, scope: ValuationScope, document: VaultDocument) -> [DailyValuation] {
-        document.dailyValuations.filter {
-            $0.scope == scope && UTCDay.start(of: $0.utcDay) >= UTCDay.start(of: interval.start)
-            && UTCDay.start(of: $0.utcDay) <= UTCDay.start(of: interval.end)
+        let first = UTCDay.start(of: interval.start).addingTimeInterval(-86400), last = UTCDay.start(of: interval.end)
+        return document.dailyValuations.filter {
+            guard $0.scope == scope else { return false }
+            let day = UTCDay.start(of: $0.utcDay)
+            return day >= first && day <= last
         }.sorted { $0.utcDay == $1.utcDay ? $0.computedAt < $1.computedAt : $0.utcDay < $1.utcDay }
     }
 }
