@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Builds Up Only's bank catalog: names, aliases, countries and a logo for each bank.
 
-  python3 scripts/bank-catalog/build.py merge  # regional lists in .context/banks/*.json -> banks.json
+  python3 scripts/bank-catalog/build.py merge  # regional lists in .context/banks/*.json -> banks.json (optional;
+                                               # banks.json is the curated list the app ships)
   python3 scripts/bank-catalog/build.py logos  # fetch each bank's App Store icon (favicon as a fallback), cached
   python3 scripts/bank-catalog/build.py assets # write BankLogos/*.imageset and the BankCatalog data asset
 
