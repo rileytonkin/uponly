@@ -198,9 +198,9 @@ extension UpOnlyUnlockedPanel {
                 Text("Transactions").font(UpOnlyType.section)
                 ManageCard {
                     if latest.isEmpty {
-                        ManageRow(title: "Add a transaction", caption: "Or import a bank statement", chevron: true, action: { session.addingInMenu = true }) {
+                        UpOnlyRow(title: "Add a transaction", caption: "Or import a bank statement", chevron: true, action: { session.addingInMenu = true }) {
                             UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 24)
-                        } menu: { EmptyView() }
+                        }
                     } else {
                         let byMonth = Dictionary(grouping: latest, by: \.month)
                         ForEach(byMonth.keys.sorted(by: >), id: \.self) { month in
@@ -212,8 +212,8 @@ extension UpOnlyUnlockedPanel {
                                 UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry)).padding(.vertical, 2)
                             }
                         }
-                        ManageRow(title: entries.count > latest.count ? "See all \(entries.count) transactions" : "See all transactions", divided: true, chevron: true,
-                                  action: { manage("Entries") }) { EmptyView() } menu: { EmptyView() }
+                        UpOnlyRow(title: entries.count > latest.count ? "See all \(entries.count) transactions" : "See all transactions", divided: true, chevron: true,
+                                  action: { manage("Entries") }) { EmptyView() }
                             .accessibilityLabel("See all personal transactions")
                     }
                 }

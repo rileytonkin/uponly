@@ -64,7 +64,7 @@ struct UpOnlyPanel: View {
                 Group {
                 if session.document?.settings.setupComplete != true { UpOnlySetup().id(session.sessionToken) }
                 // Add opens at the dashboard's height too, so the menu keeps one size from page to page.
-                else if session.addingInMenu { UpOnlyEntryFlow(compact: true).id(session.sessionToken).frame(minHeight: session.dashboardHeight, alignment: .top) }
+                else if session.addingInMenu { UpOnlyEntryFlow().id(session.sessionToken).frame(minHeight: session.dashboardHeight, alignment: .top) }
                 else { UpOnlyUnlockedPanel(model: model).id(session.sessionToken) }
                 }.frame(width: 344)
             } else { UpOnlyLockView().id(session.sessionToken) }
@@ -705,16 +705,16 @@ struct UpOnlyUnlockedPanel: View {
 
     // MARK: Rows
 
-    /// One bank, company or portfolio row. Every list on the dashboard uses it, so they all look and read the same.
+    /// What one bank, company or portfolio row on the dashboard shows. `assetList` draws each as an `UpOnlyRow`, the
+    /// same row every list in the app uses.
     struct AssetRow: Identifiable {
-        enum Trailing { case chevron, space, none, check(Bool), button(symbol: String, label: String, action: () -> Void) }
         var id: String
         var name: String
         var detail: String? = nil
         /// The detail line is an amount, hidden in privacy mode.
         var detailIsAmount = false
         var value: String
-        /// The row's own move over the last 24 hours, as a fraction.
+        /// The row's own move over the chart's range, as a fraction.
         var change: Decimal? = nil
         /// A second amount under the value, such as a foreign balance under its dollar value. Hidden in privacy mode.
         var valueDetail: String? = nil
@@ -727,81 +727,26 @@ struct UpOnlyUnlockedPanel: View {
         var symbol: String
         var tint: Color
         var selected = false
-        var trailing = Trailing.chevron
+        /// A chevron when the row drills into another page; none in the switcher, or when it focuses this page.
+        var chevron = true
         /// Right-click options, such as updating a balance.
         var options: [(title: String, action: () -> Void)] = []
         var action: () -> Void
-        /// Highlighted (a company page's focus) or checked (the switcher's current page).
-        var isChosen: Bool {
-            if case .check(true) = trailing { return true }
-            return selected
-        }
     }
     func assetList(_ rows: [AssetRow]) -> some View {
-        VStack(spacing: 0) {
+        ManageCard {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                if index > 0 { Divider().opacity(0.5) }
-                assetRow(row)
-            }
-        }.padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 2).modifier(UpOnlyContentSurface())
-    }
-    func assetRow(_ row: AssetRow) -> some View {
-        HStack(spacing: 6) {
-            Button(action: row.action) {
-                HStack(spacing: 10) {
-                    if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 24) }
-                    else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 24) }
-                    else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 24) }
-                    else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 24) }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(row.name).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
-                        if let detail = row.detail {
-                            Group { if row.detailIsAmount { UpOnlyPrivateText(detail) } else { Text(detail) } }.font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }.frame(minWidth: 96, alignment: .leading)  // a huge amount shrinks before the name disappears
-                    Spacer(minLength: 8)
-                    // Value over its change, as in Delta, so the name keeps the width.
-                    VStack(alignment: .trailing, spacing: 1) {
-                        // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
-                        UpOnlyPrivateText(row.value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1)
-                            .minimumScaleFactor(row.value.count > 13 ? 0.7 : 1)
-                        // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
-                        if let change = row.change {
-                            Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
-                                .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1)
-                        } else if let detail = row.valueDetail {
-                            UpOnlyPrivateText(detail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                    }.layoutPriority(1)
-                    if case .chevron = row.trailing {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                    }
-                    // The switcher's chosen row: a check in the chevron's place, the same width chosen or not.
-                    if case .check(let chosen) = row.trailing {
-                        Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Color.accentColor).opacity(chosen ? 1 : 0).frame(width: 12)
-                    }
-                // Every row is two lines tall, so one with a second line doesn't stand out from the rest.
-                }.frame(minHeight: 30).padding(.vertical, 8).contentShape(Rectangle())
-            }.buttonStyle(UpOnlyRowButtonStyle(selected: row.selected))
-                .contextMenu { ForEach(Array(row.options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
-                .accessibilityLabel(row.name).accessibilityValue(spokenValue(row))
-                .accessibilityAddTraits(row.isChosen ? .isSelected : [])
-            switch row.trailing {
-            case .chevron, .check, .none: EmptyView()
-            case .space: Color.clear.frame(width: 24, height: 24)
-            case .button(let symbol, let label, let action):
-                Button(action: action) {
-                    Image(systemName: symbol).font(.system(size: 11, weight: .medium)).frame(width: 24, height: 24).contentShape(Rectangle())
-                }.buttonStyle(.plain).foregroundStyle(.secondary).help(label).accessibilityLabel(label)
+                UpOnlyRow(title: row.name, caption: row.detail, captionIsPrivate: row.detailIsAmount, value: row.value, change: row.change,
+                          valueDetail: row.valueDetail, divided: index > 0, chevron: row.chevron, selected: row.selected, options: row.options,
+                          action: row.action) { assetBadge(row) }
             }
         }
     }
-    /// "<value>, <detail>, +0.4% over the past 30 days": the name is the label, so VoiceOver reads "<name>, <value>".
-    func spokenValue(_ row: AssetRow) -> String {
-        var parts = [session.privacyMode ? "Hidden value" : row.value]
-        if let detail = row.detail, !(row.detailIsAmount && session.privacyMode) { parts.append(detail) }
-        if let detail = row.valueDetail, !session.privacyMode { parts.append(detail) }
-        if let change = row.change { parts.append(UpOnlyFormat.percent(change) + (worthRange == .all ? " since the first saved value" : " over the " + worthRange.phrase)) }
-        return parts.joined(separator: ", ")
+    /// A row's logo: its bank's, a picture, a coin's or metal's, else its symbol.
+    @ViewBuilder func assetBadge(_ row: AssetRow) -> some View {
+        if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 24) }
+        else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 24) }
+        else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 24) }
+        else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 24) }
     }
 }

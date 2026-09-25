@@ -18,9 +18,6 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     private var explicitlySelectedMonth = false
     weak var owner: UpOnlySession?
     var books: [BusinessBook] { document?.businessAccounting ?? [] }
-    var scopeTitle: String {
-        switch scope { case .all: "All"; case .personal: "Personal"; case .business(let id): books.first { $0.id == id }?.name ?? "Company" }
-    }
     var periodTitle: String { period == .monthly ? month.title : period == .annual ? String(month.year) : "All time" }
     // One selection drives both dashboard sections. Asset history must not be
     // anchored to today while the visible selector names a historical month.
@@ -235,7 +232,6 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
                                unavailable: unavailable, businesses: contributions.values.sorted { $0.book.name < $1.book.name }, warnings: warnings.sorted(), missingMonths: missing)
         } catch { return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount) }
     }
-    func markReviewed() { Task { await owner?.perform { doc in if !doc.reviewedMonths.contains(month.description) { doc.reviewedMonths.append(month.description) } } } }
 }
 
 // Review is an explicit user assertion, never inferred from a balance, an import

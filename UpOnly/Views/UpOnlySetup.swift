@@ -487,32 +487,3 @@ struct UpOnlyProfileImage: View {
         }.frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.3)).accessibilityHidden(true)
     }
 }
-
-struct UpOnlyMonthPicker: View {
-    @Binding var month: MonthKey
-    private var current: MonthKey { .current() }
-    var body: some View {
-        HStack(spacing: 12) {
-            Picker("Month", selection: Binding(get: { month.month }, set: { month = MonthKey(year: month.year, month: $0) })) {
-                ForEach(1...(month.year == current.year ? current.month : 12), id: \.self) { value in
-                    Text(DateFormatter().monthSymbols[value - 1]).tag(value)
-                }
-            }.accessibilityLabel("Transaction month")
-            Picker("Year", selection: Binding(get: { month.year }, set: { value in month = MonthKey(year: value, month: value == current.year ? min(month.month, current.month) : month.month) })) {
-                ForEach((1900...current.year).reversed(), id: \.self) { Text(String($0)).tag($0) }
-            }.accessibilityLabel("Transaction year")
-        }
-    }
-}
-
-/// Full-card actions keep one visible outline, with the same native control states.
-struct UpOnlyCardButtonStyle: ButtonStyle {
-    var radius: CGFloat = 12
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(.primary.opacity(isEnabled ? 0.22 : 0.10)))
-            .background(.primary.opacity(configuration.isPressed ? 0.08 : 0), in: RoundedRectangle(cornerRadius: radius))
-            .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
-    }
-}

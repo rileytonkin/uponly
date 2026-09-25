@@ -13,7 +13,6 @@ nonisolated enum VaultSchema {
 nonisolated enum VaultLimits {
     static let maxBatchBytes = 8 * 1024 * 1024
     static let maxPendingInboxBytes = 100 * 1024 * 1024
-    static let maxObservationSkew: TimeInterval = 5 * 60
     static let quoteStaleAfter: TimeInterval = 60 * 60
     static let fxStaleAfter: TimeInterval = 4 * 24 * 60 * 60
     static let maxVaultFileBytes = 128 * 1024 * 1024
@@ -54,13 +53,9 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     case oversizedVault
     case oversizedBatch
     case oversizedInbox
-    case malformedEnvelope
     case invalidSignature
     case wrongVault
     case unknownSchema
-    case unauthorizedRole
-    case staleSequence
-    case observationInFuture
     case invalidAmount
     case invalidCurrency
     case invalidAssetID
@@ -85,7 +80,6 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
         case .invalidAmount, .overflow: "Enter a valid amount within the supported range."
         case .invalidCurrency: "Enter a three-letter currency code, such as USD or GBP."
         case .invalidAssetID: "Choose a coin from search or enter its exact CoinGecko ID."
-        case .observationInFuture: "Choose today or an earlier date."
         case .insufficientQuantity: "You can’t move more than the quantity you hold."
         case .samePortfolio: "Choose a different destination portfolio."
         case .unknownHolding, .unknownPortfolio: "This holding or portfolio is no longer available. Choose an active one."
@@ -99,7 +93,7 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
         case .unknownSchema, .formatNotActive: "This file needs a compatible version of Up Only. Check for an app update."
         case .staleGeneration, .invalidGeneration, .alreadyOpen, .barrierHeld, .pauseFailed: "Another change is still finishing. Wait a moment, then try again."
         case .missingRecoveryWrapper: "This backup is missing recovery information. Choose another backup."
-        case .corrupt, .backupIncoherent, .malformedEnvelope, .invalidSignature, .wrongVault, .unauthorizedRole, .staleSequence, .malformedLegacy, .verificationFailed, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
+        case .corrupt, .backupIncoherent, .invalidSignature, .wrongVault, .malformedLegacy, .verificationFailed, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
         case .cleanupFailed, .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
         }
     }

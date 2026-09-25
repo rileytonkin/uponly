@@ -13,30 +13,30 @@ extension UpOnlyManagement {
     var securityOverview: some View {
         VStack(alignment: .leading, spacing: 14) {
             ManageCard {
-                ManageRow(title: "Lock now", caption: "Touch ID or your Mac password opens it. Locks after five minutes idle, or when your Mac locks or sleeps.",
+                UpOnlyRow(title: "Lock now", caption: "Touch ID or your Mac password opens it. Locks after five minutes idle, or when your Mac locks or sleeps.",
                           action: { session.lockAndClose() }) {
                     UpOnlySymbolBadge(symbol: "lock.fill", size: 24)
-                } menu: { EmptyView() }
-                ManageRow(title: "New recovery code", caption: "Opens this vault if Touch ID and your password can’t. Replace it if someone may have seen it.",
+                }
+                UpOnlyRow(title: "New recovery code", caption: "Opens this vault if Touch ID and your password can’t. Replace it if someone may have seen it.",
                           divided: true, chevron: true, action: { openSecurityPage(.recoveryCode) }) {
                     UpOnlySymbolBadge(symbol: "key.fill", size: 24)
-                } menu: { EmptyView() }
+                }
             }
             ManageCard {
-                ManageRow(title: "Export encrypted backup", caption: "Restoring it needs your recovery code; keep the two apart.",
+                UpOnlyRow(title: "Export encrypted backup", caption: "Restoring it needs your recovery code; keep the two apart.",
                           action: { Task { await session.exportBackup() } }) {
                     UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 24)
-                } menu: { EmptyView() }
-                ManageRow(title: "Restore from a backup", caption: "Replaces everything here; your current vault is kept beside it.",
+                }
+                UpOnlyRow(title: "Restore from a backup", caption: "Replaces everything here; your current vault is kept beside it.",
                           divided: true, chevron: true, action: { openSecurityPage(.restore) }) {
                     UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 24)
-                } menu: { EmptyView() }
+                }
             }
             ManageCard {
-                ManageRow(title: "Write diagnostics file", caption: "An unencrypted list of account and holding names and dates (no amounts), to help find chart gaps. Delete it when you’re done.",
+                UpOnlyRow(title: "Write diagnostics file", caption: "An unencrypted list of account and holding names and dates (no amounts), to help find chart gaps. Delete it when you’re done.",
                           action: { diagnosticsMessage = session.writeDiagnostics() }) {
                     UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 24)
-                } menu: { EmptyView() }
+                }
             }
             if let diagnosticsMessage { Text(diagnosticsMessage).font(UpOnlyType.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
         }

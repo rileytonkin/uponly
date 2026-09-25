@@ -26,13 +26,6 @@ extension EnvironmentValues {
     @Entry var upOnlyScrollHeight: CGFloat = 540
 }
 
-/// The "…" options menu at the end of a row.
-struct UpOnlyRowMenu: ViewModifier {
-    func body(content: Content) -> some View {
-        content.menuStyle(.borderedButton).menuIndicator(.hidden).fixedSize().controlSize(.small)
-    }
-}
-
 enum UpOnlyEditor: Identifiable {
     case move(Holding), entry, editEntry(Entry), exchangeRate
     case renameAccount(Account), renamePortfolio(Portfolio), purchases(Holding)
@@ -136,7 +129,7 @@ struct UpOnlyManagement: View {
                             confirm: { leaveImport(confirmed: true) }, cancel: { discardingImport = false }).padding(UpOnlyLayout.inset)
                     }
                     Group {
-                        if session.importDraft == nil, !session.importTableMode { UpOnlyMenuScroll { UpOnlyEntryFlow(compact: true) } }
+                        if session.importDraft == nil, !session.importTableMode { UpOnlyMenuScroll { UpOnlyEntryFlow() } }
                         else { UpOnlyImportView() }
                     }.modifier(UpOnlyHiddenWhile(hidden: discardingImport))
                 }
@@ -317,19 +310,19 @@ struct UpOnlyManagement: View {
             } else {
                 ManageCard {
                     ForEach(Array(records.enumerated()), id: \.element.section) { index, record in
-                        ManageRow(title: record.title, caption: record.caption, divided: index > 0, chevron: true, action: { session.managementSection = record.section }) {
+                        UpOnlyRow(title: record.title, caption: record.caption, divided: index > 0, chevron: true, action: { session.managementSection = record.section }) {
                             UpOnlySymbolBadge(symbol: record.symbol, tint: record.tint, size: 24)
-                        } menu: { EmptyView() }
+                        }
                     }
                 }
             }
             ManageCard {
-                ManageRow(title: "Data sources", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Sources" }) {
+                UpOnlyRow(title: "Data sources", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Sources" }) {
                     UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 24)
-                } menu: { EmptyView() }
-                ManageRow(title: "Backup & security", caption: "Touch ID, recovery code and backups", divided: true, chevron: true, action: { session.managementSection = "Security" }) {
+                }
+                UpOnlyRow(title: "Backup & security", caption: "Touch ID, recovery code and backups", divided: true, chevron: true, action: { session.managementSection = "Security" }) {
                     UpOnlySymbolBadge(symbol: "lock.shield.fill", tint: UpOnlyTint.netWorth, size: 24)
-                } menu: { EmptyView() }
+                }
             }
         }
     }

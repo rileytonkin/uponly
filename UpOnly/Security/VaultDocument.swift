@@ -21,6 +21,7 @@ struct VaultDocument: Codable, Sendable, Equatable {
     var quotes: [QuoteObservation]
     var fx: [FXObservation]
     var dailyValuations: [DailyValuation]
+    /// Left from the retired signed inbox and no longer used; kept so older vaults still decode.
     var acceptedBatchIDs: [UUID]
     var trustedSigners: [TrustedSigner]
     var inboxPrivateKeyX963: Data
@@ -72,18 +73,6 @@ struct VaultDocument: Codable, Sendable, Equatable {
             nextOrdinal: 1,
             bankTracking: []
         )
-    }
-
-    func signer(id: UUID) -> TrustedSigner? {
-        trustedSigners.first { $0.id == id }
-    }
-
-    mutating func replaceSigner(_ signer: TrustedSigner) {
-        if let index = trustedSigners.firstIndex(where: { $0.id == signer.id }) {
-            trustedSigners[index] = signer
-        } else {
-            trustedSigners.append(signer)
-        }
     }
 
     func portfolio(id: UUID) -> Portfolio? {

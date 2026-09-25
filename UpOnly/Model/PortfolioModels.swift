@@ -173,27 +173,12 @@ nonisolated struct SignerHighWater: Codable, Sendable, Equatable, Hashable {
     var sequence: UInt64
 }
 
+/// A signer from the retired signed inbox. Nothing uses it now; it's kept so older vaults that saved one still open.
 nonisolated struct TrustedSigner: Codable, Identifiable, Sendable, Equatable {
     var id: UUID
     var publicKeyX963: Data
     var role: SignerRole
     var highWater: [SignerHighWater]
-
-    func sequence(for source: CollectionSource, accountIdentity: String) -> UInt64 {
-        highWater.first { $0.source == source && $0.accountIdentity == accountIdentity }?.sequence ?? 0
-    }
-
-    mutating func raiseHighWater(source: CollectionSource, accountIdentity: String, sequence: UInt64) {
-        if let index = highWater.firstIndex(where: { $0.source == source && $0.accountIdentity == accountIdentity }) {
-            if sequence > highWater[index].sequence {
-                highWater[index].sequence = sequence
-            }
-        } else {
-            highWater.append(
-                SignerHighWater(source: source, accountIdentity: accountIdentity, sequence: sequence)
-            )
-        }
-    }
 }
 
 // Physical metal quantities use fine grams, never a token that represents gold.
