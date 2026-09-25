@@ -214,8 +214,7 @@ struct UpOnlySetup: View {
             }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
             DisclosureGroup("What providers receive", isExpanded: $showSourceDetails) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Frankfurter receives currency codes. Gold API receives metal symbols. Both see your IP address; neither receives balances, quantities or names.")
-                    Text("Crypto prices need a free CoinGecko key. You can add one any time in Manage → Data sources.")
+                    Text("CoinGecko receives a request for the largest coins, so it can’t tell which you hold. Frankfurter receives currency codes and Gold API metal symbols. They see your IP address; none receives balances, quantities or names.")
                 }.font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
             }.font(UpOnlyType.body).foregroundStyle(.secondary)
             VStack(spacing: 9) {
@@ -244,7 +243,7 @@ struct UpOnlySetup: View {
         defer { saving = false }
         let token = session.sessionToken
         do {
-            try await session.completeSetup(tracked: TrackedKind.allCases, prices: false, fx: automatic, key: "", metals: automatic)
+            try await session.completeSetup(tracked: TrackedKind.allCases, prices: automatic, fx: automatic, key: "", metals: automatic)
             guard token == session.sessionToken else { return }
             if addData { session.addingInMenu = true }
         } catch { if token == session.sessionToken { self.error = "Setup could not be saved. Please try again." } }
@@ -350,8 +349,6 @@ struct UpOnlySources: View {
     @State private var prices = false
     @State private var fx = false
     @State private var metals = false
-    @State private var metalKey = ""
-    @State private var key = ""
     @State private var message: String?
     @State private var failure: String?
     @State private var loaded = false
@@ -362,7 +359,7 @@ struct UpOnlySources: View {
         #if UPONLY_PERSONAL
         if wise != settings.automaticWise { return true }
         #endif
-        return prices != settings.automaticPrices || fx != settings.automaticFX || key != settings.coinGeckoKey || metals != settings.automaticMetals || metalKey != settings.metalHistoryKey
+        return prices != settings.automaticPrices || fx != settings.automaticFX || metals != settings.automaticMetals
     }
     var body: some View {
         UpOnlyMenuScroll {
@@ -395,25 +392,8 @@ struct UpOnlySources: View {
                                    symbol: "bitcoinsign.circle.fill", tint: UpOnlyTint.crypto, isOn: $prices) {
                     UpOnlySourceStatus(kind: .crypto, savedOn: session.document?.settings.automaticPrices == true, interval: "Updates every hour",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
-                    if prices {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("CoinGecko Demo API key").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your Demo API key", text: $key).textFieldStyle(.roundedBorder).onSubmit { save(draftKey: true) }
-                            UpOnlyFlow(spacing: 8) {
-                                if key != session.document?.settings.coinGeckoKey {
-                                    // Clearing the field and pressing Remove key forgets a saved key.
-                                    Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Remove key" : "Save key") { save(draftKey: true) }
-                                        .buttonStyle(.glassProminent).controlSize(.small)
-                                }
-                                Link("Get a free Demo key", destination: URL(string: "https://www.coingecko.com/en/api/pricing")!).font(UpOnlyType.body).buttonStyle(.bordered).controlSize(.small)
-                            }
-                            if session.document?.settings.coinGeckoKey.isEmpty != false {
-                                Text("Crypto prices start once a key is saved.").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
                     DisclosureGroup("What the price services receive") {
-                        Text("CoinGecko gets your API key and a request for the 250 largest coins, so it can’t tell which you hold; only a coin outside the top 500 is asked for by name. History older than a year comes from Binance, which sees that coin’s ticker and dates. Your quantities, portfolio names and balances stay private.")
+                        Text("CoinGecko gets a request for the 250 largest coins, so it can’t tell which you hold; only a coin outside the top 500 is asked for by name. History older than a year comes from Binance, which sees that coin’s ticker and dates. Your quantities, portfolio names and balances stay private.")
                             .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                     }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
@@ -422,20 +402,10 @@ struct UpOnlySources: View {
                 UpOnlySettingsCard(title: "Metal prices", subtitle: "Estimated market value of your metals.", symbol: "square.stack.3d.up.fill", tint: UpOnlyTint.metals, isOn: $metals) {
                     UpOnlySourceStatus(kind: .metals, savedOn: session.document?.settings.automaticMetals == true, interval: "Updates every hour",
                                        refresh: { Task { await session.refreshPrices() } }, refreshDisabled: session.isBusy)
-                    if metals {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Gold API history key (optional)").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            SecureField("Paste your history key", text: $metalKey).textFieldStyle(.roundedBorder).onSubmit { save(draftMetalKey: true) }
-                            UpOnlyFlow(spacing: 8) {
-                                if metalKey != session.document?.settings.metalHistoryKey {
-                                    Button("Save key") { save(draftMetalKey: true) }.buttonStyle(.glassProminent).controlSize(.small)
-                                }
-                                Link("Get a free history key", destination: URL(string: "https://gold-api.com/pricing")!).font(UpOnlyType.body).buttonStyle(.bordered).controlSize(.small)
-                            }
-                            Text("Live prices need no key (Swissquote steps in when Gold API can’t answer) and are saved on this Mac every hour, building your own price history. A key only fills gaps from time offline. Your weights and storage locations stay private.")
-                                .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
+                    DisclosureGroup("Where metal prices come from") {
+                        Text("Live prices come from Gold API, with Swissquote stepping in when it can’t answer, and are saved on this Mac every hour, building your own price history. Gold’s past prices come from Binance’s PAXG, a token backed by gold; other metals fill time offline from the prices either side. Your weights and storage places stay private.")
+                            .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                    }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
             }
             if showsFX {
@@ -469,7 +439,7 @@ struct UpOnlySources: View {
         }.task(id: message) {
             if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
         }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
-        // Switches save themselves with the saved keys. A key being typed saves only with Save key or Return, so a half-typed key is never stored.
+        // Switches save themselves. No source asks for a key: the app's providers work without one.
         .onChange(of: wise) { if loaded { save() } }
         .onChange(of: fx) { if loaded { save() } }
         .onChange(of: metals) { if loaded { save() } }
@@ -479,7 +449,7 @@ struct UpOnlySources: View {
                 #if UPONLY_PERSONAL
                 wise = settings.automaticWise
                 #endif
-                prices = settings.automaticPrices; fx = settings.automaticFX; key = settings.coinGeckoKey; metals = settings.automaticMetals; metalKey = settings.metalHistoryKey }
+                prices = settings.automaticPrices; fx = settings.automaticFX; metals = settings.automaticMetals }
             Task { @MainActor in loaded = true }
         }
     }
@@ -489,24 +459,18 @@ struct UpOnlySources: View {
         #endif
         return "Frankfurter provides reference rates and receives currency codes and network information."
     }
-    /// The one save path. Switches pass the saved keys; Save key passes that one draft key.
-    /// Crypto prices stay off until a key is saved, so turning the switch on first never blocks other changes.
-    private func save(draftKey: Bool = false, draftMetalKey: Bool = false) {
+    /// The one save path. A key saved by an earlier version is kept as it was; nothing here asks for one.
+    private func save() {
         guard let settings = session.document?.settings else { return }
-        let key = draftKey ? self.key : settings.coinGeckoKey
-        let metalKey = draftMetalKey ? self.metalKey : settings.metalHistoryKey
-        if draftKey && key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && settings.coinGeckoKey.isEmpty { return }
-        let prices = self.prices && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         #if UPONLY_PERSONAL
         let wiseChanged = wise != settings.automaticWise
         #else
         let wiseChanged = false
         #endif
-        guard wiseChanged || prices != settings.automaticPrices || fx != settings.automaticFX || metals != settings.automaticMetals
-                || key != settings.coinGeckoKey || metalKey != settings.metalHistoryKey else { return }
+        guard wiseChanged || prices != settings.automaticPrices || fx != settings.automaticFX || metals != settings.automaticMetals else { return }
         Task {
             failure = nil
-            do { try await session.saveSources(prices: prices, fx: fx, key: key, metals: metals, metalKey: metalKey, wise: wise); message = "Changes saved." }
+            do { try await session.saveSources(prices: prices, fx: fx, key: settings.coinGeckoKey, metals: metals, metalKey: settings.metalHistoryKey, wise: wise); message = "Changes saved." }
             catch { failure = error.localizedDescription }
         }
     }

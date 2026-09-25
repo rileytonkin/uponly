@@ -262,7 +262,8 @@ nonisolated enum PriceHistory {
         for group in Dictionary(grouping: document.holdings, by: { $0.assetID.rawValue }) {
             guard let first = group.value.map(\.createdAt).min() else { continue }
             let isMetal = PreciousMetal.asset(CanonicalAssetID(rawValue: group.key)) != nil
-            if isMetal && document.settings.automaticMetals && !document.settings.metalHistoryKey.isEmpty {
+            // Gold's history needs no key (Binance's PAXG); other metals need Gold API's, else gaps are filled between saved prices.
+            if isMetal && document.settings.automaticMetals && (!document.settings.metalHistoryKey.isEmpty || group.key == PreciousMetal.gold.assetID.rawValue) {
                 targets.append((.metal, group.key, first))
             } else if !isMetal && document.settings.automaticPrices {
                 // CoinGecko's free plan covers the past 365 days; older days come from Binance's daily closes.
@@ -477,7 +478,6 @@ extension PublicPrices {
                     result.quotes.append(try await metalSpot(metal, fetchedAt: now))
                 } catch { try Task.checkCancellation(); note(error, .metal); result.messages.append(message(error)); result.sourceIssues["metals"] = message(error) }
             }
-            if !metals.isEmpty && document.settings.metalHistoryKey.isEmpty { result.messages.append("Add a free Gold API key in Sources to recover metal price history after time offline.") }
         }
         if includeCurrent && document.settings.automaticFX && !offline {
             do {
@@ -552,10 +552,20 @@ extension PublicPrices {
                 let observations: [Date]
                 switch item.source {
                 case .crypto:
-                    // Spaced out so a refresh stays well inside the Demo plan's 30 calls a minute.
-                    try await Task.sleep(for: .seconds(2))
+                    // Spaced out to stay inside CoinGecko's limits: 30 calls a minute with a key, a handful without.
+                    try await Task.sleep(for: .seconds(document.settings.coinGeckoKey.isEmpty ? 6 : 2))
                     let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + item.identifier + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(item.start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(item.end.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: document.settings.coinGeckoKey)
                     let quotes = try PriceHistory.decodeCrypto(data, request: item, fetchedAt: now)
+                    result.quotes += quotes; observations = quotes.map(\.providerTime)
+                case .metal where document.settings.metalHistoryKey.isEmpty:
+                    // Without a Gold API key, gold's daily closes from Binance's PAXG (one token is backed by one troy ounce).
+                    try await Task.sleep(for: .milliseconds(250))
+                    let data = try await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: "PAXGUSDT"), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(item.start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(item.end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1000")])
+                    let ounces = try decodeKlines(data, asset: PreciousMetal.gold.assetID, start: item.start, end: item.end, fetchedAt: now)
+                    let quotes = try ounces.map { quote in
+                        var gram = quote; gram.priceUSD = PreciseDecimal(try PriceHistory.pricePerGram(quote.priceUSD.value)); gram.provider = "Binance · PAXG daily close"
+                        return gram
+                    }
                     result.quotes += quotes; observations = quotes.map(\.providerTime)
                 case .metal:
                     let metal = try PreciousMetal.resolve(item.identifier)

@@ -2202,4 +2202,18 @@ struct IntradayTests {
         #expect(DashboardChart.localMarks(fourHourly, range: .month, calendar: calendar).compactMap { $0 } == ["Sep 21", "Sep 28", "Oct 5", "Oct 12"])
         #expect(WorthRange.day.intradayStep == 900 && WorthRange.week.candleInterval == "1h" && WorthRange.year.intradayStep == nil)
     }
+
+    @Test("An account's bank is found from its name, and typing suggests banks")
+    func bankCatalog() {
+        // The bundled catalog is there, with logos for nearly all of it.
+        #expect(BankCatalog.all.count > 900 && BankCatalog.all.filter(\.logo).count > 900)
+        #expect(BankCatalog.bank(named: "Monzo Joint")?.id == "monzo")
+        #expect(BankCatalog.bank(named: "itau")?.name == "Itaú")
+        #expect(BankLogos.logo(for: "Personal · USD", synced: true) == "wise")
+        // Everyday words on their own don't name a bank.
+        #expect(BankCatalog.bank(named: "Joint savings") == nil)
+        #expect(BankCatalog.suggestions("cha").contains { $0.id == "chase" })
+        #expect(BankCatalog.suggestions("bank of am").first?.id == "bank-of-america")
+        #expect(BankCatalog.suggestions("").isEmpty)
+    }
 }

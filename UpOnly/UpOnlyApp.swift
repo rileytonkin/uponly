@@ -55,6 +55,7 @@ import Observation
         popover.hasFullSizeContent = true
         host = NSHostingController(rootView: AnyView(UpOnlyPanel(menuLifecycleManaged: true, closeMenu: { [weak self] in self?.close() }).environment(session)))
         host.sizingOptions = [.preferredContentSize]
+        session.closeMenuHandler = { [weak self] in self?.close() }
         popover.contentViewController = host
         observeLifetime()
         // Switching to another app hides the menu, unless a statement drop zone or file picker is in use.

@@ -14,7 +14,7 @@ extension UpOnlyManagement {
         VStack(alignment: .leading, spacing: 14) {
             ManageCard {
                 ManageRow(title: "Lock now", caption: "Touch ID or your Mac password opens it. Locks after five minutes idle, or when your Mac locks or sleeps.",
-                          action: { session.lockAndAuthenticate() }) {
+                          action: { session.lockAndClose() }) {
                     UpOnlySymbolBadge(symbol: "lock.fill", size: 24)
                 } menu: { EmptyView() }
                 ManageRow(title: "New recovery code", caption: "Opens this vault if Touch ID and your password can’t. Replace it if someone may have seen it.",

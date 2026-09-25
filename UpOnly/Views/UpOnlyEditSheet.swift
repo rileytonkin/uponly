@@ -23,7 +23,6 @@ struct UpOnlyEditSheet: View {
     /// only the month, and one opened for a past month starts with just that month).
     @State private var businessID: String?
     @State private var dayKnown = true
-    @State private var customCurrency = false
     @FocusState private var amountFocused: Bool
     private var actionTitle: String {
         switch editor {
@@ -79,7 +78,6 @@ struct UpOnlyEditSheet: View {
             case .renameAccount(let account): name = account.name
             case .renamePortfolio(let portfolio): name = portfolio.name
             case .entry:
-                currency = defaultCurrency
                 // Opened to fill in a past month: that month, with no day until one is picked.
                 if session.managementInMenu, let month = MonthKey(session.entryMonthForManagement), month < .current() {
                     entryMonth = month.description; dayKnown = false; date = Self.lastDay(of: month)
@@ -90,7 +88,6 @@ struct UpOnlyEditSheet: View {
                 currency = entry.currency; name = entry.label; entryMonth = entry.month; businessID = entry.businessID
                 if let day = entry.day, let parsed = try? ImportDateFormat.iso.date(day) { date = parsed }
                 else { dayKnown = false; date = MonthKey(entry.month).map(Self.lastDay) ?? Date() }
-                customCurrency = !currencyChoices.contains(currency)
             case .exchangeRate:
                 currency = session.requestedRateCurrency ?? "GBP"
                 if let cutoff = rateCutoff { date = cutoff }
@@ -173,19 +170,7 @@ struct UpOnlyEditSheet: View {
                 UpOnlyFormRow(label: "Date", divided: true) {
                     UpOnlyDateButton(date: Binding(get: { date }, set: { date = $0; dayKnown = true }), title: dayKnown ? nil : MonthKey(entryMonth)?.title)
                 }
-                UpOnlyFormRow(label: "Currency", divided: true) {
-                    UpOnlyFormMenu(value: customCurrency ? "Other" : currency.uppercased(), label: "Currency") {
-                        ForEach(currencyChoices, id: \.self) { code in Button(code) { currency = code; customCurrency = false } }
-                        Divider()
-                        Button("Other…") { customCurrency = true; currency = "" }
-                    }
-                }
-                if customCurrency {
-                    UpOnlyFormRow(label: "Code", divided: true) {
-                        TextField("e.g. CHF", text: $currency).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
-                            .accessibilityLabel("Currency code")
-                    }
-                }
+                UpOnlyCurrencyRows(code: $currency)
                 // Only when there's a company it could have been for (or it already isn't yours).
                 if !books.isEmpty || bucket != Bucket.personal.rawValue {
                     UpOnlyFormRow(label: "For", divided: true) {
@@ -216,16 +201,6 @@ struct UpOnlyEditSheet: View {
         case .businessCost: return books.first { $0.id == businessID }?.name ?? "A business"
         case .otherBusiness, .reserve: return "A business account"
         }
-    }
-    /// The currency last typed in by hand, else this Mac's, else dollars.
-    private var defaultCurrency: String {
-        session.document?.entries.last { $0.source == .manual }?.currency ?? Locale.current.currency?.identifier ?? "USD"
-    }
-    /// Common currencies and the ones your accounts use, most likely first.
-    private var currencyChoices: [String] {
-        var seen = Set<String>()
-        return ([defaultCurrency] + (session.document?.accounts.map(\.currency) ?? []) + ["USD", "EUR", "GBP"])
-            .map { $0.uppercased() }.filter { $0.count == 3 && seen.insert($0).inserted }
     }
     private static func lastDay(of month: MonthKey) -> Date {
         let start = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) ?? Date()

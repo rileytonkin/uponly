@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "hdbank.png",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}

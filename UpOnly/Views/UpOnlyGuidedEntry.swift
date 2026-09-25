@@ -11,7 +11,6 @@ struct UpOnlyGuidedEntry: View {
     @State private var step = 0
     @State private var search = ""
     @State private var newAccount = false
-    @State private var customCurrency = false
     @State private var unchanged = false
     @State private var exactCoin = false
     @State private var error: String?
@@ -85,7 +84,7 @@ struct UpOnlyGuidedEntry: View {
             }
             initial = row.content
             newAccount = addingAccount || activeAccounts.isEmpty || (row.bank.account.existingID == nil && !row.bank.account.name.isEmpty)
-            customCurrency = !["USD", "GBP", "EUR"].contains(row.bank.account.currency)
+            if row.bank.account.currency.isEmpty { row.bank.account.currency = "USD" }
             if mode == .bankBalances ? row.bank.account.existingID != nil : mode == .metals ? !row.holding.coin.isEmpty : !row.holding.resolvedCoinID.isEmpty { step = 1; preselected = true }
             #if UPONLY_FIXTURE
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_STEP"] == "choose" { step = 0 }
@@ -117,7 +116,7 @@ struct UpOnlyGuidedEntry: View {
                     }
                     ManageRow(title: "New account", caption: "Name it and pick its currency", divided: !shown.isEmpty, chevron: true, action: {
                         if row.bank.account.existingID != nil { row.bank.account.existingID = nil; row.bank.account.name = "" }
-                        customCurrency = !["USD", "GBP", "EUR"].contains(row.bank.account.currency); newAccount = true
+                        if row.bank.account.currency.isEmpty { row.bank.account.currency = "USD" }; newAccount = true
                     }) { addBadge } menu: { EmptyView() }
                 }
             }
@@ -172,22 +171,32 @@ struct UpOnlyGuidedEntry: View {
             UpOnlyBankBadge(name: row.bank.account.name, size: 44).frame(maxWidth: .infinity)
             ManageCard {
                 UpOnlyFormRow(label: "Name") {
-                    formField("Everyday account", text: $row.bank.account.name).focused($searchFocused).accessibilityLabel("Account name")
+                    formField("Bank or account name", text: $row.bank.account.name).focused($searchFocused).accessibilityLabel("Account name")
                 }
-                UpOnlyFormRow(label: "Currency", divided: true) {
-                    UpOnlyFormMenu(value: customCurrency ? "Other" : row.bank.account.currency, label: "Currency") {
-                        ForEach(["USD", "GBP", "EUR"], id: \.self) { code in Button(code) { customCurrency = false; row.bank.account.currency = code } }
-                        Divider()
-                        Button("Other…") { customCurrency = true; row.bank.account.currency = "" }
-                    }
+                // Banks matching what's typed, each with its logo; picking one fills in its name and usual currency.
+                ForEach(nameSuggestions) { bank in
+                    ManageRow(title: bank.name, caption: bank.caption, divided: true, action: { choose(bank) }) {
+                        UpOnlyBankBadge(name: bank.name, size: 24)
+                    } menu: { EmptyView() }
+                    .accessibilityIdentifier("BankSuggestion-" + bank.id)
                 }
-                if customCurrency {
-                    UpOnlyFormRow(label: "Code", divided: true) { formField("e.g. CHF", text: $row.bank.account.currency).accessibilityLabel("Account currency") }
-                }
+                UpOnlyCurrencyRows(code: $row.bank.account.currency)
                 ownerRow($row.bank.account.ownerBusinessID)
             }
             primary("Continue") { step = 1 }.disabled(row.bank.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.bank.account.currency.trimmingCharacters(in: .whitespacesAndNewlines).count != 3)
         }.onAppear { searchFocused = true }
+    }
+
+    /// Up to four banks for the name being typed; none once it's a bank's name (or goes past one, as "Monzo Joint").
+    private var nameSuggestions: [BankCatalogEntry] {
+        let typed = row.bank.account.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return [] }
+        let banks = BankCatalog.suggestions(typed, limit: 4)
+        return banks.contains { BankCatalog.words($0.name) == BankCatalog.words(typed) } ? [] : banks
+    }
+    private func choose(_ bank: BankCatalogEntry) {
+        row.bank.account.name = bank.name
+        if let code = bank.currency { row.bank.account.currency = code }
     }
 
     // MARK: The amount

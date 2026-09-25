@@ -11,3 +11,4 @@ Local.xcconfig
 *.uponlybackup/
 *.wrapper
 .env*
+__pycache__/
