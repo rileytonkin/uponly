@@ -108,7 +108,8 @@ nonisolated enum ValuationScope: Codable, Hashable, Sendable, Equatable {
 
 nonisolated enum UTCDay {
     static let timeZone = TimeZone(secondsFromGMT: 0)!
-    /// Days and months are Gregorian UTC everywhere, whatever calendar and time zone the Mac uses.
+    /// A saved day is a calendar date kept as its UTC midnight, so it reads as the same date on any Mac. Its month and
+    /// the way it prints come from this Gregorian UTC calendar, whatever calendar and time zone the Mac uses.
     static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = UTCDay.timeZone
@@ -123,6 +124,35 @@ nonisolated enum UTCDay {
 
     static func isSameDay(_ lhs: Date, _ rhs: Date) -> Bool {
         start(of: lhs) == start(of: rhs)
+    }
+
+    /// Today as a saved day: the UTC midnight of the Mac's own (Gregorian) date. At 11:30 pm on Sep 24 in Buenos Aires,
+    /// already Sep 25 in UTC, it's Sep 24.
+    static func today(now: Date = Date(), timeZone: TimeZone = .current) -> Date {
+        start(of: now.addingTimeInterval(TimeInterval(timeZone.secondsFromGMT(for: now))))
+    }
+
+    /// The first day not yet over: the earlier of today's UTC day and the Mac's date. Days before it are history (a
+    /// saved value stands, prices are that day's own). East of UTC after local midnight, UTC's day is still open, so a
+    /// value at now is never read as a past day's.
+    static func firstOpenDay(now: Date = Date(), timeZone: TimeZone = .current) -> Date {
+        min(start(of: now), today(now: now, timeZone: timeZone))
+    }
+
+    /// The saved day a moment is for: a moment on the current day, by UTC or by the Mac's date, is today's; any other
+    /// is its UTC day. So a value at now is filed under today even when UTC has moved on. East of UTC, early in the
+    /// morning, yesterday's saved day also reads as today until UTC catches up.
+    static func day(of moment: Date, now: Date = Date(), timeZone: TimeZone = .current) -> Date {
+        let day = start(of: moment), current = today(now: now, timeZone: timeZone)
+        return day == current || day == start(of: now) ? current : day
+    }
+
+    /// When something dated `day` is saved: an earlier day at its start, today at now, so it comes after anything
+    /// saved earlier today. Late in the evening west of UTC, now is already tomorrow's UTC day, so today's moment stops
+    /// at the day's last second and still files under today. (East of UTC, before UTC reaches the Mac's date, it's now.)
+    static func moment(for day: Date, now: Date = Date(), timeZone: TimeZone = .current) -> Date {
+        let day = start(of: day)
+        return day == today(now: now, timeZone: timeZone) ? min(now, day.addingTimeInterval(86400 - 1)) : day
     }
 }
 

@@ -163,7 +163,7 @@ struct ImportRowEditor: View {
                 }
                 ImportField(title: "As of") {
                     if manual, (try? ImportDateFormat.iso.date(row.bank.date)) != nil {
-                        UpOnlyDateButton(date: Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? Date() }, set: { row.bank.date = ImportDateFormat.today($0) }))
+                        UpOnlyDateButton(date: Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? UTCDay.today() }, set: { row.bank.date = ImportDateFormat.today($0) }))
                     } else {
                         TextField("yyyy-MM-dd", text: $row.bank.date, axis: .vertical).accessibilityLabel("Balance observation date")
                     }

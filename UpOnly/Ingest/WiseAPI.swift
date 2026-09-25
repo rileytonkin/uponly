@@ -180,7 +180,8 @@ nonisolated enum WiseAPI {
                 let amount = recorded.value
                 if amount == 0 { continue }
                 guard let date = formatter.date(from: activity.createdOn) ?? plainFormatter.date(from: activity.createdOn), date <= snapshot.fetchedAt.addingTimeInterval(300) else { throw ImportFailure("A Wise transaction date is invalid.") }
-                let monthText = String(ImportDateFormat.today(date).prefix(7))
+                // Wise gives the moment; the transaction's day and month are the date it was on this Mac.
+                let dayText = ImportDateFormat.today(UTCDay.today(now: date)), monthText = String(dayText.prefix(7))
                 guard let month = MonthKey(monthText) else { throw ImportFailure("A Wise transaction month is invalid.") }
                 let ownTransfer = activity.type == "INTERBALANCE" || activity.resource.map { (sharedTransfers[$0.id]?.count ?? 0) > 1 } == true
                 let label = plain(activity.title ?? activity.description ?? "Wise transaction")
@@ -190,14 +191,15 @@ nonisolated enum WiseAPI {
                 var kind: EntryKind = ownTransfer ? .transfer : refund ? .refund : income ? .income : .expense
                 if item.profile.bucket == .personal { kind = OwnerPayments.classify(kind, label: label, month: month.description, document: next) }
                 if let index = existing {
-                    // Retain explicit user classification while refreshing provider amounts/status.
+                    // Retain explicit user classification while refreshing provider amounts/status. A saved day and month
+                    // stay: earlier versions dated by UTC, and moving those now would reopen months already confirmed.
                     next.entries[index].amount = amount; next.entries[index].currency = recorded.currency
-                    next.entries[index].month = month.description; next.entries[index].label = label
-                    next.entries[index].day = ImportDateFormat.today(date); next.entries[index].outflow = !income
+                    if next.entries[index].day == nil { next.entries[index].month = month.description; next.entries[index].day = dayText }
+                    next.entries[index].label = label; next.entries[index].outflow = !income
                     if next.entries[index].kindIsUserEdited != true { next.entries[index].kind = kind }
                 } else {
                     var entry = Entry(month: month, bucket: item.profile.bucket, kind: kind, amount: amount, currency: recorded.currency, label: label.isEmpty ? "Wise transaction" : label, source: .wise, sourceRef: reference)
-                    entry.day = ImportDateFormat.today(date); entry.outflow = !income
+                    entry.day = dayText; entry.outflow = !income
                     next.entries.append(entry)
                 }
             }

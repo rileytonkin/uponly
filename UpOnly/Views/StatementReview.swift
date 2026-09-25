@@ -64,7 +64,7 @@ struct UpOnlyImportView: View {
                         HStack {
                             Text("As of").font(UpOnlyType.body).foregroundStyle(.secondary)
                             Spacer()
-                            UpOnlyDateButton(date: Binding(get: { batch.rows.first.flatMap { try? ImportDateFormat.iso.date($0.bank.date) } ?? Date() }, set: { date in
+                            UpOnlyDateButton(date: Binding(get: { batch.rows.first.flatMap { try? ImportDateFormat.iso.date($0.bank.date) } ?? UTCDay.today() }, set: { date in
                                 invalidateReview()
                                 for index in session.importDraft?.rows.indices ?? 0..<0 { session.importDraft?.rows[index].bank.date = ImportDateFormat.today(date) }
                             }))

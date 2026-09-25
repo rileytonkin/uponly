@@ -655,30 +655,32 @@ final class UpOnlySession {
             entries.filter { $0.month == month }.map { $0.id.uuidString + "|" + $0.kind.rawValue + "|" + $0.bucket.rawValue + "|" + $0.currency + "|" + NSDecimalNumber(decimal: $0.amount).stringValue }.sorted()
         }
         next.reviewedMonths.removeAll { month in ledger(current.document.entries, month) != ledger(next.entries, month) }
-        let now = Date()
+        let now = Date(), openDay = UTCDay.firstOpenDay(now: now)
         // A backdated quantity changes past days; recompute them away from the main actor.
         var backdated = next.quantities.filter { $0.ordinal >= current.document.nextOrdinal }.map(\.effectiveAt).min()
         // New or removed balance observations dated before today also change past days.
         let previousBalances = Set(current.document.bankBalances.map(\.id)), nextBalances = Set(next.bankBalances.map(\.id))
         let changedBalanceDays = current.document.bankBalances.filter { !nextBalances.contains($0.id) }.map(\.observedAt)
             + next.bankBalances.filter { !previousBalances.contains($0.id) }.map(\.observedAt)
-        if let earliest = changedBalanceDays.min(), earliest < UTCDay.start(of: now) { backdated = min(backdated ?? earliest, earliest) }
+        if let earliest = changedBalanceDays.min(), earliest < openDay { backdated = min(backdated ?? earliest, earliest) }
         // Backdated tracking makes an account count on earlier days, so those days change too.
-        if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < UTCDay.start(of: now) { backdated = min(backdated ?? tracked, tracked) }
+        if let tracked = next.bankTracking.filter({ $0.ordinal >= current.document.nextOrdinal }).map(\.effectiveAt).min(), tracked < openDay { backdated = min(backdated ?? tracked, tracked) }
         // Archiving or restoring a portfolio changes every day since it was archived.
         let archiveDays = next.portfolios.compactMap { portfolio -> Date? in
             let before = current.document.portfolio(id: portfolio.id)?.archivedAt
             return before == portfolio.archivedAt ? nil : [before, portfolio.archivedAt].compactMap { $0 }.min()
         }
-        if let archived = archiveDays.min(), archived < UTCDay.start(of: now) { backdated = min(backdated ?? archived, archived) }
+        if let archived = archiveDays.min(), archived < openDay { backdated = min(backdated ?? archived, archived) }
         // Past days are rebuilt afterwards in short background chunks, newest first, so saving never waits on years of history.
-        let rebuilt = backdated.map { $0 < UTCDay.start(of: now) } ?? false
+        let rebuilt = backdated.map { $0 < openDay } ?? false
         if rebuilt, let backdated {
             let from = min(next.pendingHistoryRebuild?.from ?? backdated, UTCDay.start(of: backdated))
             next.pendingHistoryRebuild = PendingHistoryRebuild(from: from, cursor: now)
         }
+        // Today's value is saved under today's date on this Mac.
+        let today = UTCDay.today(now: now)
         for scope in next.valuationScopes {
-            NetWorthCalculator.recordSample(NetWorthCalculator.value(at: now, scope: scope, document: next, now: now), in: &next)
+            NetWorthCalculator.recordSample(NetWorthCalculator.value(at: now, scope: scope, document: next, now: now), in: &next, day: today)
         }
         next.generation = current.document.generation + 1
         try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
@@ -1018,7 +1020,7 @@ final class UpOnlySession {
         let token = sessionToken
         let panel = NSSavePanel()
         // A dated name keeps earlier backups and never collides with yesterday's.
-        panel.nameFieldStringValue = "Up Only Backup " + ImportDateFormat.today(Date()) + ".uponlybackup"
+        panel.nameFieldStringValue = "Up Only Backup " + ImportDateFormat.today() + ".uponlybackup"
         panel.canCreateDirectories = true
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
         exportingBackup = true; defer { exportingBackup = false }

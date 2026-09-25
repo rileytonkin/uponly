@@ -558,7 +558,8 @@ struct UpOnlyUnlockedPanel: View {
         var sampleDays = stops.map { $0.sample.map { samples[$0].utcDay } }
         var figures = stops.map { stop in stop.sample.flatMap { value(samples[$0]) } }
         if let live, let last = days.last {
-            let today = UTCDay.start(of: interval.end)
+            // The live figure is today's, by this Mac's date.
+            let today = UTCDay.day(of: interval.end)
             if UTCDay.isSameDay(last, today) { figures[figures.count - 1] = (live, nil); sampleDays[sampleDays.count - 1] = today }
             else { days.append(today); sampleDays.append(today); figures.append((live, nil)) }
         }
@@ -664,7 +665,7 @@ struct UpOnlyUnlockedPanel: View {
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
         let stops = DashboardChart.stops(sampleDays: samples.map(\.utcDay), rangeStart: interval.start, strideDays: worthRange.chartStepDays(span: interval.duration))
         for stop in stops {
-            guard let index = stop.sample, !UTCDay.isSameDay(samples[index].utcDay, interval.end) else { continue }
+            guard let index = stop.sample, UTCDay.start(of: samples[index].utcDay) != UTCDay.day(of: interval.end) else { continue }
             let day = estimates.filled(samples[index].components, day: samples[index].utcDay)
             if day.complete { return (samples[index].utcDay, day.components) }
         }
@@ -680,10 +681,13 @@ struct UpOnlyUnlockedPanel: View {
     }
     func periodChange(_ points: [UpOnlyChartPoint], now: Decimal?) -> RangeChange? {
         guard let now, let index = points.firstIndex(where: { $0.value != nil }), let previous = points[index].value,
-              let day = points[index].date, !UTCDay.isSameDay(day, Date()) else { return nil }
-        let date = worthRange.showsYear ? UpOnlyFormat.utcDate(day) : UpOnlyFormat.utcDay(day)
+              let date = points[index].date else { return nil }
+        // Daily points are saved days; the finer charts' points, which end at "Now", are moments on this Mac's clock.
+        let day = points.last?.id == "now" ? UTCDay.today(now: date) : UTCDay.start(of: date)
+        guard day != UTCDay.today() else { return nil }
+        let label = worthRange.showsYear ? UpOnlyFormat.utcDate(day) : UpOnlyFormat.utcDay(day)
         return RangeChange(change: PeriodChange(from: previous, to: now), since: worthRange.previous,
-                           span: index == 0 && worthRange != .all ? "over the " + worthRange.phrase : "since " + date)
+                           span: index == 0 && worthRange != .all ? "over the " + worthRange.phrase : "since " + label)
     }
     /// "(↑ 21.0%)  vs $10,000.00 prev 1M": the change over the range, as on the admin dashboard. The percentage
     /// stays in privacy mode; the amounts don't.

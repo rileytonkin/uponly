@@ -94,7 +94,8 @@ extension UpOnlyManagement {
                         // Active names are unique per owner, so a portfolio now using this name has to be renamed first.
                         let owner = portfolio.ownerBusinessID?.nilIfEmpty
                         let clash = all.contains { !$0.isArchived && $0.ownerBusinessID?.nilIfEmpty == owner && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
-                        let archivedOn = portfolio.archivedAt.map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) } ?? ""
+                        // Archiving is a moment, so it's the date it was here.
+                        let archivedOn = portfolio.archivedAt.map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted)) } ?? ""
                         HStack(spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(portfolio.name).font(UpOnlyType.row)

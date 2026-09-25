@@ -297,9 +297,9 @@ nonisolated enum DashboardPeriod {
     }
     /// The saved days a range is drawn from, opening with the close before it starts. A day's sample is its close, so
     /// the day the range starts in already includes hours inside the range: 7D from 2 pm on the 18th opens at the
-    /// 17th's close, not the 18th's.
+    /// 17th's close, not the 18th's. A range ending now ends with today's saved day on this Mac.
     static func samples(in interval: DateInterval, scope: ValuationScope, document: VaultDocument) -> [DailyValuation] {
-        let first = UTCDay.start(of: interval.start).addingTimeInterval(-86400), last = UTCDay.start(of: interval.end)
+        let first = UTCDay.start(of: interval.start).addingTimeInterval(-86400), last = UTCDay.day(of: interval.end)
         return document.dailyValuations.filter {
             guard $0.scope == scope else { return false }
             let day = UTCDay.start(of: $0.utcDay)

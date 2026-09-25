@@ -35,7 +35,7 @@ struct UpOnlyGuidedEntry: View {
     @State private var choosingPortfolio = false
     /// Several buys, each with its day, instead of one total (nil). Their costs fill in from each day's price.
     @State private var buys: [BuyLine]?
-    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = Date() }
+    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = UTCDay.today() }
     /// Each buy day's average price, keyed by asset and day.
     @State private var dayPrices: [String: Decimal] = [:]
     @FocusState private var searchFocused: Bool
@@ -49,8 +49,10 @@ struct UpOnlyGuidedEntry: View {
     private var account: Account? { accounts.first { $0.id == row.bank.account.existingID } }
     private var title: String { mode == .bankBalances ? row.bank.account.name : mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.name ?? "Metal") : row.holding.assetName.isEmpty ? row.holding.resolvedCoinID : row.holding.assetName }
     private var quantity: Binding<String> { mode == .bankBalances ? $row.bank.balance : $row.holding.quantity }
-    private var date: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? Date() }, set: { row.bank.date = ImportDateFormat.today($0) }) }
-    private var holdingDate: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.holding.date)) ?? Date() }, set: { row.holding.date = ImportDateFormat.today($0) }) }
+    private var date: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? UTCDay.today() }, set: { row.bank.date = ImportDateFormat.today($0) }) }
+    private var holdingDate: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.holding.date)) ?? UTCDay.today() }, set: { row.holding.date = ImportDateFormat.today($0) }) }
+    /// Whether a picked day is today on this Mac, which takes today's price rather than that day's.
+    private func isToday(_ day: Date) -> Bool { UTCDay.start(of: day) == UTCDay.today() }
     private var numberFormat: ImportNumberFormat { session.importDraft?.sources.first(where: { $0.id == row.sourceID })?.numberFormat ?? .point }
     /// The amount as the app reads it, which is what gets saved.
     private var entered: Decimal? { try? numberFormat.decimal(quantity.wrappedValue, typed: true) }
@@ -356,9 +358,9 @@ struct UpOnlyGuidedEntry: View {
     private var buysTotal: Decimal { (buys ?? []).compactMap { parsed($0.quantity) }.filter { $0 > 0 }.reduce(0, +) }
     private func dayKey(_ day: Date) -> String { priceKey + "@" + ImportDateFormat.today(day) }
     /// Every past day a buy is on, for looking up prices.
-    private var buyPriceKeys: String { Set((buys ?? []).filter { !UTCDay.isSameDay($0.date, Date()) }.map { dayKey($0.date) }).sorted().joined(separator: ",") }
+    private var buyPriceKeys: String { Set((buys ?? []).filter { !isToday($0.date) }.map { dayKey($0.date) }).sorted().joined(separator: ",") }
     /// The price a buy is costed at: today's for one bought today, else that day's average.
-    private func price(on day: Date) -> Decimal? { UTCDay.isSameDay(day, Date()) ? unitPrice : dayPrices[dayKey(day)] }
+    private func price(on day: Date) -> Decimal? { isToday(day) ? unitPrice : dayPrices[dayKey(day)] }
     /// A buy's cost in dollars: its amount (in grams for metal) at that day's price.
     private func buyCost(_ line: BuyLine) -> Decimal? {
         guard let amount = parsed(line.quantity), amount > 0, let price = price(on: line.date) else { return nil }
@@ -375,14 +377,14 @@ struct UpOnlyGuidedEntry: View {
         guard let settings = session.document?.settings else { return }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
         guard !asset.isEmpty else { return }
-        for day in Set((buys ?? []).map { UTCDay.start(of: $0.date) }) where !UTCDay.isSameDay(day, Date()) && dayPrices[dayKey(day)] == nil {
+        for day in Set((buys ?? []).map { UTCDay.start(of: $0.date) }) where !isToday(day) && dayPrices[dayKey(day)] == nil {
             guard !Task.isCancelled else { return }
             if let price = await PublicPrices.dayPrice(assetID: asset, symbol: coin?.symbol, day: day, today: unitPrice, key: settings.coinGeckoKey) { dayPrices[dayKey(day)] = price }
         }
     }
     private func buyRow(_ index: Int, divided: Bool) -> some View {
         let quantity = Binding(get: { buys?.indices.contains(index) == true ? buys![index].quantity : "" }, set: { if buys?.indices.contains(index) == true { buys![index].quantity = $0 } })
-        let day = Binding(get: { buys?.indices.contains(index) == true ? buys![index].date : Date() }, set: { if buys?.indices.contains(index) == true { buys![index].date = $0 } })
+        let day = Binding(get: { buys?.indices.contains(index) == true ? buys![index].date : UTCDay.today() }, set: { if buys?.indices.contains(index) == true { buys![index].date = $0 } })
         let line = buys?.indices.contains(index) == true ? buys![index] : BuyLine()
         return VStack(spacing: 0) {
             if divided { Divider().opacity(0.5) }
@@ -401,9 +403,9 @@ struct UpOnlyGuidedEntry: View {
             HStack {
                 Spacer()
                 if let cost = buyCost(line) {
-                    UpOnlyPrivateText("≈ " + UpOnlyFormat.exactMoney(cost) + " at " + (UTCDay.isSameDay(line.date, Date()) ? "today's" : "that day's") + " price")
+                    UpOnlyPrivateText("≈ " + UpOnlyFormat.exactMoney(cost) + " at " + (isToday(line.date) ? "today's" : "that day's") + " price")
                 } else if (parsed(line.quantity) ?? 0) > 0 {
-                    Text(UTCDay.isSameDay(line.date, Date()) || dayPrices[dayKey(line.date)] == nil ? "Looking up the price…" : "No price for that day")
+                    Text(isToday(line.date) || dayPrices[dayKey(line.date)] == nil ? "Looking up the price…" : "No price for that day")
                 }
             }.font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).padding(.bottom, 8)
         }
@@ -459,7 +461,7 @@ struct UpOnlyGuidedEntry: View {
             guard let amount = parsed(line.quantity), amount > 0 else { return nil }
             let quantity = mode == .metals ? ((try? unit.grams(amount)) ?? amount) : amount
             // Today is saved as now; an earlier day at its start, as a single entry is.
-            let day = UTCDay.isSameDay(line.date, Date()) ? Date() : UTCDay.start(of: line.date)
+            let day = UTCDay.moment(for: line.date)
             return UpOnlySession.Buy(quantity: quantity, date: day, cost: buyCost(line))
         }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
@@ -536,13 +538,13 @@ struct UpOnlyGuidedEntry: View {
 
     /// The asset and day a price is wanted for: a holding dated before today whose cost is left empty.
     private var closeKey: String? {
-        guard mode != .bankBalances, !UTCDay.isSameDay(holdingDate.wrappedValue, Date()) else { return nil }
+        guard mode != .bankBalances, !isToday(holdingDate.wrappedValue) else { return nil }
         return priceKey + "@" + ImportDateFormat.today(holdingDate.wrappedValue)
     }
     /// "Mar 2", or "Mar 2, 2025" from another year: short enough to sit beside "Cost".
     private var closeDay: String {
         let day = holdingDate.wrappedValue
-        return UTCDay.calendar.component(.year, from: day) == UTCDay.calendar.component(.year, from: Date()) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
+        return UTCDay.calendar.component(.year, from: day) == UTCDay.calendar.component(.year, from: UTCDay.today()) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
     }
     /// What the amount cost at that day's average price, while the cost is empty.
     private var estimatedCost: Decimal? {
@@ -684,7 +686,7 @@ struct UpOnlyGuidedEntry: View {
     }
     /// The holding's value now against what it cost, in dollars (a cost in another currency at the latest saved rate).
     private var gainSinceCost: (fraction: Decimal, amount: Decimal)? {
-        guard mode != .bankBalances, !UTCDay.isSameDay(holdingDate.wrappedValue, Date()), let worth = approxUSD,
+        guard mode != .bankBalances, !isToday(holdingDate.wrappedValue), let worth = approxUSD,
               let paid = try? numberFormat.decimal(row.holding.paid, typed: true), paid > 0 else { return nil }
         let currency = row.holding.paidCurrency.uppercased().nilIfEmpty ?? "USD"
         let rate: Decimal? = currency == "USD" ? 1 : session.document?.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.max { $0.providerTime < $1.providerTime }?.rate.value
@@ -704,11 +706,11 @@ struct UpOnlyGuidedEntry: View {
     // Say out loud what a past date or a cost without an increase will do before it is saved.
     private var holdingNotes: [String] {
         guard mode != .bankBalances, let document = session.document else { return [] }
-        // Today is saved as now, so compare with now too.
-        let date = UTCDay.isSameDay(holdingDate.wrappedValue, Date()) ? Date() : holdingDate.wrappedValue
+        // Today is saved as now, so compare with now too; the note names the day picked.
+        let day = holdingDate.wrappedValue, date = UTCDay.moment(for: day)
         var notes: [String] = []
-        let when = date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
-        if let portfolio = portfolios.first(where: { $0.id == row.holding.portfolioID }), UTCDay.start(of: date) < UTCDay.start(of: portfolio.createdAt) {
+        let when = day.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
+        if let portfolio = portfolios.first(where: { $0.id == row.holding.portfolioID }), UTCDay.start(of: day) < UTCDay.start(of: portfolio.createdAt) {
             notes.append("Dates " + portfolio.name + " back to " + when + ".")
         }
         if !row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

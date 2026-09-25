@@ -132,12 +132,13 @@ nonisolated enum ImportDateFormat: String, CaseIterable, Sendable {
         guard check.year == components.year, check.month == month, check.day == day else { throw failure }
         return date
     }
-    static func today(_ now: Date = Date()) -> String {
-        let parts = UTCDay.calendar.dateComponents([.year, .month, .day], from: now)
+    /// A saved day as it's written, "2026-09-24" (its UTC date); without one, today's date on this Mac.
+    static func today(_ day: Date = UTCDay.today()) -> String {
+        let parts = UTCDay.calendar.dateComponents([.year, .month, .day], from: day)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
     /// The end of today where it's latest (UTC+14), as a UTC day: a date written anywhere today is before it,
-    /// even when it's already tomorrow in UTC.
+    /// even when it's already tomorrow in UTC. Today on this Mac is always before it.
     static func endOfToday(_ now: Date = Date()) -> Date { UTCDay.start(of: now.addingTimeInterval(14 * 3600)).addingTimeInterval(86400) }
     /// The format that reads every date. A known bank's `preferred` format wins outright. When day and month could be
     /// either way round, the reading whose dates are in order and span the shortest time wins; if that can't tell
@@ -892,12 +893,13 @@ nonisolated enum ImportBatchProcessor {
         case .income, .refund: return (amount, false)
         }
     }
-    static func evaluate(_ batch: ImportBatchDraft, document: VaultDocument, now: Date = Date(), catalog: [CatalogCoin] = []) -> ImportEvaluation {
+    /// `timeZone` says which date is today (the Mac's); tests pin one.
+    static func evaluate(_ batch: ImportBatchDraft, document: VaultDocument, now: Date = Date(), timeZone: TimeZone = .current, catalog: [CatalogCoin] = []) -> ImportEvaluation {
         var result = ImportEvaluation()
         do { try batch.checkLimits(); try Task.checkCancellation() }
         catch { result.globalError = error.localizedDescription; return result }
         guard !batch.rows.isEmpty else { result.globalError = "Add at least one row."; return result }
-        var pass = Pass(batch: batch, document: document, now: now, coins: ImportCoins.available(document: document, catalog: catalog))
+        var pass = Pass(batch: batch, document: document, now: now, timeZone: timeZone, coins: ImportCoins.available(document: document, catalog: catalog))
         pass.checkFormats()
         for row in batch.rows {
             if Task.isCancelled { pass.result.globalError = "Import cancelled."; return pass.result }
@@ -922,7 +924,7 @@ nonisolated enum ImportBatchProcessor {
             var saved = 0, savedWithoutID = 0
             var seen: [UUID: Int] = [:], seenWithID: [UUID: Int] = [:], added: [UUID: Int] = [:], addedWithoutID: [UUID: Int] = [:]
         }
-        let batch: ImportBatchDraft, document: VaultDocument, now: Date, coins: [CatalogCoin]
+        let batch: ImportBatchDraft, document: VaultDocument, now: Date, timeZone: TimeZone, coins: [CatalogCoin]
         var result = ImportEvaluation(), next: VaultDocument
         var touchedAccounts = Set<UUID>()
         var createdAccounts: [String: UUID] = [:], createdPortfolios: [String: UUID] = [:]
@@ -935,8 +937,8 @@ nonisolated enum ImportBatchProcessor {
         var balanceKeys = Set<String>(), holdingKeys = Set<String>()
         /// Hashing a file is costly; do it once per file, not once per row.
         let digests: [UUID: Data]
-        init(batch: ImportBatchDraft, document: VaultDocument, now: Date, coins: [CatalogCoin]) {
-            self.batch = batch; self.document = document; self.now = now; self.coins = coins; next = document
+        init(batch: ImportBatchDraft, document: VaultDocument, now: Date, timeZone: TimeZone, coins: [CatalogCoin]) {
+            self.batch = batch; self.document = document; self.now = now; self.timeZone = timeZone; self.coins = coins; next = document
             seenReferences = Dictionary(document.entries.compactMap { entry in entry.sourceRef.map { ($0, entry) } }, uniquingKeysWith: { first, _ in first })
             savedIndex = Dictionary(document.entries.indices.compactMap { index in document.entries[index].sourceRef.map { ($0, index) } }, uniquingKeysWith: { first, _ in first })
             var copies: [String: Copies] = [:]
@@ -978,13 +980,20 @@ nonisolated enum ImportBatchProcessor {
             return account.id
         }
         mutating func recordBalance(accountID: UUID, amount: Decimal, date inputDate: Date) throws -> Bool {
-            // Today, wherever it's already today, is observed now; earlier days keep their date.
-            let date = inputDate >= UTCDay.start(of: now) && inputDate < ImportDateFormat.endOfToday(now) ? now : inputDate
+            // Today on this Mac is observed now (within the day), and so is a later day that's already today further
+            // east; earlier days keep their date.
+            let today = UTCDay.today(now: now, timeZone: timeZone), isToday = UTCDay.start(of: inputDate) == today
+            let date = isToday ? UTCDay.moment(for: today, now: now, timeZone: timeZone)
+                : inputDate > today && inputDate < ImportDateFormat.endOfToday(now) ? now : inputDate
             guard date <= now.addingTimeInterval(300) else { throw ImportFailure("The observation date cannot be in the future.") }
             let key = accountID.uuidString + ":" + String(date.timeIntervalSince1970)
             let existing = next.bankBalances.filter { $0.accountID == accountID && $0.observedAt == date }
-            if existing.contains(where: { $0.amount.value != amount }) { throw ImportFailure("A different balance exists at this time. Correct the date or amount.") }
-            if !existing.isEmpty || balanceKeys.contains(key) { return false }
+            if existing.contains(where: { $0.amount.value != amount }) {
+                // Late in the evening west of UTC, today's balances all fall on the day's last second: a newer one
+                // replaces the one there, as it would have come after it.
+                guard isToday, date < now else { throw ImportFailure("A different balance exists at this time. Correct the date or amount.") }
+                next.bankBalances.removeAll { $0.accountID == accountID && $0.observedAt == date }
+            } else if !existing.isEmpty || balanceKeys.contains(key) { return false }
             guard let account = next.accounts.first(where: { $0.id == accountID }) else { throw ImportFailure("Choose an account.") }
             if !next.bankTracking.contains(where: { $0.accountID == accountID }) && !next.trackedBankAccountIDs.contains(accountID) { next.setBankTracked(accountID, tracked: true, at: date) }
             next.bankBalances.append(BankBalanceObservation(id: UUID(), accountID: accountID, amount: PreciseDecimal(amount), currency: account.currency, observedAt: date, source: "Import", sourceIdentity: accountID.uuidString))
@@ -1106,7 +1115,7 @@ nonisolated enum ImportBatchProcessor {
             let accountID = try resolveAccount(input.account)
             let amount = try source.numberFormat.decimal(input.balance, typed: typed), date = try source.dateFormat.date(input.date)
             // "Update all balances" fills in every account; one left as it was is not a new observation.
-            if typed, batch.rows.count > 1, UTCDay.isSameDay(date, now),
+            if typed, batch.rows.count > 1, UTCDay.start(of: date) == UTCDay.today(now: now, timeZone: timeZone),
                next.bankBalances.filter({ $0.accountID == accountID }).max(by: { $0.observedAt < $1.observedAt })?.amount.value == amount {
                 result.states[row.id] = .duplicate; return
             }
@@ -1129,11 +1138,11 @@ nonisolated enum ImportBatchProcessor {
                 quantity = try source.numberFormat.decimal(input.quantity, typed: typed)
             }
             guard MoneyInput.isFinite(quantity), quantity >= 0 else { throw ImportFailure("Enter zero or a positive quantity.") }
-            // The app writes this date itself, so it is always ISO. Today means now, as for balances,
+            // The app writes this date itself, so it is always ISO. Today (the Mac's) means now, as for balances,
             // so an edit made earlier today can't outrank this one.
             let day = try ImportDateFormat.iso.date(input.date)
-            let date = UTCDay.isSameDay(day, now) ? now : day
-            guard date <= now else { throw ImportFailure("Choose today or an earlier date.") }
+            guard day <= UTCDay.today(now: now, timeZone: timeZone) else { throw ImportFailure("Choose today or an earlier date.") }
+            let date = UTCDay.moment(for: day, now: now, timeZone: timeZone)
             var cost: (paid: Decimal, currency: String)?
             let paidText = input.paid.trimmingCharacters(in: .whitespacesAndNewlines)
             if !paidText.isEmpty {
