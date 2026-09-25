@@ -41,22 +41,6 @@ struct UpOnlyEditSheet: View {
         guard let month = MonthKey(session.entryMonthForManagement) else { return nil }
         return UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)).map { min(Date(), $0.addingTimeInterval(-1)) }
     }
-    private func field(_ title: String, text: Binding<String>, placeholder: String = "", hidesValue: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary)
-            Group {
-                if hidesValue { UpOnlyValueField(placeholder.isEmpty ? title : placeholder, text: text) }
-                else { TextField(placeholder.isEmpty ? title : placeholder, text: text, axis: .vertical) }
-            }.textFieldStyle(.plain).font(.system(size: 15))
-                .accessibilityLabel(title).padding(.vertical, 8)
-                .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.14)).frame(height: 1) }
-        }
-    }
-    private var amountField: some View {
-        UpOnlyValueField("0.00", text: $amount).textFieldStyle(.plain)
-            .font(.system(size: 34, weight: .medium).monospacedDigit()).accessibilityLabel("Amount")
-            .padding(.vertical, 6)
-    }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             if showsOwnHeader {
@@ -91,52 +75,25 @@ struct UpOnlyEditSheet: View {
             case .exchangeRate:
                 currency = session.requestedRateCurrency ?? "GBP"
                 if let cutoff = rateCutoff { date = cutoff }
-            case .move, .purchases: break
+                amountFocused = true
+            case .move: amountFocused = true
+            case .purchases: break
             }
         }
     }
     @ViewBuilder private var form: some View {
         switch editor {
         case .move(let holding):
-            Text(holding.assetName).font(UpOnlyType.section).fixedSize(horizontal: false, vertical: true)
-            // Exact, so typing the figure shown moves everything.
-            UpOnlyPrivateText("Available: " + UpOnlyFormat.quantity(session.document?.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0))
-                .font(UpOnlyType.body).foregroundStyle(.secondary)
-            amountField
-            let choices = session.document?.portfolios.filter { !$0.isArchived && $0.id != holding.portfolioID && $0.kind == .crypto } ?? []
-            if choices.isEmpty {
-                Text("Create another portfolio before moving this holding.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            } else {
-                Picker("Move to", selection: $destination) {
-                    Text("Choose portfolio").tag(Optional<UUID>.none)
-                    ForEach(choices) { Text($0.name).tag(Optional($0.id)) }
-                }.accessibilityLabel("Destination portfolio")
-            }
+            moveForm(holding)
         case .purchases(let holding):
-            purchasesList(holding)
-            Text("Add a purchase").font(UpOnlyType.section)
-            field(PreciousMetal.asset(holding.assetID) != nil ? "Pure metal bought, in grams" : "Quantity bought", text: $lotQuantity, placeholder: "0", hidesValue: true)
-            HStack(alignment: .firstTextBaseline, spacing: 16) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Total paid").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary)
-                    amountField
-                }
-                TextField("USD", text: $currency).textFieldStyle(.plain).font(.system(size: 14, weight: .medium)).frame(width: 50).accessibilityLabel("Currency paid")
-            }
-            HStack { Text("Bought on").foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: $date) }
+            purchasesForm(holding)
         case .renameAccount:
-            field("Account name", text: $name)
-        case .renamePortfolio:
-            field("Portfolio name", text: $name)
+            renameForm(badge: AnyView(UpOnlyBankBadge(name: name, size: 44)), placeholder: "Account name")
+        case .renamePortfolio(let portfolio):
+            renameForm(badge: AnyView(UpOnlySymbolBadge(symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
+                                                         tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 44)), placeholder: "Portfolio name")
         case .exchangeRate:
-            field("From currency", text: $currency, placeholder: "GBP")
-            Text("USD for 1 " + currency.uppercased()).font(UpOnlyType.body).foregroundStyle(.secondary)
-            amountField
-            HStack { Text("Rate date").foregroundStyle(.secondary); Spacer(); UpOnlyDateButton(date: $date) }
-            // Only a rate from the month's last seven days prices it (MonthlyLedger.rate).
-            if let month = MonthKey(session.entryMonthForManagement), let cutoff = rateCutoff, date > cutoff || cutoff.timeIntervalSince(date) > 7 * 86400 {
-                UpOnlyNotice("This rate won’t count for " + month.title + ". Choose a date in the last 7 days of the month.")
-            }
+            rateForm
         case .entry, .editEntry:
             transactionForm
         }
@@ -206,24 +163,116 @@ struct UpOnlyEditSheet: View {
         let start = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) ?? Date()
         return min(Date(), start.addingTimeInterval(-86400))
     }
-    // Recorded lots for one holding, each removable. Removing a lot never changes quantities.
-    private func purchasesList(_ holding: Holding) -> some View {
-        let lots = (session.document?.purchases ?? []).filter { $0.holdingID == holding.id }.sorted { $0.at < $1.at }
-        return VStack(alignment: .leading, spacing: 8) {
-            if lots.isEmpty {
-                Text("No purchases recorded. Add one to see gain against what you paid.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            ForEach(lots) { lot in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))).font(UpOnlyType.body.weight(.medium))
-                        UpOnlyPrivateText(ManageFormat.amount(lot.quantity.value, of: holding, catalog: session.catalog) + " for " + UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency) + " " + lot.currency)
-                            .font(UpOnlyType.body).foregroundStyle(.secondary)
+    // MARK: Other forms
+
+    /// A coin's symbol, or grams for metal: the unit its quantities are typed in.
+    private func unit(_ holding: Holding) -> String {
+        if PreciousMetal.asset(holding.assetID) != nil { return "g" }
+        let id = holding.assetID.rawValue
+        return (session.catalog.first { $0.id == id } ?? ImportCoins.common.first { $0.id == id })?.symbol.uppercased() ?? holding.assetName
+    }
+    private func assetBadge(_ holding: Holding) -> some View {
+        UpOnlyEntryBadge(mode: PreciousMetal.asset(holding.assetID) != nil ? .metals : .holdings, symbol: PreciousMetal.asset(holding.assetID)?.rawValue ?? unit(holding),
+                         assetID: holding.assetID.rawValue, image: nil, size: 44)
+    }
+    /// Moving coins: how many, large, with what's there to move under it; then from where to where.
+    private func moveForm(_ holding: Holding) -> some View {
+        let available = session.document?.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0
+        let choices = session.document?.portfolios.filter { !$0.isArchived && $0.id != holding.portfolioID && $0.kind == .crypto } ?? []
+        let from = session.document?.portfolio(id: holding.portfolioID)?.name ?? "This portfolio"
+        return VStack(spacing: 16) {
+            VStack(spacing: 10) {
+                assetBadge(holding)
+                UpOnlyAmountEntry(text: $amount, unit: unit(holding), label: "Quantity to move", focused: $amountFocused)
+                // Exact, so moving everything is typing the figure shown (or clicking it).
+                Button { amount = UpOnlyFormat.quantity(available) } label: {
+                    UpOnlyPrivateText(UpOnlyFormat.quantity(available) + " " + unit(holding) + " available").font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary)
+                }.buttonStyle(.plain).help("Move all of it")
+            }.frame(maxWidth: .infinity).padding(.vertical, 4)
+            ManageCard {
+                UpOnlyFormRow(label: "From") { Text(from).font(UpOnlyType.row.weight(.medium)).lineLimit(1) }
+                UpOnlyFormRow(label: "To", divided: true) {
+                    if choices.isEmpty {
+                        Text("No other portfolio yet").font(UpOnlyType.row).foregroundStyle(.tertiary)
+                    } else {
+                        UpOnlyFormMenu(value: choices.first { $0.id == destination }?.name ?? "Choose", label: "Destination portfolio") {
+                            ForEach(choices) { portfolio in Button(portfolio.name) { destination = portfolio.id } }
+                        }
                     }
-                    Spacer()
-                    Button(role: .destructive) { lotToRemove = lot } label: { Image(systemName: "trash") }.controlSize(.small).accessibilityLabel("Remove purchase")
                 }
-                Divider().opacity(0.5)
+            }
+        }
+    }
+    /// What was paid for a holding: the purchases so far as a list, then one card to add another.
+    private func purchasesForm(_ holding: Holding) -> some View {
+        let lots = (session.document?.purchases ?? []).filter { $0.holdingID == holding.id }.sorted { $0.at < $1.at }
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                assetBadge(holding)
+                Text(lots.isEmpty ? "No purchases recorded yet. Add one to see your gain against what you paid." : "Removing a purchase never changes your quantity.")
+                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !lots.isEmpty {
+                ManageCard {
+                    ForEach(Array(lots.enumerated()), id: \.element.id) { index, lot in
+                        ManageRow(title: lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)),
+                                  caption: ManageFormat.amount(lot.quantity.value, of: holding, catalog: session.catalog), captionIsPrivate: true,
+                                  value: UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency), divided: index > 0) {
+                            UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 24)
+                        } menu: {
+                            ManageRowMenu(label: "Options for this purchase") { Button("Remove purchase…", role: .destructive) { lotToRemove = lot } }
+                        }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Add a purchase").font(UpOnlyType.section)
+                ManageCard {
+                    UpOnlyFormRow(label: "Bought") {
+                        UpOnlyValueField("0", text: $lotQuantity).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                            .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 140).accessibilityLabel(PreciousMetal.asset(holding.assetID) != nil ? "Pure metal bought, in grams" : "Quantity bought")
+                        Text(unit(holding)).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                    UpOnlyFormRow(label: "Paid", divided: true) {
+                        UpOnlyValueField("0.00", text: $amount).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                            .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 140).accessibilityLabel("Total paid")
+                        // The currency is typed after the amount, as the Add form's cost is.
+                        TextField("USD", text: $currency).textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.secondary)
+                            .frame(width: 32).accessibilityLabel("Currency paid")
+                    }
+                    UpOnlyFormRow(label: "Date", divided: true) { UpOnlyDateButton(date: $date) }
+                }
+            }
+        }
+    }
+    /// A new name, with the logo it will show (for an account, its bank's) above it.
+    private func renameForm(badge: AnyView, placeholder: String) -> some View {
+        VStack(spacing: 16) {
+            badge.frame(maxWidth: .infinity)
+            ManageCard {
+                UpOnlyFormRow(label: "Name") {
+                    TextField(placeholder, text: $name).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                        .accessibilityLabel(placeholder)
+                }
+            }
+        }
+    }
+    /// A rate, typed as dollars for one unit of the currency, and the day it's for.
+    private var rateForm: some View {
+        let code = currency.uppercased().nilIfEmpty ?? "GBP"
+        return VStack(spacing: 16) {
+            VStack(spacing: 10) {
+                UpOnlySymbolBadge(symbol: "arrow.left.arrow.right", tint: UpOnlyTint.netWorth, size: 44)
+                UpOnlyAmountEntry(text: $amount, unit: "USD", label: "US dollars for one " + code, focused: $amountFocused)
+                Text("for 1 " + code).font(UpOnlyType.body).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity).padding(.vertical, 4)
+            ManageCard {
+                UpOnlyCurrencyRows(code: $currency, divided: false)
+                UpOnlyFormRow(label: "Date", divided: true) { UpOnlyDateButton(date: $date) }
+            }
+            // Only a rate from the month's last seven days prices it (MonthlyLedger.rate).
+            if let month = MonthKey(session.entryMonthForManagement), let cutoff = rateCutoff, date > cutoff || cutoff.timeIntervalSince(date) > 7 * 86400 {
+                UpOnlyNotice("This rate won’t count for " + month.title + ". Choose a date in the last 7 days of the month.")
             }
         }
     }

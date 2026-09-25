@@ -185,6 +185,19 @@ struct UpOnlyManagement: View {
             importBaseline = session.importDraft?.rows.map(\.content) ?? []
             if origin == "Entries" { entryMonth = session.entryMonthForManagement }
             if session.requestedRateCurrency != nil { editor = .exchangeRate; editorReturnsHome = true }
+            #if UPONLY_FIXTURE
+            // Opens one of the smaller editors directly, for checking its layout.
+            if let doc = session.document, let crypto = doc.holdings.first(where: { PreciousMetal.asset($0.assetID) == nil }) {
+                switch ProcessInfo.processInfo.environment["UPONLY_PREVIEW_EDITOR"] {
+                case "move": editor = .move(crypto)
+                case "purchases": editor = .purchases(crypto)
+                case "rate": editor = .exchangeRate
+                case "rename-account": if let account = doc.accounts.first { editor = .renameAccount(account) }
+                case "rename-portfolio": if let portfolio = doc.portfolios.first { editor = .renamePortfolio(portfolio) }
+                default: break
+                }
+            }
+            #endif
         }
         .onChange(of: session.managementSection) { previous, next in
             // A message belongs to the page it was shown on. Leaving for the overview keeps it (an import that returns home).
