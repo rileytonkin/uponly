@@ -23,6 +23,9 @@ struct UpOnlyGuidedEntry: View {
     @State private var addingAccount = false
     @State private var initial: ImportRowContent?
     @State private var configured = false
+    /// Today's price of what's being entered, fetched when it's chosen: per coin, per gram of metal, or dollars per
+    /// unit of an account's currency. Keyed by what it prices, so a changed choice never shows another's value.
+    @State private var livePrice: (key: String, price: Decimal)?
     @FocusState private var searchFocused: Bool
     @FocusState private var amountFocused: Bool
     private var accounts: [Account] { session.document?.accounts ?? [] }
@@ -243,6 +246,7 @@ struct UpOnlyGuidedEntry: View {
             }
             primary("Review") { Task { await evaluate() } }.disabled(quantity.wrappedValue.isEmpty || working)
         }.task { amountFocused = true }
+            .task(id: priceKey) { await fetchLivePrice() }
     }
     /// The logo, the amount large with its unit after it, and what it's worth now (or, before anything is typed, what
     /// to enter). Review shows the same, read back as the app understood it.
@@ -282,31 +286,75 @@ struct UpOnlyGuidedEntry: View {
     }
     @ViewBuilder private func heroCaption(review: Bool) -> some View {
         let worth = mode == .bankBalances && row.bank.account.currency.uppercased() == "USD" ? nil : approxUSD
+        let price = unitPrice
         // A metal entered in ounces or kilos is kept in grams; say how many.
         let unit = (try? MetalWeightUnit.resolve(row.holding.unit)) ?? .grams
         let grams = mode == .metals && unit != .grams && !session.privacyMode ? entered.flatMap { try? unit.grams($0) }.map { readBack($0, fraction: 0...4) + " g" } : nil
         if worth != nil || grams != nil {
-            UpOnlyPrivateText([worth.map { "≈ " + UpOnlyFormat.exactMoney($0) }, grams].compactMap { $0 }.joined(separator: " · "))
+            UpOnlyPrivateText([worth.map { $0 > 0 && $0 < Decimal(string: "0.01")! ? "≈ <$0.01" : "≈ " + UpOnlyFormat.exactMoney($0) }, grams].compactMap { $0 }.joined(separator: " · "))
+                .contentTransition(.numericText()).animation(.snappy(duration: 0.15), value: worth)
+        } else if !review, let price, !(mode == .bankBalances && row.bank.account.currency.uppercased() == "USD") {
+            // Before anything is typed, today's price, so the total that follows makes sense.
+            Text("1 " + (mode == .metals ? "g" : unitText) + " = " + Self.priceText(price))
         } else if !review {
             Text(mode == .bankBalances ? "Balance" : mode == .metals ? "Pure metal weight" : "Total you hold")
         }
     }
-    /// What the amount is worth now, from the latest saved price or rate; nothing when the app has none yet.
-    private var approxUSD: Decimal? {
-        guard let amount = entered, amount != 0, let document = session.document else { return nil }
+    /// A market price at a useful precision: cents from a dollar up, four significant digits below (PEPE's $0.00001234).
+    static func priceText(_ price: Decimal) -> String {
+        price >= 1 ? UpOnlyFormat.exactMoney(price) : "$" + price.formatted(.number.precision(.significantDigits(1...4)).locale(Locale(identifier: "en_US")))
+    }
+    /// What `livePrice` is for right now: the coin, the metal, or the account's currency.
+    private var priceKey: String {
+        switch mode {
+        case .bankBalances: return "fx:" + row.bank.account.currency.uppercased()
+        case .metals: return "metal:" + row.holding.coin
+        default: return "coin:" + row.holding.resolvedCoinID
+        }
+    }
+    /// Today's fetched price if it's in, else the latest one saved in the vault.
+    private var unitPrice: Decimal? {
+        if let livePrice, livePrice.key == priceKey { return livePrice.price }
+        guard let document = session.document else { return nil }
         switch mode {
         case .bankBalances:
             let currency = row.bank.account.currency.uppercased()
-            guard let rate = document.fx.filter({ $0.sourceCurrency == currency && $0.targetCurrency == "USD" }).max(by: { $0.providerTime < $1.providerTime })?.rate.value else { return nil }
-            return try? MoneyInput.multiply(amount, rate, allowingRounding: true)
-        case .metals:
-            guard let metal = try? PreciousMetal.resolve(row.holding.coin), let grams = try? MetalWeightUnit.resolve(row.holding.unit).grams(amount),
-                  let price = latestPrice(metal.assetID) else { return nil }
-            return try? MoneyInput.multiply(grams, price, allowingRounding: true)
-        default:
-            guard let price = latestPrice(CanonicalAssetID(rawValue: row.holding.resolvedCoinID)) else { return nil }
-            return try? MoneyInput.multiply(amount, price, allowingRounding: true)
+            if currency == "USD" { return 1 }
+            return document.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.max { $0.providerTime < $1.providerTime }?.rate.value
+        case .metals: return (try? PreciousMetal.resolve(row.holding.coin)).flatMap { latestPrice($0.assetID) }
+        default: return latestPrice(CanonicalAssetID(rawValue: row.holding.resolvedCoinID))
         }
+    }
+    /// Fetches today's price once the coin, metal or currency is known, using the same requests (and the same on/off
+    /// switches) as the app's own price updates: coins from CoinGecko's top-coins list, so it can't tell which you add.
+    /// (The preview window, whose sample vault has them off, always looks.)
+    private func fetchLivePrice() async {
+        let key = priceKey
+        guard let settings = session.document?.settings, livePrice?.key != key else { return }
+        let price: Decimal?
+        switch mode {
+        case .bankBalances:
+            let currency = row.bank.account.currency.uppercased()
+            guard settings.automaticFX || session.isFixture, currency.count == 3, currency != "USD" else { return }
+            price = try? await PublicPrices.currencyRate(currency).max { $0.providerTime < $1.providerTime }?.rate.value
+        case .metals:
+            guard settings.automaticMetals || session.isFixture, let metal = try? PreciousMetal.resolve(row.holding.coin) else { return }
+            price = try? await PublicPrices.metalSpot(metal, fetchedAt: Date()).priceUSD.value
+        default:
+            let id = row.holding.resolvedCoinID
+            guard settings.automaticPrices || session.isFixture, !id.isEmpty else { return }
+            price = try? await PublicPrices.quotes(ids: [id], key: settings.coinGeckoKey).first?.priceUSD.value
+        }
+        if let price, !Task.isCancelled, key == priceKey { livePrice = (key, price) }
+    }
+    /// What the amount is worth now, as each digit is typed: today's price once fetched, else the latest saved one.
+    private var approxUSD: Decimal? {
+        guard let amount = entered, amount != 0, let price = unitPrice else { return nil }
+        if mode == .metals {
+            guard let grams = try? MetalWeightUnit.resolve(row.holding.unit).grams(amount) else { return nil }
+            return try? MoneyInput.multiply(grams, price, allowingRounding: true)
+        }
+        return try? MoneyInput.multiply(amount, price, allowingRounding: true)
     }
     private func latestPrice(_ asset: CanonicalAssetID) -> Decimal? {
         session.document?.quotes.filter { $0.assetID == asset }.max { $0.providerTime < $1.providerTime }?.priceUSD.value
