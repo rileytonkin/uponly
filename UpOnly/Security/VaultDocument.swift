@@ -150,6 +150,48 @@ struct VaultDocument: Codable, Sendable, Equatable {
     var hasRecords: Bool { !accounts.isEmpty || !entries.isEmpty || !holdings.isEmpty || !portfolios.isEmpty }
 }
 
+// In an extension, so the memberwise initializer stays.
+extension VaultDocument {
+    /// Written out so a field added later can't make earlier vaults unreadable: every field with a default is optional
+    /// on the way in. Encoding stays synthesized, so saved bytes don't change. A new stored property must be read here
+    /// too, or the next save would drop it; a test counts them.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try c.decode(Int.self, forKey: .schema)
+        vaultID = try c.decode(UUID.self, forKey: .vaultID)
+        generation = try c.decode(UInt64.self, forKey: .generation)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        entries = try c.decode([Entry].self, forKey: .entries)
+        accounts = try c.decode([Account].self, forKey: .accounts)
+        dormant = try c.decode([DormantMark].self, forKey: .dormant)
+        trackedBankAccountIDs = try c.decode([UUID].self, forKey: .trackedBankAccountIDs)
+        portfolios = try c.decode([Portfolio].self, forKey: .portfolios)
+        holdings = try c.decode([Holding].self, forKey: .holdings)
+        quantities = try c.decode([QuantityObservation].self, forKey: .quantities)
+        bankBalances = try c.decode([BankBalanceObservation].self, forKey: .bankBalances)
+        quotes = try c.decode([QuoteObservation].self, forKey: .quotes)
+        fx = try c.decode([FXObservation].self, forKey: .fx)
+        dailyValuations = try c.decode([DailyValuation].self, forKey: .dailyValuations)
+        acceptedBatchIDs = try c.decode([UUID].self, forKey: .acceptedBatchIDs)
+        trustedSigners = try c.decode([TrustedSigner].self, forKey: .trustedSigners)
+        inboxPrivateKeyX963 = try c.decode(Data.self, forKey: .inboxPrivateKeyX963)
+        inboxPublicKeyX963 = try c.decode(Data.self, forKey: .inboxPublicKeyX963)
+        statementArchive = try c.decodeIfPresent(Data.self, forKey: .statementArchive)
+        nextOrdinal = try c.decode(UInt64.self, forKey: .nextOrdinal)
+        bankTracking = try c.decode([BankTrackingObservation].self, forKey: .bankTracking)
+        settings = try c.decodeIfPresent(AppSettings.self, forKey: .settings) ?? AppSettings()
+        importedStatements = try c.decodeIfPresent([ImportedStatement].self, forKey: .importedStatements) ?? []
+        reviewedMonths = try c.decodeIfPresent([String].self, forKey: .reviewedMonths) ?? []
+        priceHistoryCoverage = try c.decodeIfPresent([PriceHistoryCoverage].self, forKey: .priceHistoryCoverage)
+        businessAccounting = try c.decodeIfPresent([BusinessBook].self, forKey: .businessAccounting)
+        backgroundSignerPublicKey = try c.decodeIfPresent(Data.self, forKey: .backgroundSignerPublicKey)
+        backgroundAppliedAt = try c.decodeIfPresent([String: Date].self, forKey: .backgroundAppliedAt)
+        purchases = try c.decodeIfPresent([PurchaseLot].self, forKey: .purchases)
+        transferCounterparties = try c.decodeIfPresent([String].self, forKey: .transferCounterparties)
+        pendingHistoryRebuild = try c.decodeIfPresent(PendingHistoryRebuild.self, forKey: .pendingHistoryRebuild)
+    }
+}
+
 struct VaultSession: Sendable {
     let sessionID: UUID
     let document: VaultDocument
@@ -163,6 +205,10 @@ struct PersistedVaultFile: Codable, Sendable {
     var nonce: Data
     var ciphertext: Data
     var tag: Data
+    /// The document schema in plain text, written only above 1 so schema-1 files stay byte-for-byte as before (and
+    /// earlier builds ignore it). A build that raises the schema must write it, so older builds that read it refuse the
+    /// file as newer instead of treating it as damage and reopening the previous copy.
+    var schema: Int? = nil
 }
 
 struct RecoveryWrapperFile: Codable, Sendable {
@@ -171,6 +217,9 @@ struct RecoveryWrapperFile: Codable, Sendable {
     var nonce: Data
     var ciphertext: Data
     var tag: Data
+    /// `VaultCrypto.keyID` of the key inside, set by a recovery-code change so an unlock can tell whether a waiting
+    /// wrapper belongs to the key it has. Earlier wrappers have none, and earlier builds ignore it.
+    var keyID: Data? = nil
 }
 
 struct VaultLayout: Sendable, Equatable {
@@ -179,6 +228,8 @@ struct VaultLayout: Sendable, Equatable {
     var current: URL { root.appendingPathComponent("vault.uponly") }
     var previous: URL { root.appendingPathComponent("vault.uponly.prev") }
     var recovery: URL { root.appendingPathComponent("recovery.wrapper") }
+    /// The new code's wrapper while a recovery-code change finishes (`VaultStore.rotateRecovery`).
+    var pendingRecovery: URL { root.appendingPathComponent("recovery.wrapper.next") }
     var lockFile: URL { root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + ".writer.lock") }
     var inbox: URL { root.appendingPathComponent("Inbox", isDirectory: true) }
     var journal: URL { root.appendingPathComponent("cutover.journal") }
@@ -189,6 +240,21 @@ struct VaultLayout: Sendable, Equatable {
     func ensureDirectories(_ io: VaultFileIO) throws {
         try io.createDirectory(at: root)
         try io.createDirectory(at: inbox)
+    }
+
+    /// Any of a vault's own files means a vault is here, even without its main file: it must never look like a fresh start.
+    func holdsVault(_ io: VaultFileIO) -> Bool {
+        [current, previous, recovery, pendingRecovery].contains { io.fileExists(at: $0) }
+    }
+
+    /// Where a damaged main file is moved aside: `vault.uponly.damaged`, numbered while earlier ones are still there.
+    func damagedCopy(_ io: VaultFileIO) -> URL {
+        var candidate = root.appendingPathComponent("vault.uponly.damaged"), number = 2
+        while io.fileExists(at: candidate) {
+            candidate = root.appendingPathComponent("vault.uponly.damaged \(number)")
+            number += 1
+        }
+        return candidate
     }
 
     /// The folder a vault replaced by a restored backup is moved to, beside it: “Vault (replaced 2026-09-24 1432)”.
