@@ -18,22 +18,65 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
     var wiseEnabled: Bool = false
     var accountingEnabled: Bool = false
     static var service: String { (Bundle.main.bundleIdentifier ?? "org.uponly") + ".background" }
+    /// In the data-protection Keychain, like the vault key, in the app's default access group (the first of its
+    /// keychain-access-groups), on this Mac only. Readable from the Mac's first unlock, so refreshes run while the vault is locked.
+    private static var item: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "sources",
+         kSecAttrSynchronizable as String: kCFBooleanFalse as Any, kSecUseDataProtectionKeychain as String: true]
+    }
+    /// Where earlier builds kept it: the login keychain.
+    private static var legacyItem: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "sources",
+         kSecUseDataProtectionKeychain as String: false]
+    }
     static func load() throws -> Self? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "sources", kSecReturnData as String: true, kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+        if let data = try read(item) { return try JSONDecoder().decode(Self.self, from: data) }
+        // Moved once: the old item is deleted only after the new one is saved, and keeps working until then.
+        guard let data = try? read(legacyItem) else { return nil }
+        let legacy = try JSONDecoder().decode(Self.self, from: data)
+        if (try? legacy.save()) != nil { _ = SecItemDelete(legacyItem as CFDictionary) }
+        return legacy
+    }
+    private static func read(_ match: [String: Any]) throws -> Data? {
+        var query = match
+        query[kSecReturnData as String] = true
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw ImportFailure("Background source configuration is unavailable.") }
-        return try JSONDecoder().decode(Self.self, from: data)
+        return data
     }
     func save() throws {
-        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: "sources"]
         let data = try JSONEncoder().encode(self)
-        let status = SecItemUpdate(match as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let status = SecItemUpdate(Self.item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
-            var item = match; item[kSecValueData as String] = data; item[kSecAttrLabel as String] = "Up Only background sources"
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw ImportFailure("Background sources could not be saved.") }
+            var add = Self.item
+            add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = "Up Only background sources"
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw ImportFailure("Background sources could not be saved.") }
         } else if status != errSecSuccess { throw ImportFailure("Background sources could not be updated.") }
+    }
+}
+// In an extension, so the memberwise initializer stays.
+extension BackgroundConfiguration {
+    /// Switches added later are read as off when missing, so a saved configuration from an earlier build still loads.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        vaultID = try c.decode(UUID.self, forKey: .vaultID)
+        inboxPublicKey = try c.decode(Data.self, forKey: .inboxPublicKey)
+        signingPrivateKey = try c.decode(Data.self, forKey: .signingPrivateKey)
+        signingPublicKey = try c.decode(Data.self, forKey: .signingPublicKey)
+        crypto = try c.decode([String].self, forKey: .crypto)
+        currencies = try c.decode([String].self, forKey: .currencies)
+        metals = try c.decode([PreciousMetal].self, forKey: .metals)
+        pricesEnabled = try c.decode(Bool.self, forKey: .pricesEnabled)
+        fxEnabled = try c.decode(Bool.self, forKey: .fxEnabled)
+        metalsEnabled = try c.decode(Bool.self, forKey: .metalsEnabled)
+        coinGeckoKey = try c.decode(String.self, forKey: .coinGeckoKey)
+        wiseEnabled = try c.decodeIfPresent(Bool.self, forKey: .wiseEnabled) ?? false
+        accountingEnabled = try c.decodeIfPresent(Bool.self, forKey: .accountingEnabled) ?? false
     }
 }
 #if UPONLY_PERSONAL
@@ -60,7 +103,9 @@ actor BackgroundRefreshSchedule {
     private func path(_ root: URL, source: String) -> URL { root.appendingPathComponent("Background-" + source + ".schedule") }
     private func record(vaultID: UUID, root: URL, source: String) -> Record? {
         guard let data = try? Data(contentsOf: path(root, source: source)),
-              let record = try? VaultJSON.decode(Record.self, from: data), record.vaultID == vaultID else { return nil }
+              var record = try? VaultJSON.decode(Record.self, from: data), record.vaultID == vaultID else { return nil }
+        // The file is plain text: an edited count mustn't overflow the back-off arithmetic and crash the app.
+        record.failures = record.failures.map { min(max($0, 0), 64) }
         return record
     }
     func claim(vaultID: UUID, root: URL, source: String = "banks", now: Date = Date()) throws -> Bool {

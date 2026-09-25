@@ -74,9 +74,11 @@ final class UnlockFence: @unchecked Sendable {
         return value
     }
 
-    func bump() {
+    /// Returns the new ticket, read under the same lock, so no other bump can slip in between.
+    @discardableResult func bump() -> UInt64 {
         lock.lock(); defer { lock.unlock() }
         value += 1
+        return value
     }
 
     func publish<T>(_ ticket: UInt64, _ body: () throws -> T) throws -> T {
@@ -129,6 +131,7 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         if failSync && sync { throw VaultError.diskWriteFailed }
         lock.lock(); defer { lock.unlock() }
         files[url.path] = data
+        unreadable.remove(url.path)
     }
 
     func replaceItem(at original: URL, withItemAt temp: URL) throws {
@@ -137,6 +140,8 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         if let data = files[temp.path] {
             files[original.path] = data
             files.removeValue(forKey: temp.path)
+            // As on disk, a file's permissions move with it.
+            if unreadable.remove(temp.path) != nil { unreadable.insert(original.path) } else { unreadable.remove(original.path) }
             return
         }
         let tempPrefix = temp.path.hasSuffix("/") ? temp.path : temp.path + "/"
@@ -292,22 +297,24 @@ final class DiskFileIO: VaultFileIO, @unchecked Sendable {
         } else {
             try fileManager.moveItem(at: temp, to: original)
         }
-        if fileManager.fileExists(atPath: original.path) {
-            var isDir: ObjCBool = false
-            fileManager.fileExists(atPath: original.path, isDirectory: &isDir)
-            try fileManager.setAttributes(
+        // The swap happened and its data was flushed first. Reporting a later permissions or folder-flush failure as
+        // "not saved" would leave the caller believing the old file while the new one is in place.
+        var isDir: ObjCBool = false
+        if fileManager.fileExists(atPath: original.path, isDirectory: &isDir) {
+            try? fileManager.setAttributes(
                 [.posixPermissions: isDir.boolValue ? 0o700 : 0o600],
                 ofItemAtPath: original.path
             )
         }
-        try syncDirectory(containing: original)
+        try? syncDirectory(containing: original)
     }
 
     func installItem(at destination: URL, from staging: URL) throws {
         guard !fileExists(at: destination), !((try? isSymbolicLink(at: destination)) ?? false)
         else { throw VaultError.alreadyExists }
         try fileManager.moveItem(at: staging, to: destination)
-        try syncDirectory(containing: destination)
+        // As in `replaceItem`: once moved, it is in place.
+        try? syncDirectory(containing: destination)
     }
 
     func replacementDirectory(for destination: URL) throws -> URL {
