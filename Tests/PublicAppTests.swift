@@ -533,7 +533,7 @@ struct BulkInputTests {
     func knownBankExports() throws {
         for idHeader in ["Transaction ID", "TransferWise ID"] {
             let descriptionHeader = idHeader == "Transaction ID" ? "Name" : "Description"
-            let draft = try batch("\(idHeader),Date,\(descriptionHeader),Amount,Currency,Type\nexample,02/01/2026,Sample,-12.50,USD,CARD_PAYMENT", mode: .statements)
+            let draft = try batch("\(idHeader),Date,\(descriptionHeader),Amount,Currency,Type\nexample,13/01/2026,Sample,-12.50,USD,CARD_PAYMENT", mode: .statements)
             let doc = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
             #expect(doc.entries.count == 1 && doc.entries[0].kind == .expense && doc.entries[0].amount == Decimal(string: "12.50"))
         }
