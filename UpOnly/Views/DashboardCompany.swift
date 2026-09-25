@@ -104,7 +104,8 @@ extension UpOnlyUnlockedPanel {
                         let parts = holdingValues.filter { component in document?.holdings.first { $0.id == component.id }?.portfolioID == portfolio.id }
                         return AssetRow(id: portfolio.id.uuidString, name: portfolio.name, detail: parts.isEmpty ? nil : parts.map(\.label).joined(separator: ", "),
                                         value: AssetOwnership.sum(parts).map(UpOnlyFormat.exactMoney) ?? (parts.isEmpty ? "No holdings" : "Price needed"),
-                                        logo: parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document?.holdings.first { $0.id == part.id }?.assetID.rawValue },
+                                        // Crypto always wears Bitcoin's logo; metals their largest holding's.
+                                        logo: portfolio.kind == .crypto ? "bitcoin" : parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document?.holdings.first { $0.id == part.id }?.assetID.rawValue },
                                         symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                         tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, selected: companyFocus == .portfolio(portfolio.id),
                                         trailing: .button(symbol: "chevron.right", label: "Open " + portfolio.name, action: {
