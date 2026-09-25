@@ -331,12 +331,22 @@ final class UpOnlySession {
                 ? UnlockTiming(method: passwordUnlockRequested ? "password" : authenticationContext != nil ? "touch_id" : "system") : nil
             let opened = try await vault.unlock(timing: timing)
             let previous = await vault.openedPrevious
+            // Prices, rates and balances fetched while locked go in before the dashboard first draws, so its totals
+            // don't change a moment after unlocking. They're saved as usual right after (applyBackgroundCache).
+            var shown = opened.document
+            if !isFixture {
+                let root = Config.supportDirectory, stored = opened.document
+                shown = await Task.detached(priority: .userInitiated) {
+                    BackgroundRefresh.cachedPackets(document: stored, root: root).packets
+                        .reduce(stored) { document, packet in (try? BackgroundRefresh.applying(packet, to: document)) ?? document }
+                }.value
+            }
             guard sessionToken == token else { return }
             unlockTiming = timing
             // Everything the lock view showed goes in the same update as the dashboard arrives, so there's one
             // change on screen, not a dimmed dashboard and then another.
             isBusy = false; authenticationContext = nil; passwordUnlockRequested = false
-            publish(opened.document, freshUnlock: true)
+            publish(shown, freshUnlock: true)
             if previous { message = Self.previousCopyNotice }
             timing?.mark("dashboard_published")
         } catch VaultError.needsRecovery { if sessionToken == token { state = .recovery } }
@@ -1857,9 +1867,10 @@ extension UpOnlySession {
         } catch { backgroundIssues = ["Background source setup"] }
     }
     func applyBackgroundCache() async {
-        guard !isFixture, state == .unlocked, let current = document else { return }
+        guard !isFixture, state == .unlocked, document != nil, backgroundCacheRequest == nil else { return }
         let token = sessionToken
-        guard backgroundCacheRequest == nil else { return }
+        // Measured against what's saved, not what's shown: unlocking already shows cached updates that aren't saved yet.
+        guard let current = try? await vault.currentSession().document, token == sessionToken, backgroundCacheRequest == nil else { return }
         let root = Config.supportDirectory
         let request = Task.detached(priority: .utility) { BackgroundRefresh.cachedPackets(document: current, root: root) }
         backgroundCacheRequest = request
