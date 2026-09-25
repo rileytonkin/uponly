@@ -59,7 +59,7 @@ extension UpOnlyManagement {
     /// A balance in dollars at the latest saved rate, for the right-hand column every row shares.
     func usd(_ amount: Decimal, currency: String) -> Decimal? {
         if currency == "USD" || amount == 0 { return amount }
-        guard let rate = session.document?.fx.filter({ $0.sourceCurrency == currency && $0.targetCurrency == "USD" }).max(by: { $0.providerTime < $1.providerTime })?.rate.value else { return nil }
+        guard let rate = session.latestRate(currency) else { return nil }
         return try? MoneyInput.multiply(amount, rate, allowingRounding: true)
     }
     /// A manual bank account: its dollar value with its own balance under it, and when it's from. The row updates it.

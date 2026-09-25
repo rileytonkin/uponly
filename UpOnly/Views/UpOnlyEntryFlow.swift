@@ -58,7 +58,8 @@ struct UpOnlyEntryFlow: View {
             } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count <= 1, batch.sources.allSatisfy({ $0.grid.isEmpty }) {
                 if let row = batch.rows.first {
                     UpOnlyGuidedEntry(mode: batch.mode, row: Binding(get: { session.importDraft?.rows.first ?? row }, set: { session.importDraft?.rows = [$0] }),
-                                      back: { session.discardImport() },
+                                      // Opened to update one thing from a page: backing out returns to that page.
+                                      back: { session.discardImport(); if session.addOpenedForUpdate { session.addingInMenu = false } },
                                       saved: { summary in if compact { saved = summary } })
                         .id(batch.id)
                 } else { ProgressView().controlSize(.small).task { seed(batch.mode) } }

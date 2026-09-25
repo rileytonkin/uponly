@@ -25,7 +25,7 @@ extension UpOnlyUnlockedPanel {
         guard let document = session.document else { return WorthSnapshot(interval: interval) }
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
         let valuation = AssetOwnership.personalValue(at: interval.end, scope: scope, document: document)
-        let estimates = ChartEstimates(document: document)
+        let estimates = session.chartEstimates() ?? ChartEstimates(document: document)
         // Whatever a saved day lacks (a price, a rate, a balance, a company's share that month) is estimated from the
         // nearest saved values and named on hover, so the line never dips or cuts across for want of one.
         func figure(_ result: (total: Decimal, estimated: [String])?) -> (Decimal, String?)? {

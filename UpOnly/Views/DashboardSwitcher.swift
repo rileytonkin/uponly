@@ -71,7 +71,7 @@ extension UpOnlyUnlockedPanel {
         let document = session.document
         // Your share of everything, the same figure as the All assets page; its components value every row.
         let personal = document.map { AssetOwnership.personalValue(at: interval.end, scope: .allTracked, document: $0) }
-        let estimates = document.map(ChartEstimates.init)
+        let estimates = session.chartEstimates()
         let start = document.flatMap { doc in estimates.flatMap { rangeStart(scope: .allTracked, interval: interval, document: doc, estimates: $0) } }
         let rows = personal.map { selectionRows(current: $0.components, start: start, at: interval.end) } ?? []
         let then = start.flatMap { start in estimates?.personalTotal(start.components, day: start.day)?.total }

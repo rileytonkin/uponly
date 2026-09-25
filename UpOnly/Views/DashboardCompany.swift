@@ -51,7 +51,7 @@ extension UpOnlyUnlockedPanel {
                 VStack(alignment: .leading, spacing: 8) {
                     rangeControl
                     if companyID != nil {
-                        Picker("Chart", selection: $companyChart) {
+                        Picker("Chart", selection: Binding(get: { companyChart }, set: { companyChart = $0 })) {
                             Text("Assets").tag(CompanyChart.balance)
                             Text("Profit / loss").tag(CompanyChart.profit)
                         }.pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize().accessibilityLabel("Company chart")
@@ -183,7 +183,7 @@ extension UpOnlyUnlockedPanel {
         guard let document = session.document else { return [] }
         let companyID = groupID == "personal" ? nil : groupID
         let samples = DashboardPeriod.samples(in: interval, scope: .allTracked, document: document)
-        let estimates = ChartEstimates(document: document)
+        let estimates = session.chartEstimates() ?? ChartEstimates(document: document)
         func figure(_ components: [ValuationComponent], day: Date, at moment: Date?) -> (Decimal, String?)? {
             let banks = components.filter { component in
                 component.kind == .bank && (AssetOwnership.businessID(for: component, in: document) ?? "personal") == groupID

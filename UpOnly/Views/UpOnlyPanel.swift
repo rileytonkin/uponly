@@ -32,6 +32,15 @@ struct UpOnlyPanel: View {
             if session.handleEscape() {}
             else if let closeMenu { closeMenu() } else { dismiss() }
         }).frame(width: 0, height: 0))
+        // The dashboard's ⇧⌘P (privacy) and ⌘L (lock) also work on Manage and Add pages, which replace the dashboard.
+        .background {
+            if session.state == .unlocked, session.managementInMenu || session.addingInMenu {
+                Group {
+                    Button("Hide values") { Task { try? await session.togglePrivacyMode() } }.keyboardShortcut("p", modifiers: [.command, .shift])
+                    Button("Lock") { session.lockAndClose() }.keyboardShortcut("l", modifiers: .command)
+                }.opacity(0).frame(width: 0, height: 0).allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
         .background {
             if session.state == .unlocked, session.unlockTiming != nil {
                 UpOnlyUnlockDisplayProbe { session.recordUnlockedMenuDisplay() }.frame(width: 1, height: 1)
@@ -130,14 +139,23 @@ struct UpOnlyUnlockedPanel: View {
         get { session.showingSwitcher }
         nonmutating set { session.showingSwitcher = newValue }
     }
-    @State var worthRange: WorthRange = .year
-    @State var holdingSort: HoldingSort = .value
+    var worthRange: WorthRange {
+        get { session.worthRange }
+        nonmutating set { session.worthRange = newValue }
+    }
+    var holdingSort: HoldingSort {
+        get { HoldingSort.allCases.indices.contains(session.holdingSortIndex) ? HoldingSort.allCases[session.holdingSortIndex] : .value }
+        nonmutating set { session.holdingSortIndex = HoldingSort.allCases.firstIndex(of: newValue) ?? 0 }
+    }
     /// How a portfolio's holdings table is ordered.
     enum HoldingSort: CaseIterable {
         case value, change, name
         var title: String { switch self { case .value: "Value"; case .change: "Change"; case .name: "Name" } }
     }
-    @State var companyChart: CompanyChart = .balance
+    var companyChart: CompanyChart {
+        get { session.companyChartProfit ? .profit : .balance }
+        nonmutating set { session.companyChartProfit = newValue == .profit }
+    }
     @State var companyFocus: CompanyFocus = .all
     /// The header's and the switcher list's heights, so the switcher's breakdown can fill the page rather than leave a gap.
     @State var headerHeight: CGFloat = 0
@@ -218,7 +236,7 @@ struct UpOnlyUnlockedPanel: View {
         guard started else { session.managementInMenu = true; return }
         if (session.importDraft?.rows.count ?? 0) > 1 {
             session.importTableMode = true; session.importReturnsHome = true; session.managementInMenu = true
-        } else { session.addingInMenu = true }
+        } else { session.addingInMenu = true; session.addOpenedForUpdate = true }
     }
     var hasData: Bool {
         guard let document = session.document else { return false }
