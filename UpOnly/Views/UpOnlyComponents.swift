@@ -36,6 +36,8 @@ struct UpOnlyAmount: View {
     /// "−", "13,710" and ".42" (or "" without cents).
     static func parts(_ value: Decimal, signed: Bool, cents: Bool) -> (sign: String, whole: String, fraction: String) {
         let sign = value < 0 ? "−" : signed && value > 0 ? "+" : ""
+        // A million or more is short ("1.25M"), all in the figure's own colour.
+        if let short = UpOnlyFormat.compact(value) { return (sign, short, "") }
         let text = (cents ? UpOnlyFormat.exactMoney(abs(value)) : UpOnlyFormat.money(abs(value))).replacingOccurrences(of: "$", with: "")
         guard cents, let dot = text.lastIndex(of: ".") else { return (sign, text, "") }
         return (sign, String(text[..<dot]), String(text[dot...]))
@@ -54,25 +56,36 @@ nonisolated enum UpOnlyStandIn {
         return base / Decimal(pow(10, ceil(log10(magnitude))))
     }
     // Symbols with a country prefix count too ("CA$", "A$", "R$", "HK$", "CN¥"), as do codes before the number ("CHF 1,234").
-    private static let money = try! NSRegularExpression(pattern: #"(?<![\w.,])((?:[A-Z]{1,3})?[$£€¥₹₩₫₱₪₦₴₺₽฿]|[A-Z]{3}[\s\u00A0])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"#)
+    // Either may be short, with a suffix: "$1.25M", "3.71B PEPE".
+    private static let money = try! NSRegularExpression(pattern: #"(?<![\w.,])((?:[A-Z]{1,3})?[$£€¥₹₩₫₱₪₦₴₺₽฿]|[A-Z]{3}[\s\u00A0])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)([MBT](?![A-Za-z]))?"#)
     // A number before any ticker (one letter, or starting with a digit: "S", "1INCH"), a coin's name ("Arbitrum") or a unit.
-    private static let quantity = try! NSRegularExpression(pattern: #"(?<![\w.,$£€¥₹])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?=[\s\u00A0](?:[A-Z0-9][A-Za-z0-9]{0,15}|ozt|kg|g)\b)"#)
+    private static let quantity = try! NSRegularExpression(pattern: #"(?<![\w.,$£€¥₹])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)([MBT])?(?=[\s\u00A0](?:[A-Z0-9][A-Za-z0-9]{0,15}|ozt|kg|g)\b)"#)
     // A bare number on its own ("25,000,000"), as a form reads back what was typed.
     private static let bare = try! NSRegularExpression(pattern: #"^[\s\u00A0]*[−-]?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)[\s\u00A0]*$"#)
     /// The same text with each amount and quantity scaled: "$1,234.56", "£20.00", "CHF 1,234.00", "0.1 BTC", "2 ozt".
     /// Percentages, dates and counts are left alone.
     static func scale(_ text: String, by factor: Decimal) -> String {
         var result = text
-        for (expression, group, isQuantity) in [(money, 2, false), (quantity, 1, true), (bare, 1, true)] {
+        // A form reading back what was typed keeps it written out; amounts and quantities are shortened like any others.
+        for (expression, group, isQuantity, shortens) in [(money, 2, false, true), (quantity, 1, true, true), (bare, 1, true, false)] {
             let source = result as NSString
             for match in expression.matches(in: result, range: NSRange(location: 0, length: source.length)).reversed() {
-                let range = match.range(at: group)
+                var range = match.range(at: group)
                 let original = source.substring(with: range)
-                guard let value = Decimal(string: original.replacingOccurrences(of: ",", with: ""), locale: Locale(identifier: "en_US_POSIX")) else { continue }
-                let decimals = original.split(separator: ".").dropFirst().first?.count ?? 0
+                guard var value = Decimal(string: original.replacingOccurrences(of: ",", with: ""), locale: Locale(identifier: "en_US_POSIX")) else { continue }
+                // A short figure is scaled whole ("1.25M" is 1,250,000) and written the way any figure that size is.
+                let suffixRange = group + 1 < match.numberOfRanges ? match.range(at: group + 1) : NSRange(location: NSNotFound, length: 0)
+                let suffix = suffixRange.location == NSNotFound ? "" : source.substring(with: suffixRange)
+                if !suffix.isEmpty {
+                    value *= suffix == "T" ? 1_000_000_000_000 : suffix == "B" ? 1_000_000_000 : 1_000_000
+                    range = NSUnionRange(range, suffixRange)
+                }
+                let decimals = suffix.isEmpty ? original.split(separator: ".").dropFirst().first?.count ?? 0 : 2
                 let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US"); formatter.numberStyle = .decimal
                 formatter.minimumFractionDigits = decimals; formatter.maximumFractionDigits = isQuantity ? max(decimals, 4) : decimals
-                result = (result as NSString).replacingCharacters(in: range, with: formatter.string(from: NSDecimalNumber(decimal: value * factor)) ?? original)
+                let scaled = value * factor
+                let text = (shortens ? UpOnlyFormat.compact(scaled) : nil) ?? formatter.string(from: NSDecimalNumber(decimal: scaled)) ?? original
+                result = (result as NSString).replacingCharacters(in: range, with: text)
             }
         }
         return result

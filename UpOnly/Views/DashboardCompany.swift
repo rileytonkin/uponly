@@ -37,14 +37,17 @@ extension UpOnlyUnlockedPanel {
                 }
                 if let focusTotal {
                     UpOnlyAmount(value: focusTotal, cents: true)
-                    if let change { changeLine(change).padding(.top, 2) }
+                    // The change over the range, beside your share of a part-owned company.
+                    let yourShare = partOwner && companyFocus == .all ? share.map { share -> HeadlineStat in
+                        let shown = session.privacyMode ? session.standInFactor.map { UpOnlyFormat.exactMoney(share * $0) } ?? "••••" : UpOnlyFormat.exactMoney(share)
+                        return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary, spoken: shown)
+                    } : nil
+                    let stats = [change.map(changeStat), yourShare].compactMap { $0 }
+                    if !stats.isEmpty { headlineStats(stats).padding(.top, 4) }
                 } else if allParts.isEmpty {
                     Text("Balance needed").font(UpOnlyType.title)
                     Text("Add a balance to value this account.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 } else { Text("Needs a price or rate").font(UpOnlyType.title) }
-            }
-            if partOwner, let share, companyFocus == .all, focusTotal != nil {
-                UpOnlyValueRow(label: "Your share of assets" + (ownership.map { " · " + $0.label } ?? ""), value: UpOnlyFormat.exactMoney(share))
             }
             // One chart. Assets shows the selected account, portfolio or everything; Profit / loss shows the accounting months.
             if hasAssetChart || companyID != nil {
@@ -182,7 +185,7 @@ extension UpOnlyUnlockedPanel {
             }
             let parts = focusedParts(banks + companyHoldings(components, companyID: companyID))
             guard !parts.isEmpty else { return nil }
-            return estimates.total(parts, day: day, at: moment).map { ($0.total, $0.estimated.isEmpty ? nil : "Estimated: " + $0.estimated.joined(separator: "; ")) }
+            return estimates.total(parts, day: day, at: moment).map { ($0.total, nil) }
         }
         if let fine = intradaySeries(scope: .allTracked, interval: interval, samples: samples, liveComponents: liveComponents, live: live, { figure($0, day: $1, at: $1) }) {
             return fine

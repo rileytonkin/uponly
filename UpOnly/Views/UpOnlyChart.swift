@@ -480,6 +480,7 @@ enum UpOnlyFormat {
         return formatter
     }()
     private static let oneDecimal = decimalFormatter(fractionDigits: 1...1)
+    private static let compactDigits = (0...2).map { decimalFormatter(fractionDigits: 0...$0) }
     private static let coinAmount = decimalFormatter(fractionDigits: 0...8)
     private static let metalWeight = decimalFormatter(fractionDigits: 0...4)
     private static let dayFormatter = dateFormatter("MMMd")
@@ -542,17 +543,42 @@ enum UpOnlyFormat {
         return monthFormatter.string(from: date)
     }
     static func monthName(_ date: Date) -> String { monthFormatter.string(from: date) }
-    /// Whole dollars with a true minus sign: "−$1,234".
+    /// "3.71B", "12.5M", "1T": a figure of a million or more in three significant digits, so a long one fits its row.
+    /// Smaller figures are nil and written in full. Unsigned: callers add the sign and the currency.
+    static func compact(_ value: Decimal) -> String? {
+        let magnitude = abs(NSDecimalNumber(decimal: value).doubleValue)
+        guard magnitude.isFinite, magnitude >= 1_000_000 else { return nil }
+        let units: [(size: Double, suffix: String)] = [(1e12, "T"), (1e9, "B"), (1e6, "M")]
+        var index = units.firstIndex { magnitude >= $0.size } ?? units.count - 1
+        func shown(_ unit: Int) -> (value: Double, digits: Int) {
+            let scaled = magnitude / units[unit].size, digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2
+            let step = pow(10, Double(digits))
+            return ((scaled * step).rounded() / step, digits)
+        }
+        var figure = shown(index)
+        // 999.996M rounds to 1,000M: say 1B instead.
+        if figure.value >= 1000, index > 0 { index -= 1; figure = shown(index) }
+        return (compactDigits[figure.digits].string(from: NSNumber(value: figure.value)) ?? "") + units[index].suffix
+    }
+    /// Whole dollars with a true minus sign: "−$1,234"; a million or more is short, "$1.25M".
     static func money(_ value: Decimal) -> String {
+        if let short = compact(value) { return (value < 0 ? "−" : "") + "$" + short }
         let whole = rounded(value, scale: 0)
         return (whole < 0 ? "−" : "") + (usdWhole.string(from: NSDecimalNumber(decimal: abs(whole))) ?? "—")
     }
     static func currencyMoney(_ value: Decimal, currency: String) -> String {
-        (rounded(value, scale: 2) < 0 ? "−" : "") + (currencyFormatter(currency).string(from: NSDecimalNumber(decimal: abs(value))) ?? currency + " —")
+        let formatter = currencyFormatter(currency)
+        if let short = compact(value) {
+            // "€3.7M", "CHF 3.7M": a symbol made of letters keeps its space.
+            let symbol = formatter.currencySymbol ?? currency
+            return (value < 0 ? "−" : "") + symbol + (symbol.last?.isLetter == true ? " " : "") + short
+        }
+        return (rounded(value, scale: 2) < 0 ? "−" : "") + (formatter.string(from: NSDecimalNumber(decimal: abs(value))) ?? currency + " —")
     }
-    /// Dollars and cents with a true minus sign: "−$3,200.00".
+    /// Dollars and cents with a true minus sign: "−$3,200.00"; a million or more is short, "$1.25M".
     static func exactMoney(_ value: Decimal) -> String {
-        (rounded(value, scale: 2) < 0 ? "−" : "") + (usdCents.string(from: NSDecimalNumber(decimal: abs(value))) ?? "—")
+        if let short = compact(value) { return (value < 0 ? "−" : "") + "$" + short }
+        return (rounded(value, scale: 2) < 0 ? "−" : "") + (usdCents.string(from: NSDecimalNumber(decimal: abs(value))) ?? "—")
     }
     static func quantity(_ value: Decimal) -> String { NSDecimalNumber(decimal: value).stringValue }
     /// A signed percentage with one decimal: "+18.0%", "−3.4%", "0.0%".
@@ -593,10 +619,11 @@ enum UpOnlyFormat {
         let ounces = quantity / PreciousMetal.gramsPerTroyOunce
         return ounces >= 1 ? (ounces, "ozt") : (quantity, "g")
     }
-    /// "0.1 BTC", "2 ozt", "10 g".
+    /// "0.1 BTC", "2 ozt", "10 g", "3.71B PEPE".
     static func quantityText(_ quantity: Decimal, symbol: String, metal: Bool) -> String {
         let measured = measure(quantity, metal: metal)
-        return ((metal ? metalWeight : coinAmount).string(from: NSDecimalNumber(decimal: measured.amount)) ?? quantity.description) + " " + (measured.unit ?? symbol)
+        let amount = compact(measured.amount) ?? (metal ? metalWeight : coinAmount).string(from: NSDecimalNumber(decimal: measured.amount)) ?? quantity.description
+        return amount + " " + (measured.unit ?? symbol)
     }
     /// "$59,000.00", "$0.000012" (sub-dollar coins keep their significant digits), "$2,650.00/ozt" for metal. Metal is
     /// always priced per ounce, so the unit doesn't hint at how much is held.

@@ -1948,8 +1948,13 @@ struct AccountingPerformanceTests {
         let r = try range(#"{"range":"P&L","values":[["Month","2026-01","2026-02 (so far)"],["Profit (set aside)",999,999],["NET PROFIT",-80,120]]}"#)
         let rows = try AccountingSheets.pnl(r)
         #expect(rows.map(\.profitUSD) == [-80,120] && rows[1].estimated)
-        let health = try range(#"{"range":"Data Health","values":[["✗ 1 CHECK(S) FAILING"]]}"#)
-        #expect(AccountingSheets.healthWarning(health) != nil)
+        // The explanation's ✗ and ~ legend isn't a result: only the verdict row, or a ✗ in the status column, is.
+        let legend = #"["Three records are cross-checked. ✗ = that number may be wrong. ~ = estimated while reports settle."],[""]"#
+        let passing = try range(#"{"range":"Data Health","values":["# + legend + #",["VERDICT","✓ ALL CHECKS PASSING"],["~","Store revenue","2026-09","accrued"],["CHECKS RUN"],["✓","Payouts","","ties"]]}"#)
+        #expect(AccountingSheets.healthWarning(passing) == nil)
+        let failing = try range(#"{"range":"Data Health","values":["# + legend + #",["VERDICT","✗ 1 CHECK(S) FAILING"],["✗","Payouts","2026-08","off by $12.00"]]}"#)
+        #expect(AccountingSheets.healthWarning(failing) != nil)
+        #expect(AccountingSheets.healthWarning(try range(#"{"range":"Data Health","values":[["✗","Payouts","2026-08","off"]]}"#)) != nil)
     }
     @Test("One-third ownership changes to one-half at the documented month, including losses")
     func historicalOwnership() throws {

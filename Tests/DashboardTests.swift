@@ -124,10 +124,20 @@ struct DashboardTests {
         }
     }
 
+    @Test("A million or more is written short, in three significant digits, everywhere amounts and quantities are shown")
+    func compactFigures() {
+        #expect(UpOnlyFormat.compact(999_999) == nil)
+        #expect(UpOnlyFormat.compact(1_000_000) == "1M" && UpOnlyFormat.compact(3_710_000_000) == "3.71B")
+        #expect(UpOnlyFormat.compact(12_540_000) == "12.5M" && UpOnlyFormat.compact(371_400_000_000) == "371B")
+        #expect(UpOnlyFormat.compact(999_996_000) == "1B" && UpOnlyFormat.compact(2_500_000_000_000) == "2.5T")
+        #expect(UpOnlyFormat.quantityText(3_710_000_000, symbol: "PEPE", metal: false) == "3.71B PEPE")
+        #expect(UpOnlyFormat.exactMoney(-1_254_300) == "−$1.25M" && UpOnlyFormat.money(34_281) == "$34,281")
+        #expect(UpOnlyFormat.currencyMoney(3_700_000, currency: "EUR") == "€3.7M")
+    }
     @Test("Holdings show the quantity with its symbol and the unit price; metal switches to troy ounces from one ounce")
     func holdingLines() {
         #expect(UpOnlyFormat.holding(quantity: Decimal(string: "0.1")!, valueUSD: 5900, symbol: "BTC", metal: false) == "0.1 BTC · $59,000.00")
-        #expect(UpOnlyFormat.holding(quantity: 1_000_000, valueUSD: 12, symbol: "SHIB", metal: false) == "1,000,000 SHIB · $0.000012")
+        #expect(UpOnlyFormat.holding(quantity: 1_000_000, valueUSD: 12, symbol: "SHIB", metal: false) == "1M SHIB · $0.000012")
         #expect(UpOnlyFormat.holding(quantity: 2, valueUSD: nil, symbol: "Bitcoin", metal: false) == "2 Bitcoin")
         #expect(UpOnlyFormat.holding(quantity: PreciousMetal.gramsPerTroyOunce * 2, valueUSD: 5300, symbol: "", metal: true) == "2 ozt · $2,650.00/ozt")
         #expect(UpOnlyFormat.holding(quantity: 10, valueUSD: 1000, symbol: "", metal: true) == "10 g · $3,110.35/ozt")
@@ -202,6 +212,9 @@ struct StandInTests {
         #expect(UpOnlyStandIn.scale("3 1INCH", by: 2) == "6 1INCH")
         #expect(UpOnlyStandIn.scale("12.5 Arbitrum", by: 2) == "25.0 Arbitrum")
         #expect(UpOnlyStandIn.scale("25,000,000", by: 2) == "50,000,000")
+        // Short figures are scaled whole, never left showing the real one.
+        #expect(UpOnlyStandIn.scale("3.71B PEPE", by: Decimal(string: "0.001")!) == "3.71M PEPE")
+        #expect(UpOnlyStandIn.scale("$1.25M", by: Decimal(string: "0.001")!) == "$1,250.00")
         #expect(UpOnlyStandIn.scale("2 ozt", by: Decimal(string: "0.03")!) == "0.06 ozt")
         #expect(UpOnlyStandIn.scale("Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", by: Decimal(string: "0.1")!) == "Since Mar 2025 · Paid $420 · +$131 (+31%)")
         #expect(UpOnlyStandIn.scale("1 of 2 holdings", by: Decimal(string: "0.1")!) == "1 of 2 holdings")
