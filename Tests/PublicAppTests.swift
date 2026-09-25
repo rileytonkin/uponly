@@ -2205,10 +2205,10 @@ struct IntradayTests {
 
     @Test("An account's bank is found from its name, and typing suggests banks")
     func bankCatalog() {
-        // The bundled catalog is there, with logos for nearly all of it.
-        #expect(BankCatalog.all.count > 900 && BankCatalog.all.filter(\.logo).count > 900)
+        // The bundled catalog is there, each bank with its logo.
+        #expect(BankCatalog.all.count > 40 && BankCatalog.all.allSatisfy(\.logo))
         #expect(BankCatalog.bank(named: "Monzo Joint")?.id == "monzo")
-        #expect(BankCatalog.bank(named: "itau")?.name == "Itaú")
+        #expect(BankCatalog.bank(named: "credit agricole")?.name == "Crédit Agricole")
         #expect(BankLogos.logo(for: "Personal · USD", synced: true) == "wise")
         // Everyday words on their own don't name a bank.
         #expect(BankCatalog.bank(named: "Joint savings") == nil)

@@ -190,8 +190,8 @@ struct UpOnlyPrivacyButton: View {
     }
 }
 
-/// One bank the app knows, from the bundled catalog: about a thousand of the world's biggest banks, neobanks, wallets
-/// and brokers, each with its own app icon. Nothing is fetched; the list ships with the app.
+/// One bank the app knows, from the small bundled catalog of well-known banks, neobanks and brokers, each with its own
+/// app icon. Nothing is fetched; the list ships with the app.
 nonisolated struct BankCatalogEntry: Decodable, Sendable, Identifiable, Hashable {
     let id: String
     let name: String
