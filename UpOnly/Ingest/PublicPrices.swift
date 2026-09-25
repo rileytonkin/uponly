@@ -166,18 +166,25 @@ nonisolated enum PublicPrices {
     static func marketQuotes(ids: [String], key: String) async throws -> (quotes: [QuoteObservation], symbols: [String: String]) {
         var wanted = Set(try ids.map(MoneyInput.canonicalAssetID))
         var result: [QuoteObservation] = [], symbols: [String: String] = [:]
-        for page in 1...2 where !wanted.isEmpty {
-            let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/markets", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "order", value: "market_cap_desc"), URLQueryItem(name: "per_page", value: "250"), URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "precision", value: "full")], key: key, limit: 4 * 1024 * 1024)
-            let listed = try decodeMarkets(data, wanted: wanted, fetchedAt: Date())
-            result += listed.quotes; symbols.merge(listed.symbols) { first, _ in first }
-            wanted.subtract(listed.quotes.map(\.assetID.rawValue))
+        // Each request stands alone: one that fails (a rate limit, a timeout) keeps what the others priced.
+        var failure: Error?
+        for page in 1...2 where !wanted.isEmpty && failure == nil {
+            do {
+                let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/markets", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "order", value: "market_cap_desc"), URLQueryItem(name: "per_page", value: "250"), URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "precision", value: "full")], key: key, limit: 4 * 1024 * 1024)
+                let listed = try decodeMarkets(data, wanted: wanted, fetchedAt: Date())
+                result += listed.quotes; symbols.merge(listed.symbols) { first, _ in first }
+                wanted.subtract(listed.quotes.map(\.assetID.rawValue))
+            } catch { try Task.checkCancellation(); failure = error }
         }
         let rest = wanted.sorted()
-        for start in stride(from: 0, to: rest.count, by: 100) {
+        for start in stride(from: 0, to: rest.count, by: 100) where failure == nil {
             let batch = Array(rest[start..<min(start + 100, rest.count)])
-            let data = try await request(host: "api.coingecko.com", path: "/api/v3/simple/price", query: [URLQueryItem(name: "ids", value: batch.joined(separator: ",")), URLQueryItem(name: "vs_currencies", value: "usd"), URLQueryItem(name: "include_last_updated_at", value: "true"), URLQueryItem(name: "precision", value: "full")], key: key)
-            result += try decodeQuotes(data, requested: Set(batch), fetchedAt: Date())
+            do {
+                let data = try await request(host: "api.coingecko.com", path: "/api/v3/simple/price", query: [URLQueryItem(name: "ids", value: batch.joined(separator: ",")), URLQueryItem(name: "vs_currencies", value: "usd"), URLQueryItem(name: "include_last_updated_at", value: "true"), URLQueryItem(name: "precision", value: "full")], key: key)
+                result += try decodeQuotes(data, requested: Set(batch), fetchedAt: Date())
+            } catch { try Task.checkCancellation(); failure = error }
         }
+        if let failure, result.isEmpty { throw failure }
         return (result, symbols)
     }
     struct MarketRow: Decodable { var id: String; var symbol: String; var current_price: Decimal?; var last_updated: String? }

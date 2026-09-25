@@ -195,6 +195,13 @@ struct StandInTests {
         #expect(UpOnlyStandIn.scale("£20.00", by: 2) == "£40.00")
         #expect(UpOnlyStandIn.scale("CHF\u{00A0}1,234.00", by: 2) == "CHF\u{00A0}2,468.00")
         #expect(UpOnlyStandIn.scale("0.1 BTC", by: Decimal(string: "0.5")!) == "0.05 BTC")
+        // Symbols with a country prefix, one-letter and digit tickers, coin names and bare numbers are scaled too.
+        #expect(UpOnlyStandIn.scale("CA$1,000.00", by: 2) == "CA$2,000.00")
+        #expect(UpOnlyStandIn.scale("R$50.00", by: 2) == "R$100.00")
+        #expect(UpOnlyStandIn.scale("1,200 S", by: 2) == "2,400 S")
+        #expect(UpOnlyStandIn.scale("3 1INCH", by: 2) == "6 1INCH")
+        #expect(UpOnlyStandIn.scale("12.5 Arbitrum", by: 2) == "25.0 Arbitrum")
+        #expect(UpOnlyStandIn.scale("25,000,000", by: 2) == "50,000,000")
         #expect(UpOnlyStandIn.scale("2 ozt", by: Decimal(string: "0.03")!) == "0.06 ozt")
         #expect(UpOnlyStandIn.scale("Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", by: Decimal(string: "0.1")!) == "Since Mar 2025 · Paid $420 · +$131 (+31%)")
         #expect(UpOnlyStandIn.scale("1 of 2 holdings", by: Decimal(string: "0.1")!) == "1 of 2 holdings")

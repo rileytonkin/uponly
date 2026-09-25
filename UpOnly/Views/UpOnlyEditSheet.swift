@@ -26,6 +26,8 @@ struct UpOnlyEditSheet: View {
     @State private var businessID: String?
     @State private var dayKnown = true
     @FocusState private var amountFocused: Bool
+    /// Set up once: the menu keeps this view when it closes, and reopening mustn't put back the starting values.
+    @State private var configured = false
     private var actionTitle: String {
         switch editor {
         case .entry: "Save transaction"
@@ -60,6 +62,8 @@ struct UpOnlyEditSheet: View {
             }
         }.fixedSize(horizontal: false, vertical: true)
         .onAppear {
+            guard !configured else { return }
+            configured = true
             switch editor {
             case .renameAccount(let account): name = account.name
             case .renamePortfolio(let portfolio): name = portfolio.name

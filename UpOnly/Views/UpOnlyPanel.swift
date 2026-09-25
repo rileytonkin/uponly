@@ -135,7 +135,7 @@ struct UpOnlyUnlockedPanel: View {
     /// How a portfolio's holdings table is ordered.
     enum HoldingSort: CaseIterable {
         case value, change, name
-        var title: String { switch self { case .value: "Value"; case .change: "24h change"; case .name: "Name" } }
+        var title: String { switch self { case .value: "Value"; case .change: "Change"; case .name: "Name" } }
     }
     @State var companyChart: CompanyChart = .balance
     @State var companyFocus: CompanyFocus = .all
@@ -249,6 +249,9 @@ struct UpOnlyUnlockedPanel: View {
         // However the page changed (switcher, a row, Back, Esc), its drill-ins and focus start fresh.
         .onChange(of: session.dashboardSelection) { detail = nil; companyFocus = .all }
         .onChange(of: detail) { _, detail in session.dashboardDetailOpen = detail != nil }
+        // Manage, Add or a lock replace the dashboard: a detail page left open there mustn't keep catching Esc.
+        .onAppear { session.dashboardDetailOpen = detail != nil }
+        .onDisappear { session.dashboardDetailOpen = false }
         .onChange(of: session.backRequests) { if detail != nil, !session.managementInMenu, !session.addingInMenu { detail = nil } }
         // The shorter ranges' finer prices load as soon as the dashboard shows, all together, so picking one is
         // usually instant; the showing range refreshes them when they're due.
@@ -595,8 +598,15 @@ struct UpOnlyUnlockedPanel: View {
         while moment < interval.end.addingTimeInterval(-60) { moments.append(moment); moment = moment.addingTimeInterval(step) }
         let marks = DashboardChart.localMarks(moments, range: worthRange, calendar: calendar)
         var cursor = 0
+        // Nothing is drawn before the first record: from the start of its day for the daily base, its hour for 24 hours.
+        let firstMoment = base.first.map { worthRange == .day ? $0.moment : UTCDay.start(of: $0.moment) } ?? interval.end
         var points: [UpOnlyChartPoint] = moments.indices.map { index in
             let moment = moments[index]
+            guard moment >= firstMoment else {
+                return UpOnlyChartPoint(id: "i" + String(Int(moment.timeIntervalSince1970)),
+                                        label: worthRange == .day ? UpOnlyFormat.localTime(moment, calendar: calendar) : UpOnlyFormat.localMoment(moment, calendar: calendar), value: nil,
+                                        detailLabel: nil, note: nil, date: moment, axisLabel: marks[index])
+            }
             while cursor + 1 < base.count, base[cursor + 1].moment <= moment { cursor += 1 }
             let components = base[cursor].components.map { component -> ValuationComponent in
                 guard component.kind == .holding, let asset = assetOf[component.id], let series = prices[asset], let quantity = component.nativeAmount?.value,
