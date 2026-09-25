@@ -258,7 +258,7 @@ extension UpOnlyUnlockedPanel {
     }
     func personalEntryUSD(_ entry: Entry) -> Decimal? {
         let signed = entry.kind == .expense ? -entry.amount : entry.amount
-        guard let doc = session.document, let month = MonthKey(entry.month), let rate = MonthlyLedger.rate(currency: entry.currency, month: month, document: doc) else { return nil }
+        guard let month = MonthKey(entry.month), let rate = session.monthRate(entry.currency, month) else { return nil }
         return try? MoneyInput.multiply(signed, rate)
     }
     func personalEntryAmount(_ entry: Entry) -> String {

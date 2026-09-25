@@ -18,6 +18,46 @@ final class UpOnlySession {
     @ObservationIgnored private(set) var documentRevision = 0
     /// The 24-hour charts' hourly valuations, by page, document revision and hour: each is two dozen valuations.
     @ObservationIgnored var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] = [:]
+    /// The document's price, rate and balance index, and dated and latest exchange rates, worked out once per change
+    /// and shared by every page, the switcher and each row rather than rebuilt on every redraw.
+    @ObservationIgnored private var estimatesCache: (revision: Int, value: ChartEstimates)?
+    @ObservationIgnored private var rateCache: (revision: Int, monthly: [String: Decimal?], latest: [String: Decimal?]) = (-1, [:], [:])
+    func chartEstimates() -> ChartEstimates? {
+        guard let document else { return nil }
+        if let cache = estimatesCache, cache.revision == documentRevision { return cache.value }
+        let value = ChartEstimates(document: document)
+        estimatesCache = (documentRevision, value)
+        return value
+    }
+    /// The rate a month's transactions in `currency` are valued at (`MonthlyLedger.rate`), remembered per change.
+    func monthRate(_ currency: String, _ month: MonthKey) -> Decimal? {
+        guard let document else { return nil }
+        if rateCache.revision != documentRevision { rateCache = (documentRevision, [:], [:]) }
+        let key = currency + "|" + month.description
+        if let hit = rateCache.monthly[key] { return hit }
+        let rate = MonthlyLedger.rate(currency: currency, month: month, document: document)
+        rateCache.monthly[key] = rate
+        return rate
+    }
+    /// The latest saved dollars per unit of `currency` (1 for USD), remembered per change.
+    func latestRate(_ currency: String) -> Decimal? {
+        guard let document else { return nil }
+        let code = currency.uppercased()
+        if code == "USD" { return 1 }
+        if rateCache.revision != documentRevision { rateCache = (documentRevision, [:], [:]) }
+        if let hit = rateCache.latest[code] { return hit }
+        let rate = document.fx.filter { $0.sourceCurrency == code && $0.targetCurrency == "USD" }.max { $0.providerTime < $1.providerTime }?.rate.value
+        rateCache.latest[code] = rate
+        return rate
+    }
+    /// The dashboard's chart range, holdings order and company chart: kept here so a trip to Manage or Add, or a
+    /// relock, comes back to them.
+    var worthRange: WorthRange = .year
+    var holdingSortIndex = 0
+    var companyChartProfit = false
+    /// Add was opened to update one thing from a dashboard page (a holding, a bank's balance): backing out of it
+    /// returns there rather than to the Add chooser.
+    var addOpenedForUpdate = false
     /// Intraday prices for the 24-hour, 7-day and 30-day charts, by "range|asset", fetched while one of those
     /// ranges is showing. Kept in memory only; the vault keeps its own hourly and daily prices.
     private(set) var intraday: [String: ChartEstimates.Series] = [:]
@@ -106,7 +146,7 @@ final class UpOnlySession {
         get { dashboardSelection == .cashFlow ? 0 : 1 }
         set { if newValue == 0 { dashboardSelection = .cashFlow } else if dashboardSelection == .cashFlow { dashboardSelection = .all } }
     }
-    var addingInMenu = false
+    var addingInMenu = false { didSet { if !addingInMenu { addOpenedForUpdate = false } } }
     var managementInMenu = false
     var managementSection = "Accounts"
     var entryMonthForManagement = ""
