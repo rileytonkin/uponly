@@ -110,11 +110,11 @@ extension UpOnlyUnlockedPanel {
         }
     }
     /// A switcher row is a home row: icon, name (with a part-owned company's share, or "This month"), and value over
-    /// its change over the range. The chosen one has a check where the home rows have a chevron.
+    /// its change over the range. The page showing is the highlighted row.
     func switcherRow(_ row: SelectionRow) -> AssetRow {
         let chosen = row.selection == session.dashboardSelection
         return AssetRow(id: row.id, name: row.name, detail: row.detail, value: row.valueText, change: row.change?.fraction,
-                        image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint, trailing: .check(chosen)) { select(row.selection) }
+                        image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint, selected: chosen, trailing: .none) { select(row.selection) }
     }
 }
 
@@ -153,7 +153,7 @@ struct UpOnlyBreakdown: View {
                 ForEach(slices.indices, id: \.self) { index in
                     HStack(spacing: 8) {
                         RoundedRectangle(cornerRadius: 2.5).fill(slices[index].tint).frame(width: 10, height: 10)
-                        Text(slices[index].name).font(UpOnlyType.body).foregroundStyle(.primary.opacity(0.85)).lineLimit(1)
+                        Text(slices[index].name).font(UpOnlyType.body).foregroundStyle(.primary.opacity(0.85)).lineLimit(1).minimumScaleFactor(0.85)
                         Spacer(minLength: 8)
                         Text(percents[index] == 0 ? "<1%" : "\(percents[index])%").font(UpOnlyType.body.weight(.semibold).monospacedDigit())
                     }.accessibilityElement(children: .ignore).accessibilityLabel(slices[index].name)
