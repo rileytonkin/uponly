@@ -332,6 +332,15 @@ nonisolated struct ImportSourceDraft: Identifiable, Sendable {
     var isManual: Bool { grid.isEmpty }
     /// Amounts in one signed column, with no type column to say which way they go.
     var hasSignedAmount: Bool { mapping[.amount] != nil && mapping[.type] == nil }
+    /// Whether any amount is written as negative (`-12.34`, `(12.34)`, `12.34-`), so the file's own signs say which way money went.
+    var hasNegativeAmount: Bool {
+        guard let column = mapping[.amount] else { return false }
+        return grid.dropFirst(hasHeader ? 1 : 0).contains { cells in
+            guard column < cells.count else { return false }
+            let cell = cells[column].trimmingCharacters(in: .whitespaces)
+            return cell.hasPrefix("-") || cell.hasPrefix("\u{2212}") || cell.hasPrefix("(") || cell.hasSuffix("-")
+        }
+    }
     var headers: [String] {
         guard let first = grid.first else { return [] }
         return first.indices.map { hasHeader ? first[$0] : "Column \($0 + 1)" }

@@ -973,6 +973,9 @@ struct BulkInputTests {
         // Any other file can be switched, which doesn't change which rows count as already saved.
         var generic = try batch("Date,Description,Amount\n2026-01-02,Coffee,4.50\n2026-01-03,Payment,-200", mode: .statements)
         #expect(!generic.sources[0].positiveIsOutflow && !ImportParser.signsKnown(generic.sources[0].grid))
+        // Its negative payment answers the question, so only files with nothing negative are asked about.
+        #expect(generic.sources[0].hasNegativeAmount && amex.sources[0].hasNegativeAmount && !charges.sources[0].hasNegativeAmount)
+        #expect(try batch("Date,Description,Amount\n2026-01-02,Refund,(4.50)", mode: .statements).sources[0].hasNegativeAmount)
         let asWritten = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
         generic.sources[0].positiveIsOutflow = true
         let flipped = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)

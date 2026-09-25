@@ -550,8 +550,9 @@ struct UpOnlyImportView: View {
                 }
             }
         }
-        // Known banks write money out as negative, so the summary only asks about other files.
-        if mode == .statements, source.hasSignedAmount, all || !ImportParser.signsKnown(source.grid) {
+        // The summary asks only when it's on (a card export) or nothing in the file is negative; known banks write
+        // money out as negative. The details always show it.
+        if mode == .statements, source.hasSignedAmount, all || source.positiveIsOutflow || !ImportParser.signsKnown(source.grid) && !source.hasNegativeAmount {
             UpOnlyFormRow(label: "Positive amounts are money out", divided: true) {
                 Toggle("Positive amounts are money out", isOn: Binding(get: { source.positiveIsOutflow }, set: { value in updateSource(source) { $0.positiveIsOutflow = value } }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.mini)
