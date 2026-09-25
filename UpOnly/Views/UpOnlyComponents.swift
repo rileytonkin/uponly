@@ -142,16 +142,15 @@ struct UpOnlyValueRow: View {
     @Environment(UpOnlySession.self) private var session
     var label: String
     var value: String
-    var primaryLabel = false
     var body: some View {
         ViewThatFits(in: .horizontal) {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).fixedSize().foregroundStyle(primaryLabel ? Color.primary : Color.secondary)
+            Text(label).fixedSize().foregroundStyle(Color.secondary)
             Spacer(minLength: 8)
             UpOnlyPrivateText(value).fixedSize().monospacedDigit().foregroundStyle(.primary)
         }
             VStack(alignment: .leading, spacing: 4) {
-                Text(label).fixedSize(horizontal: false, vertical: true).foregroundStyle(primaryLabel ? Color.primary : Color.secondary)
+                Text(label).fixedSize(horizontal: false, vertical: true).foregroundStyle(Color.secondary)
                 UpOnlyPrivateText(value).fixedSize(horizontal: false, vertical: true).monospacedDigit().foregroundStyle(.primary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
         }.font(UpOnlyType.row).frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
@@ -376,6 +375,92 @@ struct UpOnlyRowButtonStyle: ButtonStyle {
                     .padding(.horizontal, -7).padding(.vertical, 3)
             }.onHover { hovering = $0 }
         }
+    }
+}
+/// Every list row, on the dashboard and in Manage alike: a badge, the name over a caption, a value over its change or a
+/// second amount, and a chevron or a quiet "…". The row itself does the obvious thing; anything else is in the menu or
+/// a right-click.
+struct UpOnlyRow<Badge: View, Options: View>: View {
+    var title: String
+    var caption: String? = nil
+    /// The caption is an amount (a balance, a quantity), hidden in privacy mode.
+    var captionIsPrivate = false
+    var value: String? = nil
+    /// The row's own move over the chart's range, as a fraction, under the value.
+    var change: Decimal? = nil
+    /// A second amount under the value, such as a foreign balance under its dollar value. Hidden in privacy mode.
+    var valueDetail: String? = nil
+    var divided = false
+    var chevron = false
+    /// Lightly tinted: the page showing, or the account a company page is focused on.
+    var selected = false
+    /// Right-click options, such as updating a balance.
+    var options: [(title: String, action: () -> Void)] = []
+    var action: (() -> Void)? = nil
+    @ViewBuilder var badge: () -> Badge
+    @ViewBuilder var menu: () -> Options
+    @Environment(UpOnlySession.self) private var session
+    var body: some View {
+        VStack(spacing: 0) {
+            if divided { Divider().opacity(0.5) }
+            HStack(spacing: 6) {
+                Button { action?() } label: {
+                    HStack(spacing: 10) {
+                        badge()
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                            if let caption {
+                                Group { if captionIsPrivate { UpOnlyPrivateText(caption) } else { Text(caption) } }
+                                    .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }.frame(minWidth: 96, alignment: .leading)  // a huge amount shrinks before the name disappears
+                        Spacer(minLength: 8)
+                        if let value {
+                            // Value over its change, as in Delta, so the name keeps the width.
+                            VStack(alignment: .trailing, spacing: 1) {
+                                // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
+                                UpOnlyPrivateText(value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1)
+                                    .minimumScaleFactor(value.count > 13 ? 0.7 : 1)
+                                // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
+                                if let change {
+                                    Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
+                                        .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1)
+                                } else if let valueDetail {
+                                    UpOnlyPrivateText(valueDetail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }.layoutPriority(1)
+                        }
+                        if chevron { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
+                    // Every row is at least two lines tall, so one with a second line doesn't stand out from the rest.
+                    }.frame(minHeight: 30).padding(.vertical, 8).contentShape(Rectangle())
+                }.buttonStyle(UpOnlyRowButtonStyle(selected: selected)).disabled(action == nil)
+                    .contextMenu { ForEach(Array(options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
+                    .accessibilityLabel(title).accessibilityValue(spokenValue)
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                menu()
+            }
+        }
+    }
+    /// "<value>, <caption>, +0.4% over the past 30 days": the title is the label, so VoiceOver reads "<title>, <value>".
+    private var spokenValue: String {
+        var parts: [String] = []
+        if let value { parts.append(session.privacyMode ? "Hidden value" : value) }
+        if let caption, !(captionIsPrivate && session.privacyMode) { parts.append(caption) }
+        if let valueDetail, !session.privacyMode { parts.append(valueDetail) }
+        if let change {
+            let range = session.worthRange
+            parts.append(UpOnlyFormat.percent(change) + (range == .all ? " since the first saved value" : " over the " + range.phrase))
+        }
+        return parts.joined(separator: ", ")
+    }
+}
+extension UpOnlyRow where Options == EmptyView {
+    /// A row with nothing to offer beyond its own click (and any right-click options).
+    init(title: String, caption: String? = nil, captionIsPrivate: Bool = false, value: String? = nil, change: Decimal? = nil,
+         valueDetail: String? = nil, divided: Bool = false, chevron: Bool = false, selected: Bool = false,
+         options: [(title: String, action: () -> Void)] = [], action: (() -> Void)? = nil, @ViewBuilder badge: @escaping () -> Badge) {
+        self.init(title: title, caption: caption, captionIsPrivate: captionIsPrivate, value: value, change: change, valueDetail: valueDetail,
+                  divided: divided, chevron: chevron, selected: selected, options: options, action: action, badge: badge, menu: { EmptyView() })
     }
 }
 /// A source of personal transactions: a bank account, a Wise profile, or "Added by hand".

@@ -34,7 +34,7 @@ struct UpOnlyImportView: View {
         if let batch = session.importDraft, usesSummary(batch), !importDetails {
             UpOnlyMenuScroll { importOverview(batch) }
         } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count <= 1, batch.sources.allSatisfy({ $0.grid.isEmpty }), !session.importTableMode {
-            UpOnlyMenuScroll { UpOnlyEntryFlow(compact: true) }
+            UpOnlyMenuScroll { UpOnlyEntryFlow() }
         } else {
         UpOnlyMenuScroll {
         VStack(alignment: .leading, spacing: 16) {
@@ -115,9 +115,9 @@ struct UpOnlyImportView: View {
                     Text("Bring in").font(UpOnlyType.section)
                     ManageCard {
                         ForEach(Array(orderedModes.enumerated()), id: \.element) { index, mode in
-                            ManageRow(title: bulkTitle(mode), caption: bulkCaption(mode), divided: index > 0, chevron: true, action: { openMode(mode, bulk: mode != .statements) }) {
+                            UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), divided: index > 0, chevron: true, action: { openMode(mode, bulk: mode != .statements) }) {
                                 UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 28)
-                            } menu: { EmptyView() }
+                            }
                         }
                     }
                 }
@@ -127,11 +127,11 @@ struct UpOnlyImportView: View {
                         Text("Update what you have").font(UpOnlyType.section)
                         ManageCard {
                             ForEach(Array(tracked.enumerated()), id: \.element) { index, mode in
-                                ManageRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All metals",
+                                UpOnlyRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All metals",
                                           caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table",
                                           divided: index > 0, chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
                                     UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 28)
-                                } menu: { EmptyView() }
+                                }
                             }
                         }
                     }
@@ -227,7 +227,9 @@ struct UpOnlyImportView: View {
                                 UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
                                 HStack(spacing: 8) {
                                     TextField("Account name", text: Binding(get: { source.account.name }, set: { value in var account = source.account; account.name = value; setStatementAccount(source, account) })).textFieldStyle(.roundedBorder)
-                                    TextField("Currency", text: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) })).frame(width: 52).textFieldStyle(.roundedBorder)
+                                    // A new account starts in the file's own currency; left empty, it goes back to it.
+                                    UpOnlyCurrencyField(code: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) }),
+                                                        fallback: fileCurrency(source) ?? "USD", label: "Account currency").frame(width: 52).textFieldStyle(.roundedBorder)
                                     Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.bordered)
                                 }
                             }.padding(.vertical, 9)
@@ -274,15 +276,15 @@ struct UpOnlyImportView: View {
                             ManageCard {
                                 ForEach(Array(ready.enumerated()), id: \.element.id) { index, row in
                                     if batch.mode == .bankBalances {
-                                        ManageRow(title: row.bank.account.name, caption: row.bank.account.currency + " · " + row.bank.date,
+                                        UpOnlyRow(title: row.bank.account.name, caption: row.bank.account.currency + " · " + row.bank.date,
                                                   value: balanceText(row, in: batch) + " " + row.bank.account.currency, divided: index > 0) {
                                             UpOnlyBankBadge(name: row.bank.account.name, size: 24)
-                                        } menu: { EmptyView() }
+                                        }
                                     } else {
-                                        ManageRow(title: row.holding.assetName.isEmpty ? row.holding.portfolioName : row.holding.assetName,
+                                        UpOnlyRow(title: row.holding.assetName.isEmpty ? row.holding.portfolioName : row.holding.assetName,
                                                   caption: row.holding.portfolioName + " · " + (review.states[row.id]?.displayText(privacy: session.privacyMode) ?? ""), divided: index > 0) {
                                             UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 24)
-                                        } menu: { EmptyView() }
+                                        }
                                     }
                                 }
                             }
@@ -430,10 +432,10 @@ struct UpOnlyImportView: View {
     }
     /// The list's own last row for adding another account, coin or metal.
     private func addRowItem(_ batch: ImportBatchDraft, divided: Bool) -> some View {
-        ManageRow(title: addRowTitle(batch.mode), caption: batch.mode == .bankBalances ? "Another account and its balance" : batch.mode == .metals ? "Another metal and its weight" : "Another coin and its quantity",
+        UpOnlyRow(title: addRowTitle(batch.mode), caption: batch.mode == .bankBalances ? "Another account and its balance" : batch.mode == .metals ? "Another metal and its weight" : "Another coin and its quantity",
                   divided: divided, action: busy ? nil : { addRow() }) {
             UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: batch.mode == .bankBalances ? 28 : 24)
-        } menu: { EmptyView() }
+        }
     }
     private func addRowTitle(_ mode: ImportMode) -> String {
         switch mode { case .statements: "Add a transaction"; case .bankBalances: "Add an account"; case .holdings: "Add a coin"; case .metals: "Add a metal" }
@@ -581,12 +583,12 @@ struct UpOnlyImportView: View {
         VStack(alignment: .leading, spacing: 8) {
             UpOnlyNotice(count == 1 ? "1 transaction has the same day, description and amount as another." : "\(count.formatted()) transactions have the same day, description and amount as others.")
             ManageCard {
-                ManageRow(title: "Skip all duplicates", caption: "Leave them out of this import", action: busy ? nil : { settleDuplicates(keep: false) }) {
+                UpOnlyRow(title: "Skip all duplicates", caption: "Leave them out of this import", action: busy ? nil : { settleDuplicates(keep: false) }) {
                     UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 24)
-                } menu: { EmptyView() }
-                ManageRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", divided: true, action: busy ? nil : { settleDuplicates(keep: true) }) {
+                }
+                UpOnlyRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", divided: true, action: busy ? nil : { settleDuplicates(keep: true) }) {
                     UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 24)
-                } menu: { EmptyView() }
+                }
             }
         }
     }

@@ -31,7 +31,7 @@ struct ImportAccountEditor: View {
                 }
             }
             ImportField(title: "Currency") {
-                TextField("USD", text: $account.currency, axis: .vertical).textFieldStyle(.roundedBorder).disabled(account.existingID != nil).accessibilityLabel("Account currency")
+                UpOnlyCurrencyField(code: $account.currency, label: "Account currency").textFieldStyle(.roundedBorder).disabled(account.existingID != nil)
             }.frame(width: 76)
             if account.existingID == nil { UpOnlyOwnerPicker(owner: $account.ownerBusinessID) }
         }
@@ -133,7 +133,7 @@ struct ImportRowEditor: View {
             TextField("Description", text: $row.statement.label, axis: .vertical)
             HStack {
                 TextField("Date", text: $row.statement.date, axis: .vertical)
-                TextField("Currency", text: $row.statement.currency, axis: .vertical).frame(width: 60)
+                UpOnlyCurrencyField(code: $row.statement.currency, label: "Currency").frame(width: 60)
             }
             VStack(alignment: .leading, spacing: 8) {
                 if usesDebitCredit {

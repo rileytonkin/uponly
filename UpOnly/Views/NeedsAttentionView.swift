@@ -53,12 +53,12 @@ struct UpOnlyDataAttention: View {
             if !report.balances.isEmpty {
                 section("Balances needed") {
                     ForEach(Array(report.balances.enumerated()), id: \.element.id) { index, account in
-                        ManageRow(title: account.name, caption: "Add its balance", divided: index > 0, chevron: true, action: {
+                        UpOnlyRow(title: account.name, caption: "Add its balance", divided: index > 0, chevron: true, action: {
                             session.startImport(.bankBalances, prefill: true, accountID: account.id)
                         }) {
                             if let image = account.profileImage { UpOnlyProfileImage(data: image, name: account.name, size: 28) }
                             else { UpOnlyBankBadge(name: account.name, size: 28) }
-                        } menu: { EmptyView() }
+                        }
                     }
                 }
             }
@@ -66,12 +66,12 @@ struct UpOnlyDataAttention: View {
                 section("Holdings need quantities") {
                     ForEach(Array(report.quantities.enumerated()), id: \.element.id) { index, holding in
                         let metals = session.document?.portfolio(id: holding.portfolioID)?.kind == .metals
-                        ManageRow(title: holding.assetName, caption: metals ? "Add its weight" : "Add its quantity", divided: index > 0, chevron: true, action: {
+                        UpOnlyRow(title: holding.assetName, caption: metals ? "Add its weight" : "Add its quantity", divided: index > 0, chevron: true, action: {
                             session.startImport(metals ? .metals : .holdings, prefill: true, holdingID: holding.id)
                         }) {
                             if let metal = PreciousMetal.asset(holding.assetID) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
                             else { UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: holding.assetName, size: 28) }
-                        } menu: { EmptyView() }
+                        }
                     }
                 }
             }
@@ -82,9 +82,9 @@ struct UpOnlyDataAttention: View {
                         if report.pricesNeeded { note("No price or rate for today: " + report.missingPriceLabels.joined(separator: ", ") + ". Check the source is on, has its key, and has updated.") }
                         if !report.accountingNames.isEmpty { note(report.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)
-                    ManageRow(title: "Open Data sources", divided: true, chevron: true, action: { session.managementSection = "Sources" }) {
+                    UpOnlyRow(title: "Open Data sources", divided: true, chevron: true, action: { session.managementSection = "Sources" }) {
                         UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 28)
-                    } menu: { EmptyView() }
+                    }
                 }
             }
         }.controlSize(.regular)
@@ -102,15 +102,15 @@ struct UpOnlyDataAttention: View {
                 reviewEvidence(MonthEvidence.build(month, document: doc), document: doc)
                 // Fixing the month is a short list, like everywhere else: see them all, or add what's missing.
                 ManageCard {
-                    ManageRow(title: "All of " + month.title + "’s transactions", chevron: true, action: {
+                    UpOnlyRow(title: "All of " + month.title + "’s transactions", chevron: true, action: {
                         session.entryMonthForManagement = month.description; session.managementSection = "Entries"
-                    }) { UpOnlySymbolBadge(symbol: "list.bullet", tint: UpOnlyTint.cashFlow, size: 28) } menu: { EmptyView() }
-                    ManageRow(title: "Import a statement", caption: "Transactions from a CSV file", divided: true, chevron: true, action: {
+                    }) { UpOnlySymbolBadge(symbol: "list.bullet", tint: UpOnlyTint.cashFlow, size: 28) }
+                    UpOnlyRow(title: "Import a statement", caption: "Transactions from a CSV file", divided: true, chevron: true, action: {
                         session.startImport(.statements)
-                    }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28) } menu: { EmptyView() }
-                    ManageRow(title: "Add a transaction", divided: true, chevron: true, action: {
+                    }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28) }
+                    UpOnlyRow(title: "Add a transaction", divided: true, chevron: true, action: {
                         session.entryMonthForManagement = month.description; addEntry()
-                    }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) } menu: { EmptyView() }
+                    }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
                 }
                 if case .exchangeRates(let currencies)? = state.unavailable {
                     note("A dated " + currencies.joined(separator: ", ") + " exchange rate is also needed.")

@@ -3,8 +3,6 @@ import SwiftUI
 struct UpOnlyEditSheet: View {
     @Environment(UpOnlySession.self) private var session
     let editor: UpOnlyEditor
-    /// Unused: the editor always lives inside the menu. Kept so existing call sites that pass it still compile.
-    var compact = true
     let onCancel: () -> Void
     let onSave: () -> Void
     /// The Add page's confirmation, for a new transaction; given, it's called instead of `onSave`.
@@ -132,7 +130,9 @@ struct UpOnlyEditSheet: View {
                 UpOnlyFormRow(label: "Date", divided: true) {
                     UpOnlyDateButton(date: Binding(get: { date }, set: { date = $0; dayKnown = true }), title: dayKnown ? nil : MonthKey(entryMonth)?.title)
                 }
-                UpOnlyCurrencyRows(code: $currency)
+                UpOnlyFormRow(label: "Currency", divided: true) {
+                    UpOnlyCurrencyField(code: $currency).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                }
                 // Only when there's a company it could have been for (or it already isn't yours).
                 if !books.isEmpty || bucket != Bucket.personal.rawValue {
                     UpOnlyFormRow(label: "For", divided: true) {
@@ -187,7 +187,7 @@ struct UpOnlyEditSheet: View {
     }
     private func assetBadge(_ holding: Holding) -> some View {
         UpOnlyEntryBadge(mode: PreciousMetal.asset(holding.assetID) != nil ? .metals : .holdings, symbol: PreciousMetal.asset(holding.assetID)?.rawValue ?? unit(holding),
-                         assetID: holding.assetID.rawValue, image: nil, size: 44)
+                         assetID: holding.assetID.rawValue, size: 44)
     }
     /// Moving coins: how many, large, with what's there to move under it; then from where to where.
     private func moveForm(_ holding: Holding) -> some View {
@@ -229,7 +229,7 @@ struct UpOnlyEditSheet: View {
             if !lots.isEmpty {
                 ManageCard {
                     ForEach(Array(lots.enumerated()), id: \.element.id) { index, lot in
-                        ManageRow(title: lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)),
+                        UpOnlyRow(title: lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)),
                                   caption: ManageFormat.amount(lot.quantity.value, of: holding, catalog: session.catalog), captionIsPrivate: true,
                                   value: UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency), divided: index > 0) {
                             UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 24)
@@ -251,8 +251,8 @@ struct UpOnlyEditSheet: View {
                         UpOnlyValueField("0.00", text: $amount).textFieldStyle(.plain).multilineTextAlignment(.trailing)
                             .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 140).accessibilityLabel("Total paid")
                         // The currency is typed after the amount, as the Add form's cost is.
-                        TextField("USD", text: $currency).textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.secondary)
-                            .frame(width: 32).accessibilityLabel("Currency paid")
+                        UpOnlyCurrencyField(code: $currency, label: "Currency paid").textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium))
+                            .foregroundStyle(.secondary).frame(width: 32)
                     }
                     UpOnlyFormRow(label: "Date", divided: true) { UpOnlyDateButton(date: $date) }
                 }
@@ -281,7 +281,10 @@ struct UpOnlyEditSheet: View {
                 Text("for 1 " + code).font(UpOnlyType.body).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity).padding(.vertical, 4)
             ManageCard {
-                UpOnlyCurrencyRows(code: $currency, divided: false)
+                // A rate is for a currency other than USD, so an empty field means GBP, the form's own default.
+                UpOnlyFormRow(label: "Currency") {
+                    UpOnlyCurrencyField(code: $currency, fallback: "GBP").textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                }
                 UpOnlyFormRow(label: "Date", divided: true) { UpOnlyDateButton(date: $date) }
             }
             // Only a rate from the month's last seven days prices it (MonthlyLedger.rate).

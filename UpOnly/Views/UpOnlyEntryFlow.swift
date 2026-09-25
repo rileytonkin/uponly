@@ -41,7 +41,6 @@ struct UpOnlyDateCalendar: View {
 
 struct UpOnlyEntryFlow: View {
     @Environment(UpOnlySession.self) private var session
-    var compact: Bool
     @State private var saved: UpOnlySavedSummary?
     @State private var addingEntry = false
     var body: some View {
@@ -60,7 +59,7 @@ struct UpOnlyEntryFlow: View {
                     UpOnlyGuidedEntry(mode: batch.mode, row: Binding(get: { session.importDraft?.rows.first ?? row }, set: { session.importDraft?.rows = [$0] }),
                                       // Opened to update one thing from a page: backing out returns to that page.
                                       back: { session.discardImport(); if session.addOpenedForUpdate { session.addingInMenu = false } },
-                                      saved: { summary in if compact { saved = summary } })
+                                      saved: { summary in saved = summary })
                         .id(batch.id)
                 } else { ProgressView().controlSize(.small).task { seed(batch.mode) } }
             } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count > 1, batch.sources.allSatisfy(\.isManual) {
@@ -74,39 +73,39 @@ struct UpOnlyEntryFlow: View {
                     // One list in the home style: what you have, then what came in and went out.
                     ManageCard {
                         ForEach(Array([ImportMode.bankBalances, .holdings, .metals].enumerated()), id: \.element) { index, mode in
-                            ManageRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Metals",
+                            UpOnlyRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Metals",
                                       caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight",
                                       divided: index > 0, chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
                                 UpOnlyEntryBadge(mode: mode, size: 28)
-                            } menu: { EmptyView() }
+                            }
                         }
                     }
                     ManageCard {
-                        ManageRow(title: "Transaction", caption: "Spending or income, typed in", chevron: true, action: { addingEntry = true }) {
+                        UpOnlyRow(title: "Transaction", caption: "Spending or income, typed in", chevron: true, action: { addingEntry = true }) {
                             UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 28)
-                        } menu: { EmptyView() }
-                        ManageRow(title: "Bank statement", caption: "Import transactions from a CSV file", divided: true, chevron: true, action: importStatement) {
+                        }
+                        UpOnlyRow(title: "Bank statement", caption: "Import transactions from a CSV file", divided: true, chevron: true, action: importStatement) {
                             UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28)
-                        } menu: { EmptyView() }
+                        }
                     }
                     // Many at once is its own row, not a line of grey text.
                     ManageCard {
-                        ManageRow(title: session.importDraft == nil ? "Several at once" : "Continue your import",
+                        UpOnlyRow(title: session.importDraft == nil ? "Several at once" : "Continue your import",
                                   caption: session.importDraft == nil ? "Paste a spreadsheet, or update everything you track" : "Your unfinished import is still here",
                                   chevron: true, action: showBulk) {
                             UpOnlySymbolBadge(symbol: "tablecells", tint: UpOnlyTint.netWorth, size: 28)
-                        } menu: { EmptyView() }
+                        }
                         .accessibilityIdentifier("BulkImport")
                     }
                 }
             }
-        }.frame(maxWidth: compact ? .infinity : 400)
+        }.frame(maxWidth: .infinity)
             .padding(UpOnlyLayout.inset)
-            .frame(maxWidth: .infinity, maxHeight: compact ? nil : .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .top)
             .background(Color(nsColor: .windowBackgroundColor))
             // Esc: out of the transaction form, else off the Add page. A guided form handles its own steps.
             .onChange(of: session.backRequests) {
-                guard compact, session.addingInMenu, !session.managementInMenu, session.importDraft == nil else { return }
+                guard session.addingInMenu, !session.managementInMenu, session.importDraft == nil else { return }
                 if addingEntry { addingEntry = false } else { session.addingInMenu = false }
             }
     }
@@ -133,15 +132,15 @@ struct UpOnlyEntryFlow: View {
             }.frame(maxWidth: .infinity)
             ManageCard {
                 if let destination = summary.destination {
-                    ManageRow(title: destination.title, caption: "See it on the dashboard", chevron: true, action: {
+                    UpOnlyRow(title: destination.title, caption: "See it on the dashboard", chevron: true, action: {
                         session.showDashboard(destination.selection)
                         session.addingInMenu = false; session.managementInMenu = false
-                    }) { summary.badge.view(size: 28) } menu: { EmptyView() }
+                    }) { summary.badge.view(size: 28) }
                 }
-                ManageRow(title: "Add another", caption: "A balance, holding or transaction", divided: summary.destination != nil, chevron: true,
+                UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", divided: summary.destination != nil, chevron: true,
                           action: { saved = nil }) {
                     UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
-                } menu: { EmptyView() }
+                }
             }
             Spacer(minLength: 0)
             primary("Done") { session.addingInMenu = false; session.managementInMenu = false }.keyboardShortcut(.defaultAction)
@@ -151,7 +150,7 @@ struct UpOnlyEntryFlow: View {
     private func importStatement() {
         guard session.startImport(.statements) else { showBulk(); return }
         session.importTableMode = false
-        if compact { session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true; session.importReturnsHome = true }
+        session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true; session.importReturnsHome = true
         Task { await session.chooseImportFiles() }
     }
     private func seed(_ mode: ImportMode) {
@@ -174,11 +173,11 @@ struct UpOnlyEntryFlow: View {
             if untouched { draft.rows = []; session.importDraft = draft }
         }
         session.importTableMode = true
-        if compact { session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true }
+        session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true
     }
     private func openTable() {
         session.importTableMode = true
-        if compact { session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true; session.importReturnsHome = true }
+        session.addingInMenu = false; session.managementSection = "Add your info"; session.managementInMenu = true; session.importReturnsHome = true
     }
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).frame(maxWidth: .infinity).frame(minHeight: 24) }
@@ -216,39 +215,50 @@ struct UpOnlyAmountEntry: View {
         }.frame(maxWidth: .infinity)
     }
 }
-/// A currency as a form row: USD unless you type another code, with matching currencies (by code or name) offered
-/// underneath while typing.
-struct UpOnlyCurrencyRows: View {
+/// Every place a currency is entered uses this one field: USD (or the place's own default) unless another code is
+/// typed, any ISO code, with matching currencies (by code or name) suggested while typing. Left empty, it goes back
+/// to its default. It takes the look of the text around it: each place sets the font and field style.
+struct UpOnlyCurrencyField: View {
     @Binding var code: String
-    var divided = true
+    /// What an empty field means, shown as its placeholder: USD, or the file's own currency for a statement's new account.
+    var fallback = "USD"
+    var label = "Currency code"
     @FocusState private var focused: Bool
-    private static let codes: [String] = {
-        // The ones people most often hold first, then every other common code.
+    var body: some View {
+        TextField(fallback, text: $code)
+            .textInputSuggestions {
+                ForEach(CurrencyCodes.suggestions(for: code), id: \.self) { choice in
+                    Text(choice + " · " + CurrencyCodes.name(choice)).textInputCompletion(choice)
+                }
+            }
+            .focused($focused)
+            // Three letters, capitals, as currency codes are written.
+            .onChange(of: code) { _, next in
+                let clean = CurrencyCodes.cleaned(next)
+                if clean != next { code = clean }
+            }
+            .onChange(of: focused) { _, now in if !now, code.isEmpty { code = fallback } }
+            .help(CurrencyCodes.isValid(code) ? CurrencyCodes.name(code) : "A three-letter currency code, such as " + fallback)
+            .accessibilityLabel(label)
+    }
+}
+/// The currencies the currency field knows: the ones people most often hold first, then every other ISO code.
+nonisolated enum CurrencyCodes {
+    static let all: [String] = {
         let first = ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "HKD", "SGD", "INR", "BRL", "MXN", "COP", "ARS", "CLP", "PEN", "NZD", "SEK", "NOK", "DKK", "PLN", "AED", "ZAR", "KRW", "TRY"]
         return first + Locale.commonISOCurrencyCodes.filter { !first.contains($0) }.sorted()
     }()
-    private static func name(_ code: String) -> String { Locale.current.localizedString(forCurrencyCode: code) ?? code }
-    private var suggestions: [String] {
-        let typed = code.trimmingCharacters(in: .whitespaces).uppercased()
-        guard focused, !typed.isEmpty, !(typed.count == 3 && Self.codes.contains(typed)) else { return [] }
-        return Array(Self.codes.filter { $0.hasPrefix(typed) || Self.name($0).localizedCaseInsensitiveContains(typed) }.prefix(3))
-    }
-    var body: some View {
-        UpOnlyFormRow(label: "Currency", divided: divided) {
-            TextField("USD", text: $code).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
-                .focused($focused).accessibilityLabel("Currency code")
-                // Three letters, capitals, as currency codes are written.
-                .onChange(of: code) { _, next in
-                    let clean = String(next.uppercased().filter(\.isLetter).prefix(3))
-                    if clean != next { code = clean }
-                }
-        }
-        ForEach(suggestions, id: \.self) { choice in
-            ManageRow(title: choice, caption: Self.name(choice), divided: true, action: { code = choice; focused = false }) {
-                Text(Locale(identifier: "en_US@currency=" + choice).currencySymbol ?? choice).font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.6)
-                    .frame(width: 24, height: 24).background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-            } menu: { EmptyView() }
-        }
+    /// "British Pound" for GBP, in this Mac's language.
+    static func name(_ code: String, locale: Locale = .current) -> String { locale.localizedString(forCurrencyCode: code) ?? code }
+    /// What's typed, as a code is written: letters only, in capitals, at most three.
+    static func cleaned(_ typed: String) -> String { String(typed.uppercased().filter { $0.isASCII && $0.isLetter }.prefix(3)) }
+    /// A code saving accepts, by the same check.
+    static func isValid(_ code: String) -> Bool { (try? MoneyInput.normalizeCurrency(code)) != nil }
+    /// Up to `limit` currencies whose code starts with what's typed or whose name contains it; none once it's a valid code.
+    static func suggestions(for typed: String, limit: Int = 5, locale: Locale = .current) -> [String] {
+        let text = typed.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, !isValid(text) else { return [] }
+        return Array(all.lazy.filter { $0.hasPrefix(text.uppercased()) || name($0, locale: locale).localizedCaseInsensitiveContains(text) }.prefix(limit))
     }
 }
 /// What the Add page's confirmation shows after a save: the amount and unit, what it's worth or what it was for, its
@@ -260,7 +270,7 @@ struct UpOnlySavedSummary {
         case symbol(String, Color)
         @ViewBuilder func view(size: CGFloat) -> some View {
             switch self {
-            case .asset(let mode, let symbol, let assetID): UpOnlyEntryBadge(mode: mode, symbol: symbol, assetID: assetID, image: nil, size: size)
+            case .asset(let mode, let symbol, let assetID): UpOnlyEntryBadge(mode: mode, symbol: symbol, assetID: assetID, size: size)
             case .bank(let name): UpOnlyBankBadge(name: name, size: size)
             case .symbol(let symbol, let tint): UpOnlySymbolBadge(symbol: symbol, tint: tint, size: size)
             }
@@ -317,7 +327,6 @@ struct UpOnlyEntryBadge: View {
     var symbol = ""
     /// The coin's ID, for its logo.
     var assetID: String? = nil
-    var image: Data?
     var size: CGFloat = 56
     private var tint: Color {
         if mode == .metals {
@@ -332,8 +341,7 @@ struct UpOnlyEntryBadge: View {
     }
     var body: some View {
         Group {
-            if let image { UpOnlyProfileImage(data: image, name: "Account", size: size) }
-            else if mode == .metals {
+            if mode == .metals {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: size * 0.46, weight: .medium))
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.6), tint], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: size, height: size).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: size * 0.28))

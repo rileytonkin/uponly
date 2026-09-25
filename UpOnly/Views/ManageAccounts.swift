@@ -66,7 +66,7 @@ extension UpOnlyManagement {
     func accountRow(_ account: Account, latest: BankBalanceObservation?, divided: Bool) -> some View {
         let native = latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) }
         let dollars = latest.flatMap { usd($0.amount.value, currency: account.currency) }.map(UpOnlyFormat.exactMoney)
-        return ManageRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt, name: account.name),
+        return UpOnlyRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt, name: account.name),
                          value: account.currency == "USD" ? native ?? "Add balance" : dollars ?? native ?? "Add balance",
                          valueDetail: account.currency == "USD" || dollars == nil ? nil : native, divided: divided,
                          action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
@@ -100,7 +100,7 @@ extension UpOnlyManagement {
         let dollars = funded.map { usd($0.1, currency: $0.0.currency) }
         let total = dollars.contains { $0 == nil } ? nil : dollars.compactMap { $0 }.reduce(Decimal(0), +)
         let open = expandedProfiles.contains(key)
-        ManageRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
+        UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
                   value: total.map(UpOnlyFormat.exactMoney) ?? (funded.isEmpty ? "No money" : "Rate needed"),
                   valueDetail: funded.count > 1 ? "\(funded.count) currencies" : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
                   divided: divided, action: funded.count > 1 ? {

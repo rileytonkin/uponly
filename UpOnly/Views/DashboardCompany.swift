@@ -135,7 +135,7 @@ extension UpOnlyUnlockedPanel {
         return AssetRow(id: bank.id, name: bank.name,
                         value: bank.total.map(UpOnlyFormat.exactMoney) ?? (bank.components.contains { $0.missing == "fx" } ? "Rate needed" : "Add balance"), valueDetail: native,
                         image: bank.image, bank: bank.name, synced: synced, symbol: "building.columns.fill", tint: UpOnlyTint.netWorth,
-                        selected: companyFocus == .bank(ids), trailing: .none, options: options) {
+                        selected: companyFocus == .bank(ids), chevron: false, options: options) {
             companyFocus = companyFocus == .bank(ids) ? .all : .bank(ids)
         }
     }

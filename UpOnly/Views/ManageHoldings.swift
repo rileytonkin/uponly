@@ -57,9 +57,9 @@ extension UpOnlyManagement {
             }
             ManageCard {
                 if holdings.isEmpty {
-                    ManageRow(title: addTitle, caption: "Nothing in this portfolio yet", action: { session.startImport(mode, portfolioID: portfolio.id) }) {
+                    UpOnlyRow(title: addTitle, caption: "Nothing in this portfolio yet", action: { session.startImport(mode, portfolioID: portfolio.id) }) {
                         UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 24)
-                    } menu: { EmptyView() }
+                    }
                 }
                 ForEach(Array(holdings.enumerated()), id: \.element.id) { index, holding in
                     holdingRow(holding, mode: mode, value: values.first { $0.id == holding.id }?.usdValue?.value, document: doc, now: now, canMove: canMove, divided: index > 0)
@@ -71,7 +71,7 @@ extension UpOnlyManagement {
     func holdingRow(_ holding: Holding, mode: ImportMode, value: Decimal?, document doc: VaultDocument, now: Date, canMove: Bool, divided: Bool) -> some View {
         let quantity = ManageFormat.amount(doc.effectiveQuantity(holdingID: holding.id, at: now) ?? 0, of: holding, catalog: session.catalog)
         let performance = UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: holding.id, valueUSD: value, document: doc), metal: mode == .metals)
-        return ManageRow(title: holding.assetName, caption: [quantity, performance].compactMap { $0 }.joined(separator: " · "), captionIsPrivate: true,
+        return UpOnlyRow(title: holding.assetName, caption: [quantity, performance].compactMap { $0 }.joined(separator: " · "), captionIsPrivate: true,
                          value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", divided: divided,
                          action: { session.startImport(mode, prefill: true, holdingID: holding.id) }) {
             UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 24)

@@ -83,7 +83,7 @@ extension UpOnlyUnlockedPanel {
         let cashFlow = SelectionRow(id: "cashflow", selection: .cashFlow, section: "Cash flow", name: "Income & spending", symbol: "arrow.up.arrow.down",
                                     tint: UpOnlyTint.cashFlow, value: month, valueText: month.map { ($0 > 0 ? "+" : "") + UpOnlyFormat.money($0) } ?? "Nothing yet", detail: "This month")
         // One card of rows, the same rows as the home list: everything, then each group, then income & spending.
-        // The chosen one has a check; adding and managing stay with the + and … by the title.
+        // The page showing is highlighted; adding and managing stay with the + and … by the title.
         let list = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Metals", "Companies"].flatMap { section in rows.filter { $0.section == section } }
             + (shows(.cashFlow) ? [cashFlow] : [])
         let slices = allocation(rows)
@@ -114,7 +114,7 @@ extension UpOnlyUnlockedPanel {
     func switcherRow(_ row: SelectionRow) -> AssetRow {
         let chosen = row.selection == session.dashboardSelection
         return AssetRow(id: row.id, name: row.name, detail: row.detail, value: row.valueText, change: row.change?.fraction,
-                        image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint, selected: chosen, trailing: .none) { select(row.selection) }
+                        image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint, selected: chosen, chevron: false) { select(row.selection) }
     }
 }
 

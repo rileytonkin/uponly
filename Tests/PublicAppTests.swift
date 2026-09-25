@@ -2372,4 +2372,21 @@ struct IntradayTests {
         #expect(BankCatalog.suggestions("bank of am").first?.id == "bank-of-america")
         #expect(BankCatalog.suggestions("").isEmpty)
     }
+
+    @Test("The currency field keeps three capital letters and suggests real currencies until one is typed")
+    func currencyField() {
+        #expect(CurrencyCodes.cleaned("gbp") == "GBP")
+        #expect(CurrencyCodes.cleaned("e1u-rx") == "EUR")
+        #expect(CurrencyCodes.cleaned("£é") == "")
+        #expect(Array(CurrencyCodes.all.prefix(3)) == ["USD", "EUR", "GBP"])
+        // The same check saving uses.
+        #expect(CurrencyCodes.isValid("CHF") && !CurrencyCodes.isValid("XQZ") && !CurrencyCodes.isValid(""))
+        let english = Locale(identifier: "en_US")
+        #expect(CurrencyCodes.suggestions(for: "", locale: english).isEmpty)
+        #expect(CurrencyCodes.suggestions(for: "GBP", locale: english).isEmpty)
+        #expect(CurrencyCodes.suggestions(for: "G", locale: english).first == "GBP")
+        // By name too, at most five.
+        #expect(CurrencyCodes.suggestions(for: "YEN", locale: english).contains("JPY"))
+        #expect(CurrencyCodes.suggestions(for: "DOL", locale: english).count == 5)
+    }
 }
