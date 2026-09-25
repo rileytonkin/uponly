@@ -35,7 +35,7 @@ struct UpOnlyGuidedEntry: View {
     @State private var choosingPortfolio = false
     /// Several buys, each with its day, instead of one total (nil). Their costs fill in from each day's price.
     @State private var buys: [BuyLine]?
-    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = Date() }
+    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = UTCDay.today() }
     /// Each buy day's average price, keyed by asset and day.
     @State private var dayPrices: [String: Decimal] = [:]
     @FocusState private var searchFocused: Bool
@@ -49,8 +49,10 @@ struct UpOnlyGuidedEntry: View {
     private var account: Account? { accounts.first { $0.id == row.bank.account.existingID } }
     private var title: String { mode == .bankBalances ? row.bank.account.name : mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.name ?? "Metal") : row.holding.assetName.isEmpty ? row.holding.resolvedCoinID : row.holding.assetName }
     private var quantity: Binding<String> { mode == .bankBalances ? $row.bank.balance : $row.holding.quantity }
-    private var date: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? Date() }, set: { row.bank.date = ImportDateFormat.today($0) }) }
-    private var holdingDate: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.holding.date)) ?? Date() }, set: { row.holding.date = ImportDateFormat.today($0) }) }
+    private var date: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? UTCDay.today() }, set: { row.bank.date = ImportDateFormat.today($0) }) }
+    private var holdingDate: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.holding.date)) ?? UTCDay.today() }, set: { row.holding.date = ImportDateFormat.today($0) }) }
+    /// Whether a picked day is today on this Mac, which takes today's price rather than that day's.
+    private func isToday(_ day: Date) -> Bool { UTCDay.start(of: day) == UTCDay.today() }
     private var numberFormat: ImportNumberFormat { session.importDraft?.sources.first(where: { $0.id == row.sourceID })?.numberFormat ?? .point }
     /// The amount as the app reads it, which is what gets saved.
     private var entered: Decimal? { try? numberFormat.decimal(quantity.wrappedValue, typed: true) }
@@ -142,25 +144,25 @@ struct UpOnlyGuidedEntry: View {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
                         // Each with its bank's logo, its latest balance and when that was.
                         let latest = session.document?.bankBalances.filter { $0.accountID == item.id }.max { $0.observedAt < $1.observedAt }
-                        ManageRow(title: item.name, caption: latest.map { "Updated " + UpOnlyManagement.when($0.observedAt) } ?? item.currency,
+                        UpOnlyRow(title: item.name, caption: latest.map { "Updated " + UpOnlyManagement.when($0.observedAt) } ?? item.currency,
                                   value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: item.currency) }, divided: index > 0, chevron: true, action: {
                             row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
                         }) {
                             UpOnlyBankBadge(name: item.name, size: 28)
-                        } menu: { EmptyView() }
+                        }
                     }
-                    ManageRow(title: "New account", caption: "Name it and pick its currency", divided: !shown.isEmpty, chevron: true, action: {
+                    UpOnlyRow(title: "New account", caption: "Name it and pick its currency", divided: !shown.isEmpty, chevron: true, action: {
                         if row.bank.account.existingID != nil { row.bank.account.existingID = nil; row.bank.account.name = "" }
                         if row.bank.account.currency.isEmpty { row.bank.account.currency = "USD" }; newAccount = true
-                    }) { addBadge } menu: { EmptyView() }
+                    }) { addBadge }
                 }
             }
         } else if mode == .metals {
             ManageCard {
                 ForEach(Array(PreciousMetal.selectable.enumerated()), id: \.element) { index, metal in
-                    ManageRow(title: metal.name, caption: metal.rawValue, divided: index > 0, chevron: true, action: {
+                    UpOnlyRow(title: metal.name, caption: metal.rawValue, divided: index > 0, chevron: true, action: {
                         row.holding.coin = metal.rawValue; row.holding.assetName = metal.name; chose()
-                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) } menu: { EmptyView() }
+                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
                 }
             }
         } else if exactCoin {
@@ -182,19 +184,19 @@ struct UpOnlyGuidedEntry: View {
             let suggestions = query.isEmpty ? Array(ImportCoins.common.prefix(6)) : ImportCoins.suggestions(search, coins: coins)
             ManageCard {
                 ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, coin in
-                    ManageRow(title: coin.name, caption: coin.symbol.uppercased(), divided: index > 0, chevron: true, action: {
+                    UpOnlyRow(title: coin.name, caption: coin.symbol.uppercased(), divided: index > 0, chevron: true, action: {
                         row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; chose()
                     }) {
                         UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
-                    } menu: { EmptyView() }
+                    }
                     .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
                 }
                 // A coin the list doesn't know is found by its CoinGecko ID.
                 if !query.isEmpty {
-                    ManageRow(title: "Another coin", caption: suggestions.isEmpty ? "No match here, so enter its CoinGecko ID" : "Enter its CoinGecko ID",
+                    UpOnlyRow(title: "Another coin", caption: suggestions.isEmpty ? "No match here, so enter its CoinGecko ID" : "Enter its CoinGecko ID",
                               divided: !suggestions.isEmpty, chevron: true, action: {
                         row.holding.resolvedCoinID = query.lowercased().replacingOccurrences(of: " ", with: "-"); exactCoin = true
-                    }) { addBadge } menu: { EmptyView() }
+                    }) { addBadge }
                 }
             }
         }
@@ -210,15 +212,17 @@ struct UpOnlyGuidedEntry: View {
                 }
                 // Banks matching what's typed, each with its logo; picking one fills in its name and usual currency.
                 ForEach(nameSuggestions) { bank in
-                    ManageRow(title: bank.name, caption: bank.caption, divided: true, action: { choose(bank) }) {
+                    UpOnlyRow(title: bank.name, caption: bank.caption, divided: true, action: { choose(bank) }) {
                         UpOnlyBankBadge(name: bank.name, size: 24)
-                    } menu: { EmptyView() }
+                    }
                     .accessibilityIdentifier("BankSuggestion-" + bank.id)
                 }
-                UpOnlyCurrencyRows(code: $row.bank.account.currency)
+                UpOnlyFormRow(label: "Currency", divided: true) {
+                    UpOnlyCurrencyField(code: $row.bank.account.currency).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                }
                 ownerRow($row.bank.account.ownerBusinessID)
             }
-            primary("Continue") { step = 1 }.disabled(row.bank.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.bank.account.currency.trimmingCharacters(in: .whitespacesAndNewlines).count != 3)
+            primary("Continue") { step = 1 }.disabled(row.bank.account.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !CurrencyCodes.isValid(row.bank.account.currency))
         }.onAppear { searchFocused = true }
     }
 
@@ -251,7 +255,7 @@ struct UpOnlyGuidedEntry: View {
                 if let buys {
                     // Several buys: each its amount and day, its cost from that day's average price.
                     ForEach(Array(buys.enumerated()), id: \.element.id) { index, _ in buyRow(index, divided: mode == .metals || index > 0) }
-                    ManageRow(title: "Add another buy", divided: true, action: { self.buys?.append(BuyLine()) }) { addBadge } menu: { EmptyView() }
+                    UpOnlyRow(title: "Add another buy", divided: true, action: { self.buys?.append(BuyLine()) }) { addBadge }
                 } else {
                     UpOnlyFormRow(label: "Date", divided: mode == .metals) { UpOnlyDateButton(date: mode == .bankBalances ? date : holdingDate) }
                     if mode != .bankBalances {
@@ -260,8 +264,8 @@ struct UpOnlyGuidedEntry: View {
                         UpOnlyFormRow(label: "Cost", note: estimatedCost == nil ? "optional" : closeDay + " price", divided: true) {
                             UpOnlyValueField(estimatedCost.map { readBack($0, fraction: 2...2) } ?? "0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
                                 .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 110).accessibilityLabel("Amount paid")
-                            TextField("USD", text: $row.holding.paidCurrency).textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.secondary)
-                                .frame(width: 32).accessibilityLabel("Currency paid")
+                            UpOnlyCurrencyField(code: $row.holding.paidCurrency, label: "Currency paid").textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium))
+                                .foregroundStyle(.secondary).frame(width: 32)
                         }
                     }
                 }
@@ -271,9 +275,9 @@ struct UpOnlyGuidedEntry: View {
                 if buys == nil {
                     // Bought in several goes: each buy with its day, costs filled in.
                     ManageCard {
-                        ManageRow(title: "Several buys", caption: "Each with its date; costs fill in from that day's price", chevron: true, action: startBuys) {
+                        UpOnlyRow(title: "Several buys", caption: "Each with its date; costs fill in from that day's price", chevron: true, action: startBuys) {
                             UpOnlySymbolBadge(symbol: "list.bullet", tint: mode == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 28)
-                        } menu: { EmptyView() }
+                        }
                     }
                 }
             }
@@ -312,13 +316,13 @@ struct UpOnlyGuidedEntry: View {
     private var portfolioList: some View {
         ManageCard {
             ForEach(Array(portfolios.enumerated()), id: \.element.id) { index, portfolio in
-                ManageRow(title: portfolioLabel(portfolio), caption: portfolioCaption(portfolio), divided: index > 0, chevron: true, action: {
+                UpOnlyRow(title: portfolioLabel(portfolio), caption: portfolioCaption(portfolio), divided: index > 0, chevron: true, action: {
                     row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name; choosingPortfolio = false; step = 1
-                }) { portfolioBadge } menu: { EmptyView() }
+                }) { portfolioBadge }
             }
-            ManageRow(title: "New portfolio", caption: "Name it on the next page", divided: true, chevron: true, action: {
+            UpOnlyRow(title: "New portfolio", caption: "Name it on the next page", divided: true, chevron: true, action: {
                 row.holding.portfolioID = nil; row.holding.portfolioName = ""; choosingPortfolio = false; step = 1
-            }) { addBadge } menu: { EmptyView() }
+            }) { addBadge }
         }
     }
     @ViewBuilder private var portfolioBadge: some View {
@@ -354,9 +358,9 @@ struct UpOnlyGuidedEntry: View {
     private var buysTotal: Decimal { (buys ?? []).compactMap { parsed($0.quantity) }.filter { $0 > 0 }.reduce(0, +) }
     private func dayKey(_ day: Date) -> String { priceKey + "@" + ImportDateFormat.today(day) }
     /// Every past day a buy is on, for looking up prices.
-    private var buyPriceKeys: String { Set((buys ?? []).filter { !UTCDay.isSameDay($0.date, Date()) }.map { dayKey($0.date) }).sorted().joined(separator: ",") }
+    private var buyPriceKeys: String { Set((buys ?? []).filter { !isToday($0.date) }.map { dayKey($0.date) }).sorted().joined(separator: ",") }
     /// The price a buy is costed at: today's for one bought today, else that day's average.
-    private func price(on day: Date) -> Decimal? { UTCDay.isSameDay(day, Date()) ? unitPrice : dayPrices[dayKey(day)] }
+    private func price(on day: Date) -> Decimal? { isToday(day) ? unitPrice : dayPrices[dayKey(day)] }
     /// A buy's cost in dollars: its amount (in grams for metal) at that day's price.
     private func buyCost(_ line: BuyLine) -> Decimal? {
         guard let amount = parsed(line.quantity), amount > 0, let price = price(on: line.date) else { return nil }
@@ -373,14 +377,14 @@ struct UpOnlyGuidedEntry: View {
         guard let settings = session.document?.settings else { return }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
         guard !asset.isEmpty else { return }
-        for day in Set((buys ?? []).map { UTCDay.start(of: $0.date) }) where !UTCDay.isSameDay(day, Date()) && dayPrices[dayKey(day)] == nil {
+        for day in Set((buys ?? []).map { UTCDay.start(of: $0.date) }) where !isToday(day) && dayPrices[dayKey(day)] == nil {
             guard !Task.isCancelled else { return }
             if let price = await PublicPrices.dayPrice(assetID: asset, symbol: coin?.symbol, day: day, today: unitPrice, key: settings.coinGeckoKey) { dayPrices[dayKey(day)] = price }
         }
     }
     private func buyRow(_ index: Int, divided: Bool) -> some View {
         let quantity = Binding(get: { buys?.indices.contains(index) == true ? buys![index].quantity : "" }, set: { if buys?.indices.contains(index) == true { buys![index].quantity = $0 } })
-        let day = Binding(get: { buys?.indices.contains(index) == true ? buys![index].date : Date() }, set: { if buys?.indices.contains(index) == true { buys![index].date = $0 } })
+        let day = Binding(get: { buys?.indices.contains(index) == true ? buys![index].date : UTCDay.today() }, set: { if buys?.indices.contains(index) == true { buys![index].date = $0 } })
         let line = buys?.indices.contains(index) == true ? buys![index] : BuyLine()
         return VStack(spacing: 0) {
             if divided { Divider().opacity(0.5) }
@@ -399,9 +403,9 @@ struct UpOnlyGuidedEntry: View {
             HStack {
                 Spacer()
                 if let cost = buyCost(line) {
-                    UpOnlyPrivateText("≈ " + UpOnlyFormat.exactMoney(cost) + " at " + (UTCDay.isSameDay(line.date, Date()) ? "today's" : "that day's") + " price")
+                    UpOnlyPrivateText("≈ " + UpOnlyFormat.exactMoney(cost) + " at " + (isToday(line.date) ? "today's" : "that day's") + " price")
                 } else if (parsed(line.quantity) ?? 0) > 0 {
-                    Text(UTCDay.isSameDay(line.date, Date()) || dayPrices[dayKey(line.date)] == nil ? "Looking up the price…" : "No price for that day")
+                    Text(isToday(line.date) || dayPrices[dayKey(line.date)] == nil ? "Looking up the price…" : "No price for that day")
                 }
             }.font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).padding(.bottom, 8)
         }
@@ -457,7 +461,7 @@ struct UpOnlyGuidedEntry: View {
             guard let amount = parsed(line.quantity), amount > 0 else { return nil }
             let quantity = mode == .metals ? ((try? unit.grams(amount)) ?? amount) : amount
             // Today is saved as now; an earlier day at its start, as a single entry is.
-            let day = UTCDay.isSameDay(line.date, Date()) ? Date() : UTCDay.start(of: line.date)
+            let day = UTCDay.moment(for: line.date)
             return UpOnlySession.Buy(quantity: quantity, date: day, cost: buyCost(line))
         }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
@@ -498,7 +502,7 @@ struct UpOnlyGuidedEntry: View {
             else { UpOnlyBankBadge(name: row.bank.account.name, size: 44) }
         } else {
             UpOnlyEntryBadge(mode: mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "",
-                             assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil, image: nil, size: 44)
+                             assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil, size: 44)
         }
     }
     /// "GBP", "BTC", or the metal's weight unit.
@@ -534,13 +538,13 @@ struct UpOnlyGuidedEntry: View {
 
     /// The asset and day a price is wanted for: a holding dated before today whose cost is left empty.
     private var closeKey: String? {
-        guard mode != .bankBalances, !UTCDay.isSameDay(holdingDate.wrappedValue, Date()) else { return nil }
+        guard mode != .bankBalances, !isToday(holdingDate.wrappedValue) else { return nil }
         return priceKey + "@" + ImportDateFormat.today(holdingDate.wrappedValue)
     }
     /// "Mar 2", or "Mar 2, 2025" from another year: short enough to sit beside "Cost".
     private var closeDay: String {
         let day = holdingDate.wrappedValue
-        return UTCDay.calendar.component(.year, from: day) == UTCDay.calendar.component(.year, from: Date()) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
+        return UTCDay.calendar.component(.year, from: day) == UTCDay.calendar.component(.year, from: UTCDay.today()) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
     }
     /// What the amount cost at that day's average price, while the cost is empty.
     private var estimatedCost: Decimal? {
@@ -682,7 +686,7 @@ struct UpOnlyGuidedEntry: View {
     }
     /// The holding's value now against what it cost, in dollars (a cost in another currency at the latest saved rate).
     private var gainSinceCost: (fraction: Decimal, amount: Decimal)? {
-        guard mode != .bankBalances, !UTCDay.isSameDay(holdingDate.wrappedValue, Date()), let worth = approxUSD,
+        guard mode != .bankBalances, !isToday(holdingDate.wrappedValue), let worth = approxUSD,
               let paid = try? numberFormat.decimal(row.holding.paid, typed: true), paid > 0 else { return nil }
         let currency = row.holding.paidCurrency.uppercased().nilIfEmpty ?? "USD"
         let rate: Decimal? = currency == "USD" ? 1 : session.document?.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.max { $0.providerTime < $1.providerTime }?.rate.value
@@ -702,11 +706,11 @@ struct UpOnlyGuidedEntry: View {
     // Say out loud what a past date or a cost without an increase will do before it is saved.
     private var holdingNotes: [String] {
         guard mode != .bankBalances, let document = session.document else { return [] }
-        // Today is saved as now, so compare with now too.
-        let date = UTCDay.isSameDay(holdingDate.wrappedValue, Date()) ? Date() : holdingDate.wrappedValue
+        // Today is saved as now, so compare with now too; the note names the day picked.
+        let day = holdingDate.wrappedValue, date = UTCDay.moment(for: day)
         var notes: [String] = []
-        let when = date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
-        if let portfolio = portfolios.first(where: { $0.id == row.holding.portfolioID }), UTCDay.start(of: date) < UTCDay.start(of: portfolio.createdAt) {
+        let when = day.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))
+        if let portfolio = portfolios.first(where: { $0.id == row.holding.portfolioID }), UTCDay.start(of: day) < UTCDay.start(of: portfolio.createdAt) {
             notes.append("Dates " + portfolio.name + " back to " + when + ".")
         }
         if !row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

@@ -48,7 +48,7 @@ nonisolated enum NetWorthCalculator {
         index: ValuationIndex? = nil
     ) -> ValuationResult {
         let day = UTCDay.start(of: date)
-        let isHistorical = day < UTCDay.start(of: now)
+        let isHistorical = day < UTCDay.firstOpenDay(now: now)
         if isHistorical, let stored = document.storedValuation(day: day, scope: scope), stored.isComplete {
             return result(from: stored, at: date)
         }
@@ -60,13 +60,15 @@ nonisolated enum NetWorthCalculator {
     /// for. Both searches scan every saved day, which over years of history cost more than the valuations.
     static func rebuiltSample(at date: Date, scope: ValuationScope, document: VaultDocument, now: Date, index: ValuationIndex) -> DailyValuation? {
         sample(from: compute(at: date, scope: scope, document: document, now: now,
-                             historical: UTCDay.start(of: date) < UTCDay.start(of: now), index: index, findsLastComplete: false))
+                             historical: UTCDay.start(of: date) < UTCDay.firstOpenDay(now: now), index: index, findsLastComplete: false))
     }
 
-    static func sample(from result: ValuationResult) -> DailyValuation? {
+    /// A value's saved sample, under `day` when given (today's value goes under today's date on this Mac, which late in
+    /// the evening west of UTC is still the previous UTC day), else under its moment's UTC day.
+    static func sample(from result: ValuationResult, day: Date? = nil) -> DailyValuation? {
         guard !result.isUnavailable else { return nil }
         return DailyValuation(
-            utcDay: UTCDay.start(of: result.at),
+            utcDay: day.map { UTCDay.start(of: $0) } ?? UTCDay.start(of: result.at),
             scope: result.scope,
             total: result.total.map(PreciseDecimal.init),
             isComplete: result.total != nil,
@@ -83,8 +85,8 @@ nonisolated enum NetWorthCalculator {
         return next
     }
 
-    static func recordSample(_ result: ValuationResult, in document: inout VaultDocument) {
-        guard let incoming = sample(from: result) else { return }
+    static func recordSample(_ result: ValuationResult, in document: inout VaultDocument, day: Date? = nil) {
+        guard let incoming = sample(from: result, day: day) else { return }
         // A complete value supersedes earlier partial attempts for the day; partial ones only replace each other.
         var replaced: [Int] = []
         for (index, stored) in document.dailyValuations.enumerated() where stored.scope == result.scope && UTCDay.start(of: stored.utcDay) == incoming.utcDay {
@@ -612,7 +614,9 @@ nonisolated enum HoldingMutations {
         next.dropUnstoredValuations()
         let scopes = next.valuationScopes
         let first = max(UTCDay.start(of: start), UTCDay.start(of: now).addingTimeInterval(-2200 * 86400))
-        let last = min(UTCDay.start(of: now), end.map { UTCDay.start(of: $0) } ?? UTCDay.start(of: now))
+        // Today isn't history yet: its sample is the live value saved with each change.
+        let openDay = UTCDay.firstOpenDay(now: now)
+        let last = min(openDay, end.map { UTCDay.start(of: $0) } ?? openDay)
         // Old samples for these days no longer describe the holdings held then; drop them
         // so a day without saved prices shows as a gap rather than a wrong value.
         next.dailyValuations.removeAll { let day = UTCDay.start(of: $0.utcDay); return day >= first && day < last }
@@ -782,7 +786,9 @@ nonisolated enum HoldingMutations {
 /// Raw observations and stored snapshots stay full-value. Ownership is applied
 /// at the observation date when presenting personal wealth, including old samples.
 nonisolated enum AssetOwnership {
-    static func month(at date: Date) -> MonthKey { MonthKey.current(now: date) }
+    /// The month whose ownership applies to a value at `date`: its saved day's month, so today's value (at now, even
+    /// when UTC is already in the next month) takes this month on the Mac.
+    static func month(at date: Date, now: Date = Date()) -> MonthKey { MonthKey(day: UTCDay.day(of: date, now: now)) }
     /// The Wise profile's name: everything before " · currency" (and before a jar's name after that).
     static func profileName(_ account: Account) -> String {
         guard account.externalProfileID != nil, let range = account.name.range(of: " · " + account.currency) else { return account.name }
@@ -813,7 +819,7 @@ nonisolated enum AssetOwnership {
         guard components.allSatisfy({ $0.usdValue != nil && $0.missing == nil }) else { return nil }
         return try? components.reduce(Decimal.zero) { try MoneyInput.add($0, $1.usdValue!.value, allowingRounding: true) }
     }
-    static func personalTotal(_ components: [ValuationComponent], at date: Date, document: VaultDocument) -> Decimal? {
+    static func personalTotal(_ components: [ValuationComponent], at date: Date, document: VaultDocument, now: Date = Date()) -> Decimal? {
         let groups = Dictionary(grouping: components) { businessID(for: $0, in: document) ?? "" }
         var total = Decimal.zero
         for (owner, values) in groups {
@@ -822,7 +828,7 @@ nonisolated enum AssetOwnership {
             if owner.isEmpty { share = full }
             else {
                 guard let book = document.businessAccounting?.first(where: { $0.id == owner }),
-                      let ownership = book.ownership(at: month(at: date).description),
+                      let ownership = book.ownership(at: month(at: date, now: now).description),
                       let portion = try? ownership.portion(full) else { return nil }
                 share = portion
             }
@@ -833,7 +839,7 @@ nonisolated enum AssetOwnership {
     static func personalValue(at date: Date, scope: ValuationScope, document: VaultDocument, now: Date = Date()) -> ValuationResult {
         var raw = NetWorthCalculator.value(at: date, scope: scope, document: document, now: now)
         if raw.total != nil {
-            raw.total = personalTotal(raw.components, at: date, document: document)
+            raw.total = personalTotal(raw.components, at: date, document: document, now: now)
             if raw.total == nil { raw.missing.append(MissingValuation(componentID: UUID(), reason: "ownership")) }
         }
         // Never reuse a legacy full-company headline as a personal fallback.
@@ -843,7 +849,7 @@ nonisolated enum AssetOwnership {
                 $0.scope == scope && $0.isComplete && $0.utcDay <= date && $0.computedAt <= now
             }.sorted { $0.utcDay > $1.utcDay }
             for sample in samples {
-                if let total = personalTotal(sample.components, at: sample.utcDay, document: document) {
+                if let total = personalTotal(sample.components, at: sample.utcDay, document: document, now: now) {
                     raw.lastComplete = (total, sample.utcDay); break
                 }
             }

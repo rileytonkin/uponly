@@ -115,6 +115,13 @@ actor VaultStore {
         timing?.mark("authenticated", at: authenticator.successfulAuthenticationUptime ?? ProcessInfo.processInfo.systemUptime)
         guard fence.current() == ticket else { throw VaultError.locked }
         try acquireProcessLock()
+        try settleRestore { copy, _ in
+            // The restore reached its commit point if the Keychain's key opens the backup's copy.
+            let keyData: Data
+            do { keyData = try keys.load(vaultID: copy.vaultID, context: authenticator.keychainContext) }
+            catch VaultError.needsRecovery { return false }
+            return (try? VaultCrypto.reveal(copy, key: VaultCrypto.key(from: keyData))) != nil
+        }
         try layout.ensureDirectories(io)
         guard io.fileExists(at: layout.current) || io.fileExists(at: layout.previous) else { throw VaultError.notFound }
         let (document, vaultKey) = try openNewest { vaultID in
@@ -137,6 +144,13 @@ actor VaultStore {
         try await authenticator.evaluate()
         guard fence.current() == ticket else { throw VaultError.locked }
         try acquireProcessLock()
+        try settleRestore { copy, aside in
+            // The backup's copy stands if this code opens it, and the folder aside goes back if the code opens that instead.
+            if let keyData = unwrappedKey(in: layout, recovery: recovery),
+               (try? VaultCrypto.reveal(copy, key: VaultCrypto.key(from: keyData))) != nil { return true }
+            guard unwrappedKey(in: aside, recovery: recovery) != nil else { throw VaultError.wrongRecoveryCode }
+            return false
+        }
         try layout.ensureDirectories(io)
         guard io.fileExists(at: layout.current) || io.fileExists(at: layout.previous) else { throw VaultError.notFound }
         // While a recovery-code change finishes, the new code's wrapper waits beside the old one; each code opens its own.
@@ -312,10 +326,23 @@ actor VaultStore {
         fileLock?.release(); fileLock = nil
     }
 
+    /// Start over, for a folder setup left holding only its recovery wrapper (`VaultLayout.holdsOnlyWrapper`): the wrapper
+    /// is moved beside the folder under a numbered name, never deleted, and the folder is left empty for setup. Returns where.
+    func startOver() throws -> URL {
+        guard session == nil else { throw VaultError.alreadyExists }
+        try acquireProcessLock()
+        // Checked again under the process lock, just before the move.
+        guard layout.holdsOnlyWrapper(io) else { throw VaultError.alreadyExists }
+        let destination = layout.unusedWrapper(io)
+        try io.installItem(at: destination, from: layout.recovery)
+        return destination
+    }
+
     /// Whether the vault folder is missing or holds only the empty Inbox a failed setup leaves (and hidden files such as
     /// Finder's, which are never vault files). Setup and welcome-screen restore both require it, so neither writes over
-    /// any part of a vault, even one missing its main file.
+    /// any part of a vault, even one missing its main file. Nor while a restore that stopped partway is still unsettled.
     private func isEmptyDestination() throws -> Bool {
+        guard !io.fileExists(at: layout.restoreJournal) else { return false }
         guard io.fileExists(at: layout.root) else { return true }
         return try io.contentsOfDirectory(at: layout.root).allSatisfy {
             $0.lastPathComponent.hasPrefix(".") || ($0.lastPathComponent == layout.inbox.lastPathComponent
@@ -325,51 +352,109 @@ actor VaultStore {
 
     /// Replaces this unlocked vault with a verified backup and opens it; the caller has just authenticated the user, so
     /// the backup's key is saved to the Keychain with that authentication. The vault's folder is moved to `aside`, never
-    /// deleted. A refused backup or code throws before anything changes. After that the session is closed, and any
-    /// failure removes the restored copy, puts the original folder back and leaves the vault locked.
+    /// deleted. A refused backup or code throws before anything changes. The backup may be an earlier one of this vault,
+    /// under a key a recovery-code change has since replaced, so the Keychain takes its key last, once the copy is in the
+    /// folder's place: that is the commit point, and nothing can fail after it. Before it, the session is closed and any
+    /// failure removes the copy and puts the original folder back, locked, with the Keychain as it was. A journal beside the
+    /// folder lets the next unlock or recovery finish or undo a restore the app didn't live through (`settleRestore`).
     func replace(with package: BackupPackage, recovery: RecoveryCode, aside: URL) throws -> VaultSession {
         guard let current = session, let currentKey = key, fence.current() == current.fenceTicket else { throw VaultError.locked }
-        try BackupCoordinator.verifyPackage(package)
-        let wrapper = try VaultJSON.decode(RecoveryWrapperFile.self, from: package.recovery)
-        let restoredKey = try VaultCrypto.key(from: VaultCrypto.unwrapVaultKey(wrapper, recovery: recovery))
-        // A backup of this same vault made since its last recovery-code change carries this vault's key. One that doesn't
-        // (an earlier one) would overwrite the key this vault needs.
-        if wrapper.vaultID == current.document.vaultID, VaultCrypto.keyData(restoredKey) != VaultCrypto.keyData(currentKey) {
-            throw VaultError.backupIncoherent
+        let restored = try BackupCoordinator.open(package, recovery: recovery)
+        let restoredKey = try VaultCrypto.key(from: restored.key)
+        let parent = layout.root.deletingLastPathComponent(), name = layout.root.lastPathComponent
+        // The journal names both folders beside this one, where `settleRestore` looks for them.
+        guard aside.deletingLastPathComponent().path == parent.path, aside.lastPathComponent.hasPrefix(name + " (") else {
+            throw VaultError.unsafeFilename
         }
         guard !io.fileExists(at: aside) else { throw VaultError.alreadyExists }
+        let staging = parent.appendingPathComponent(name + ".restore-" + UUID().uuidString, isDirectory: true)
+        let journal = try VaultJSON.encode(RestoreJournal(
+            aside: aside.lastPathComponent, staging: staging.lastPathComponent, vaultSHA256: VaultCrypto.sha256(package.vault)
+        ))
         // Nothing the replaced session prepared may be saved from here, whether the backup opens or the original goes back.
         // The authenticator stays valid: the restore's Keychain write needs it.
         let ticket = fence.bump()
         session = nil; key = nil
+        var moved = false, triedKeychain = false
         do {
             try acquireProcessLock()
+            try io.write(journal, to: layout.restoreJournal, sync: true)
             try io.installItem(at: aside, from: layout.root)
-            // The restore takes the process lock itself.
-            fileLock?.release(); fileLock = nil
-            let restored = try BackupCoordinator.restore(
-                package: package, recovery: recovery, keys: keys, layout: layout, io: io, authenticator: authenticator
-            )
-            try acquireProcessLock()
-            return try fence.publish(ticket) {
+            moved = true
+            try BackupCoordinator.stage(package, at: staging, io: io)
+            try io.installItem(at: layout.root, from: staging)
+            let published: VaultSession = try fence.publish(ticket) {
+                triedKeychain = true
+                try keys.store(vaultID: restored.document.vaultID, key: restored.key, context: authenticator.keychainContext)
+                // Committed: the Keychain opens the backup's copy, and the folder aside keeps the replaced vault.
                 let opened = VaultSession(sessionID: UUID(), document: restored.document, fenceTicket: ticket)
                 self.session = opened
                 self.key = restoredKey
                 self.openedPrevious = false
                 return opened
             }
+            // One left behind is settled at the next unlock, and the copy stands: the Keychain opens it.
+            try? io.removeItem(at: layout.restoreJournal)
+            return published
         } catch {
             session = nil; key = nil
-            if io.fileExists(at: aside) { try putBack(from: aside) }
+            // Not committed. A Keychain update is all or nothing, but if one was tried this vault's own key is saved again.
+            if triedKeychain, restored.document.vaultID == current.document.vaultID {
+                try? keys.store(vaultID: current.document.vaultID, key: VaultCrypto.keyData(currentKey), context: authenticator.keychainContext)
+            }
+            try? io.removeItem(at: staging)
+            if moved {
+                // Whatever is in the folder's place is only the backup's copy. If the original can't go back, the journal stays.
+                try? io.removeItem(at: layout.root)
+                try io.installItem(at: layout.root, from: aside)
+            }
+            try? io.removeItem(at: layout.restoreJournal)
             throw error
         }
     }
 
-    /// Puts back the folder `replace` moved aside. Whatever a failed restore left in its place is only a copy of the backup.
-    private func putBack(from aside: URL) throws {
-        try? acquireProcessLock()
-        if io.fileExists(at: layout.root) { try io.removeItem(at: layout.root) }
-        try io.installItem(at: layout.root, from: aside)
+    /// Finishes or undoes a restore that stopped partway (`replace`), before anything is opened. If the vault's folder was
+    /// moved aside and nothing is in its place, it goes back. If the backup's copy is in its place, still byte for byte as
+    /// restored, `keepsCopy` decides with the caller's key (the Keychain's on unlock, the code's on recovery): the copy stands
+    /// if that key opens it, as it does once the Keychain took the backup's key; otherwise the copy is removed and the folder
+    /// goes back. A copy saved over since stands. Only the staging copy and an untouched copy are ever removed.
+    private func settleRestore(keepsCopy: (_ copy: PersistedVaultFile, _ aside: VaultLayout) throws -> Bool) throws {
+        guard io.fileExists(at: layout.restoreJournal) else { return }
+        let parent = layout.root.deletingLastPathComponent(), name = layout.root.lastPathComponent
+        // Written atomically, so one that doesn't read, or names anything else, was changed outside the app: nothing is moved.
+        guard let journal = try? VaultJSON.decode(RestoreJournal.self, from: io.data(at: layout.restoreJournal)),
+              let asideName = try? SafeFileName.require(journal.aside), asideName.hasPrefix(name + " ("),
+              let stagingName = try? SafeFileName.require(journal.staging), stagingName.hasPrefix(name + ".restore-") else {
+            throw VaultError.corrupt
+        }
+        let aside = VaultLayout(root: parent.appendingPathComponent(asideName, isDirectory: true))
+        do {
+            try? io.removeItem(at: parent.appendingPathComponent(stagingName, isDirectory: true))
+            if io.fileExists(at: aside.root) {
+                if !io.fileExists(at: layout.root) {
+                    try io.installItem(at: layout.root, from: aside.root)
+                } else if let bytes = try? io.data(at: layout.current), VaultCrypto.sha256(bytes) == journal.vaultSHA256,
+                          let copy = try? VaultJSON.decode(PersistedVaultFile.self, from: bytes), try !keepsCopy(copy, aside) {
+                    try io.removeItem(at: layout.root)
+                    try io.installItem(at: layout.root, from: aside.root)
+                }
+            }
+            // Settled; one left behind comes to the same answer next time.
+            try? io.removeItem(at: layout.restoreJournal)
+        } catch let error as VaultError {
+            throw error
+        } catch {
+            throw VaultError.diskWriteFailed
+        }
+    }
+
+    /// The vault key `recovery` opens from one of the folder's wrappers, if any.
+    private func unwrappedKey(in folder: VaultLayout, recovery: RecoveryCode) -> Data? {
+        for url in [folder.recovery, folder.pendingRecovery] where io.fileExists(at: url) {
+            if let wrapper = try? VaultJSON.decode(RecoveryWrapperFile.self, from: io.data(at: url)),
+               let keyData = try? VaultCrypto.unwrapVaultKey(wrapper, recovery: recovery) { return keyData }
+        }
+        return nil
     }
 
     private func acquireProcessLock() throws {
@@ -485,4 +570,14 @@ actor VaultStore {
 private struct HeaderProbe: Decodable {
     var format: Int?
     var schema: Int?
+}
+
+/// Written beside the vault folder while `VaultStore.replace` swaps it for a backup: folder names and a hash, no key or code.
+private struct RestoreJournal: Codable {
+    /// Where the replaced vault's folder is moved, beside it.
+    var aside: String
+    /// The folder the backup is written to before it takes the vault folder's place.
+    var staging: String
+    /// SHA-256 of the backup's `vault.uponly`, which tells an untouched copy from one saved over since.
+    var vaultSHA256: Data
 }

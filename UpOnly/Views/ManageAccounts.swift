@@ -37,7 +37,7 @@ extension UpOnlyManagement {
     /// says), and whether it counts.
     func accountCaption(_ members: [Account], date: Date?, synced: Bool = false, name: String = "") -> String {
         var parts: [String] = []
-        if let date { parts.append((synced ? "Synced " : "Updated ") + Self.when(date)) }
+        if let date { parts.append((synced ? "Synced " : "Updated ") + Self.when(date, synced: synced)) }
         else { parts.append(synced ? "Not synced yet" : "Balance needed") }
         if let document = session.document, let first = members.first {
             if let owner = AssetOwnership.businessID(for: first, in: document) {
@@ -49,12 +49,13 @@ extension UpOnlyManagement {
         }
         return parts.joined(separator: " · ")
     }
-    /// "today", "yesterday", "Sep 9", or "Sep 9, 2025" from another year.
-    static func when(_ date: Date) -> String {
-        let calendar = UTCDay.calendar, today = UTCDay.start(of: Date())
-        if calendar.isDate(date, inSameDayAs: today) { return "today" }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: today), calendar.isDate(date, inSameDayAs: yesterday) { return "yesterday" }
-        return calendar.component(.year, from: date) == calendar.component(.year, from: today) ? UpOnlyFormat.utcDay(date) : UpOnlyFormat.utcDate(date)
+    /// "today", "yesterday", "Sep 9", or "Sep 9, 2025" from another year, with today as it is on this Mac: the saved day
+    /// a balance is for, or for a sync (a moment), the date it happened here.
+    static func when(_ date: Date, synced: Bool = false) -> String {
+        let calendar = UTCDay.calendar, day = synced ? UTCDay.today(now: date) : UTCDay.day(of: date), today = UTCDay.today()
+        if day == today { return "today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: today), day == yesterday { return "yesterday" }
+        return calendar.component(.year, from: day) == calendar.component(.year, from: today) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
     }
     /// A balance in dollars at the latest saved rate, for the right-hand column every row shares.
     func usd(_ amount: Decimal, currency: String) -> Decimal? {
@@ -66,7 +67,7 @@ extension UpOnlyManagement {
     func accountRow(_ account: Account, latest: BankBalanceObservation?, divided: Bool) -> some View {
         let native = latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) }
         let dollars = latest.flatMap { usd($0.amount.value, currency: account.currency) }.map(UpOnlyFormat.exactMoney)
-        return ManageRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt, name: account.name),
+        return UpOnlyRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt, name: account.name),
                          value: account.currency == "USD" ? native ?? "Add balance" : dollars ?? native ?? "Add balance",
                          valueDetail: account.currency == "USD" || dollars == nil ? nil : native, divided: divided,
                          action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
@@ -100,7 +101,7 @@ extension UpOnlyManagement {
         let dollars = funded.map { usd($0.1, currency: $0.0.currency) }
         let total = dollars.contains { $0 == nil } ? nil : dollars.compactMap { $0 }.reduce(Decimal(0), +)
         let open = expandedProfiles.contains(key)
-        ManageRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
+        UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
                   value: total.map(UpOnlyFormat.exactMoney) ?? (funded.isEmpty ? "No money" : "Rate needed"),
                   valueDetail: funded.count > 1 ? "\(funded.count) currencies" : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
                   divided: divided, action: funded.count > 1 ? {

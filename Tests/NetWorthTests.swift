@@ -638,21 +638,88 @@ struct NetWorthTests {
         }
     }
 
-    @Test("Months are Gregorian UTC months, whatever calendar or time zone the Mac uses")
+    @Test("A saved day's month is its Gregorian UTC month, whatever calendar or time zone the Mac uses")
     func gregorianUTCMonths() throws {
         let lateSeptember = utc(2026, 9, 30, hour: 23, minute: 30)
-        #expect(MonthKey.current(now: lateSeptember) == MonthKey(year: 2026, month: 9))
-        #expect(MonthKey.current(now: lateSeptember.addingTimeInterval(3600)) == MonthKey(year: 2026, month: 10))
+        #expect(MonthKey(day: lateSeptember) == MonthKey(year: 2026, month: 9))
+        #expect(MonthKey(day: lateSeptember.addingTimeInterval(3600)) == MonthKey(year: 2026, month: 10))
+        // On a Mac set to UTC, this month is the UTC one.
+        #expect(MonthKey.current(now: lateSeptember, timeZone: UTCDay.timeZone) == MonthKey(year: 2026, month: 9))
+        #expect(MonthKey.current(now: lateSeptember.addingTimeInterval(3600), timeZone: UTCDay.timeZone) == MonthKey(year: 2026, month: 10))
         // Calendar.current can't be swapped inside a test; a Japanese calendar reads this year as 8 (Reiwa),
         // and the month must not come from it.
         #expect(Calendar(identifier: .japanese).component(.year, from: lateSeptember) == 8)
-        #expect(MonthKey.current(now: lateSeptember).year == 2026)
-        #expect(AssetOwnership.month(at: lateSeptember) == MonthKey.current(now: lateSeptember))
+        #expect(MonthKey.current(now: lateSeptember, timeZone: UTCDay.timeZone).year == 2026)
+        // A past day's ownership month is its own.
+        #expect(AssetOwnership.month(at: lateSeptember, now: utc(2026, 11, 1)) == MonthKey(day: lateSeptember))
         #expect(MonthKey(year: 2026, month: 9).title.contains("2026"))
         // Out-of-range months roll into the neighbouring year instead of naming a month that doesn't exist.
         #expect(MonthKey(year: 2026, month: 13) == MonthKey(year: 2027, month: 1))
         #expect(MonthKey(year: 2026, month: 0) == MonthKey(year: 2025, month: 12))
         #expect(DashboardPeriod.interval(month: MonthKey(year: 2025, month: 13), period: .monthly, now: lateSeptember).start == utc(2026, 1, 1, hour: 0))
+    }
+
+    private var buenosAires: TimeZone { TimeZone(identifier: "America/Argentina/Buenos_Aires")! }
+    private var sydney: TimeZone { TimeZone(identifier: "Australia/Sydney")! }
+
+    @Test("Today is the Mac's own date, saved as that date's UTC midnight")
+    func localToday() {
+        // 11:30 pm on Sep 24 in Buenos Aires (UTC−3) is already 2:30 am on Sep 25 in UTC.
+        let lateEvening = utc(2026, 9, 25, hour: 2, minute: 30)
+        #expect(UTCDay.today(now: lateEvening, timeZone: buenosAires) == utc(2026, 9, 24, hour: 0))
+        #expect(ImportDateFormat.today(UTCDay.today(now: lateEvening, timeZone: buenosAires)) == "2026-09-24")
+        // 12:30 am on Sep 25 there.
+        #expect(UTCDay.today(now: utc(2026, 9, 25, hour: 3, minute: 30), timeZone: buenosAires) == utc(2026, 9, 25, hour: 0))
+        // 7 am on Sep 25 in Sydney (UTC+10) is still 9 pm on Sep 24 in UTC; 10 pm on Sep 24 there is noon in UTC.
+        #expect(UTCDay.today(now: utc(2026, 9, 24, hour: 21), timeZone: sydney) == utc(2026, 9, 25, hour: 0))
+        #expect(UTCDay.today(now: utc(2026, 9, 24, hour: 12), timeZone: sydney) == utc(2026, 9, 24, hour: 0))
+        // On a Mac set to UTC nothing changes.
+        #expect(UTCDay.today(now: lateEvening, timeZone: UTCDay.timeZone) == utc(2026, 9, 25, hour: 0))
+    }
+
+    @Test("This month is the Mac's own month, even when UTC is already in the next or still in the last")
+    func localMonth() {
+        // 10 pm on Sep 30 in Buenos Aires is 1 am on Oct 1 in UTC: still September there.
+        let evening = utc(2026, 10, 1, hour: 1)
+        #expect(MonthKey.current(now: evening, timeZone: buenosAires) == MonthKey(year: 2026, month: 9))
+        #expect(MonthKey.current(now: evening, timeZone: UTCDay.timeZone) == MonthKey(year: 2026, month: 10))
+        // 8 am on Oct 1 in Sydney is still 10 pm on Sep 30 in UTC: already October there.
+        let morning = utc(2026, 9, 30, hour: 22)
+        #expect(MonthKey.current(now: morning, timeZone: sydney) == MonthKey(year: 2026, month: 10))
+        #expect(MonthKey.current(now: morning, timeZone: UTCDay.timeZone) == MonthKey(year: 2026, month: 9))
+        // A saved Oct 1 is October anywhere.
+        #expect(MonthKey(day: utc(2026, 10, 1, hour: 0)) == MonthKey(year: 2026, month: 10))
+    }
+
+    @Test("Late in the evening west of UTC, today's records and value file under today, and today isn't history yet")
+    func localEveningFiling() {
+        let lateEvening = utc(2026, 9, 25, hour: 2, minute: 30)   // 11:30 pm on Sep 24 in Buenos Aires
+        let sep24 = utc(2026, 9, 24, hour: 0), sep25 = utc(2026, 9, 25, hour: 0)
+        // Today's moment is the day's last second, not now (already Sep 25 in UTC); earlier, it's now; a past day, its start.
+        let moment = UTCDay.moment(for: sep24, now: lateEvening, timeZone: buenosAires)
+        #expect(moment == sep24.addingTimeInterval(86399) && moment <= lateEvening && UTCDay.start(of: moment) == sep24)
+        let afternoon = utc(2026, 9, 24, hour: 17)
+        #expect(UTCDay.moment(for: sep24, now: afternoon, timeZone: buenosAires) == afternoon)
+        #expect(UTCDay.moment(for: utc(2026, 9, 20, hour: 0), now: lateEvening, timeZone: buenosAires) == utc(2026, 9, 20, hour: 0))
+        // Sep 24 is still open, so a value now is today's and goes under Sep 24; Sep 23 is history.
+        #expect(UTCDay.firstOpenDay(now: lateEvening, timeZone: buenosAires) == sep24)
+        #expect(UTCDay.day(of: lateEvening, now: lateEvening, timeZone: buenosAires) == sep24)
+        #expect(UTCDay.day(of: utc(2026, 9, 23, hour: 12), now: lateEvening, timeZone: buenosAires) == utc(2026, 9, 23, hour: 0))
+        var doc = document()
+        let account = Account(name: "Checking", currency: "USD")
+        doc.accounts = [account]
+        doc.trackedBankAccountIDs = [account.id]
+        doc.bankBalances = [BankBalanceObservation(id: UUID(), accountID: account.id, amount: PreciseDecimal(100), currency: "USD",
+                                                   observedAt: moment, source: "manual", sourceIdentity: "checking")]
+        let live = NetWorthCalculator.value(at: lateEvening, scope: .allTracked, document: doc, now: lateEvening)
+        #expect(live.total == 100)
+        NetWorthCalculator.recordSample(live, in: &doc, day: UTCDay.today(now: lateEvening, timeZone: buenosAires))
+        #expect(doc.dailyValuations.map(\.utcDay) == [sep24])
+        // Early on Sep 25 in Sydney, UTC's Sep 24 isn't over, so a live value is never read as a past day's.
+        let sydneyMorning = utc(2026, 9, 24, hour: 21)
+        #expect(UTCDay.firstOpenDay(now: sydneyMorning, timeZone: sydney) == sep24)
+        #expect(UTCDay.day(of: sydneyMorning, now: sydneyMorning, timeZone: sydney) == sep25)
+        #expect(UTCDay.moment(for: sep25, now: sydneyMorning, timeZone: sydney) == sydneyMorning)
     }
 
     @Test("UTC day starts match a UTC Gregorian calendar's")

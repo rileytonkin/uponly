@@ -95,7 +95,6 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
     private var directories: Set<String> = []
     private var heldLocks: Set<String> = []
     private var unreadable: Set<String> = []
-    private var unlistable: Set<String> = []
 
     var failWrite = false
     var failReplace = false
@@ -109,10 +108,6 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         unreadable.insert(url.path)
     }
 
-    func markUnlistable(_ url: URL) {
-        lock.lock(); defer { lock.unlock() }
-        unlistable.insert(url.path)
-    }
 
     func data(at url: URL) throws -> Data {
         onRead?()
@@ -156,6 +151,10 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
             files[origPrefix + rest] = data
             files.removeValue(forKey: path)
         }
+        // Folders inside move with it, as on disk.
+        let nested = directories.filter { $0.hasPrefix(tempPrefix) }
+        directories = directories.filter { !$0.hasPrefix(origPrefix) && !$0.hasPrefix(tempPrefix) }
+        for path in nested { directories.insert(origPrefix + String(path.dropFirst(tempPrefix.count))) }
         directories.remove(temp.path)
         directories.insert(original.path)
     }
@@ -186,6 +185,7 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         directories.remove(url.path)
         let prefix = url.path.hasSuffix("/") ? url.path : url.path + "/"
         files = files.filter { !$0.key.hasPrefix(prefix) }
+        directories = directories.filter { !$0.hasPrefix(prefix) }
     }
 
     func fileExists(at url: URL) -> Bool {
@@ -209,7 +209,6 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
 
     func contentsOfDirectory(at url: URL) throws -> [URL] {
         lock.lock(); defer { lock.unlock() }
-        if unlistable.contains(url.path) { throw CocoaError(.fileReadNoPermission) }
         let prefix = url.path.hasSuffix("/") ? url.path : url.path + "/"
         var names = Set<String>()
         for key in files.keys where key.hasPrefix(prefix) {

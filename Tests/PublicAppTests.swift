@@ -837,8 +837,8 @@ struct BulkInputTests {
         let portfolio = Portfolio(name: "Ledger", createdAt: now.addingTimeInterval(-86400 * 30)); doc.portfolios = [portfolio]
         doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: now.addingTimeInterval(-86400 * 10), document: doc)
         let holding = try #require(doc.holdings.first)
-        // An edit earlier today, as Manage makes it.
-        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 2, at: max(UTCDay.start(of: now), now.addingTimeInterval(-60)), document: doc)
+        // An edit earlier today, as Manage makes it (late in the evening west of UTC, at the day's last second, like this one).
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 2, at: UTCDay.moment(for: UTCDay.today(now: now), now: now.addingTimeInterval(-60)), document: doc)
         var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t3", mode: .holdings)
         draft.rows[0].holding.portfolioID = portfolio.id
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc, now: now).document)
@@ -847,6 +847,31 @@ struct BulkInputTests {
         draft.rows[0].holding.quantity = "1"
         let restored = ImportBatchProcessor.evaluate(draft, document: doc, now: now)
         #expect(restored.duplicates == 0 && restored.document?.effectiveQuantity(holdingID: holding.id, at: now) == 1)
+    }
+    @Test("At 11:30 pm in Buenos Aires, already tomorrow in UTC, today's holding and balance are saved under today and tomorrow is refused")
+    func localEvening() throws {
+        let buenosAires = TimeZone(identifier: "America/Argentina/Buenos_Aires")!
+        let sep24 = try ImportDateFormat.iso.date("2026-09-24"), now = sep24.addingTimeInterval(26.5 * 3600)
+        var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t1", mode: .holdings)
+        draft.rows[0].holding.date = "2026-09-24"; draft.rows[0].holding.paid = "60000"
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty(), now: now, timeZone: buenosAires, catalog: []).document)
+        let observed = try #require(saved.quantities.first?.effectiveAt)
+        #expect(UTCDay.start(of: observed) == sep24 && observed <= now)
+        #expect(saved.purchases?.first.map { ImportDateFormat.today($0.at) } == "2026-09-24")
+        let holding = try #require(saved.holdings.first)
+        #expect(saved.effectiveQuantity(holdingID: holding.id, at: now) == 1)
+        // Sep 25 is tomorrow there, though it's today in UTC.
+        draft.rows[0].holding.date = "2026-09-25"
+        #expect(ImportBatchProcessor.evaluate(draft, document: empty(), now: now, timeZone: buenosAires, catalog: []).hasErrors)
+        // A balance saved twice that evening: both fall on the day's last second, and the newer replaces the older.
+        let first = try batch("Account,Currency,Balance,ObservedOn\nChecking,USD,100,2026-09-24", mode: .bankBalances)
+        let one = try #require(ImportBatchProcessor.evaluate(first, document: empty(), now: now, timeZone: buenosAires).document)
+        #expect(one.bankBalances.map { UTCDay.start(of: $0.observedAt) } == [sep24])
+        var second = try batch("Account,Currency,Balance,ObservedOn\nChecking,USD,120,2026-09-24", mode: .bankBalances)
+        let checking = try #require(one.accounts.first)
+        second.rows[0].bank.account = ImportAccount(existingID: checking.id, name: checking.name, currency: "USD")
+        let two = try #require(ImportBatchProcessor.evaluate(second, document: one, now: now.addingTimeInterval(600), timeZone: buenosAires).document)
+        #expect(two.bankBalances.map(\.amount.value) == [120])
     }
     @Test("Restating a total and its cost on the same day replaces that day's purchase lot")
     func restatedLot() throws {
@@ -973,6 +998,9 @@ struct BulkInputTests {
         // Any other file can be switched, which doesn't change which rows count as already saved.
         var generic = try batch("Date,Description,Amount\n2026-01-02,Coffee,4.50\n2026-01-03,Payment,-200", mode: .statements)
         #expect(!generic.sources[0].positiveIsOutflow && !ImportParser.signsKnown(generic.sources[0].grid))
+        // Its negative payment answers the question, so only files with nothing negative are asked about.
+        #expect(generic.sources[0].hasNegativeAmount && amex.sources[0].hasNegativeAmount && !charges.sources[0].hasNegativeAmount)
+        #expect(try batch("Date,Description,Amount\n2026-01-02,Refund,(4.50)", mode: .statements).sources[0].hasNegativeAmount)
         let asWritten = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
         generic.sources[0].positiveIsOutflow = true
         let flipped = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
@@ -1639,7 +1667,108 @@ struct WiseInputTests {
         let reopened = try await vault.unlock()
         #expect(reopened.document.accounts.isEmpty && reopened.document.bankBalances.isEmpty)
     }
+    @Test("Lock replaces everything that belonged to the unlocked vault: drafts, editors, navigation and remembered values start afresh")
+    func lockStartsAfresh() async throws {
+        let (session, _, vault) = harness()
+        await session.create(recovery: .random())
+        let before = session.unlocked
+        // What lock once had to clear field by field: a half-made draft and its editors, a page and its trail, a
+        // request, a note, and values remembered for the document.
+        session.startImport(.holdings); session.importTableMode = true; session.importRequest = .paste; session.importMessage = "Half done"
+        session.addingInMenu = true; session.addOpenedForUpdate = true; session.managementInMenu = true; session.entryEditorInMenu = true
+        #expect(session.handleEscape())
+        #expect(session.backRequests == 1)
+        session.showDashboard(.cashFlow); session.showDashboard(.all, .drill); session.showingSwitcher = true; session.dashboardDetailOpen = true
+        session.dropZoneVisible = true; session.sourceMessage = "Updated"; session.hourlyCache["probe"] = []
+        #expect(session.chartEstimates() != nil && session.latestRate("EUR") == nil && session.dashboardTrail == [.cashFlow])
+        // How you like the dashboard is about this Mac, not the vault, so it stays.
+        session.worthRange = .month; session.holdingSortIndex = 2; session.dashboardHeight = 480
+        session.lock()
+        #expect(session.unlocked !== before && session.document == nil && session.importDraft == nil && session.chartEstimates() == nil)
+        // The vault gains a EUR rate while locked, so a remembered "no EUR rate" would show if the cache survived.
+        let opened = try await vault.unlock()
+        var changed = opened.document
+        changed.fx.append(FXObservation(sourceCurrency: "EUR", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: "1.25")!), providerTime: Date(), fetchedAt: Date(), provider: "Synthetic"))
+        changed.generation += 1
+        try await vault.commit(changed, expectedGeneration: opened.document.generation, sessionID: opened.sessionID)
+        vault.lock()
+        await session.unlock()
+        #expect(session.state == .unlocked && session.latestRate("EUR") == Decimal(string: "1.25"))
+        #expect(session.importDraft == nil && session.importMode == .statements && !session.importTableMode && session.importRequest == nil && session.importMessage == nil)
+        #expect(!session.addingInMenu && !session.addOpenedForUpdate && !session.managementInMenu && !session.entryEditorInMenu && session.backRequests == 0)
+        #expect(session.dashboardSelection == .all && session.dashboardTrail.isEmpty && !session.showingSwitcher && !session.dashboardDetailOpen)
+        #expect(!session.dropZoneVisible && session.sourceMessage == nil && session.hourlyCache.isEmpty)
+        #expect(session.worthRange == .month && session.holdingSortIndex == 2 && session.dashboardHeight == 480)
+    }
+    @Test("Quick saves wait their turn: each lands in the order made, one generation apart, with a background update among them")
+    func savesWaitTheirTurn() async throws {
+        let (session, _, vault) = harness()
+        await session.create(recovery: .random())
+        let start = try #require(session.document?.generation)
+        let quote = QuoteObservation(assetID: PreciousMetal.gold.assetID, priceUSD: PreciseDecimal(100), providerTime: Date(), fetchedAt: Date(), provider: "Synthetic")
+        let names = (0..<8).map { "Account \($0)" }
+        // Started together, as quick taps are: none is refused, and each waits for the one before it.
+        let background = Task { var update = PriceUpdate(); update.quotes = [quote]; try await session.commitPriceUpdate(update) }
+        let edits = names.map { name in Task { try await session.mutate { $0.accounts.append(Account(name: name, currency: "USD")) } } }
+        for edit in edits { try await edit.value }
+        try await background.value
+        #expect(session.document?.accounts.map(\.name) == names && session.document?.generation == start + 9 && !session.isBusy)
+        let saved = try await vault.currentSession().document
+        #expect(saved.accounts.map(\.name) == names && saved.generation == start + 9 && saved.quotes.contains { $0.provider == "Synthetic" })
+        // And they're what the next unlock reads from disk.
+        session.lock(); await session.unlock()
+        #expect(session.document?.accounts.map(\.name) == names && session.document?.generation == start + 9)
+    }
+    @Test("A lock during a save refuses it and the saves waiting their turn; nothing is published and the next unlock reads the last save")
+    func lockDuringSave() async throws {
+        let (session, io, _) = harness()
+        await session.create(recovery: .random())
+        try await session.mutate { $0.accounts.append(Account(name: "Kept", currency: "USD")) }
+        let kept = try #require(session.document?.generation)
+        // The vault actor stops partway through writing the next save until the lock has happened.
+        let writing = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        io.onWrite = { writing.signal(); proceed.wait() }
+        let saving = Task { try await session.mutate { $0.accounts.append(Account(name: "Lost", currency: "USD")) } }
+        await withCheckedContinuation { (reached: CheckedContinuation<Void, Never>) in DispatchQueue.global().async { writing.wait(); reached.resume() } }
+        let queued = Task { try await session.mutate { $0.accounts.append(Account(name: "Also lost", currency: "USD")) } }
+        for _ in 0..<5 { await Task.yield() }
+        session.lock()
+        io.onWrite = nil
+        proceed.signal()
+        await #expect(throws: VaultError.locked) { try await saving.value }
+        await #expect(throws: VaultError.locked) { try await queued.value }
+        #expect(session.state == .locked && session.document == nil && !session.isBusy)
+        await session.unlock()
+        #expect(session.document?.accounts.map(\.name) == ["Kept"] && session.document?.generation == kept)
+    }
+    @Test("The writer is handed on, not polled for: user edits in order and ahead of background work; cancelling or locking turns a waiter away")
+    func writerHandover() async throws {
+        let writers = WriterQueue(), log = TurnLog()
+        try await writers.acquire(background: true)
+        let background = Task { try await writers.acquire(background: true); log.turns.append("background"); writers.release() }
+        let first = Task { try await writers.acquire(background: false); log.turns.append("first"); writers.release() }
+        let second = Task { try await writers.acquire(background: false); log.turns.append("second"); writers.release() }
+        for _ in 0..<5 { await Task.yield() }
+        #expect(log.turns.isEmpty)
+        writers.release()
+        try await background.value; try await first.value; try await second.value
+        #expect(log.turns == ["first", "second", "background"])
+        // A cancelled waiter leaves the line, as a restarted refresh's does.
+        try await writers.acquire(background: true)
+        let cancelled = Task { try await writers.acquire(background: true) }
+        for _ in 0..<5 { await Task.yield() }
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        // A lock turns away whoever is waiting, and nothing is handed on afterwards.
+        let waiting = Task { try await writers.acquire(background: false) }
+        for _ in 0..<5 { await Task.yield() }
+        writers.close()
+        await #expect(throws: VaultError.locked) { try await waiting.value }
+        await #expect(throws: VaultError.locked) { try await writers.acquire(background: true) }
+    }
 }
+/// Who held the writer, in turn.
+@MainActor private final class TurnLog { var turns: [String] = [] }
 #endif
 
 struct MetalHistoryTests {
@@ -2368,5 +2497,22 @@ struct IntradayTests {
         #expect(BankCatalog.suggestions("cha").contains { $0.id == "chase" })
         #expect(BankCatalog.suggestions("bank of am").first?.id == "bank-of-america")
         #expect(BankCatalog.suggestions("").isEmpty)
+    }
+
+    @Test("The currency field keeps three capital letters and suggests real currencies until one is typed")
+    func currencyField() {
+        #expect(CurrencyCodes.cleaned("gbp") == "GBP")
+        #expect(CurrencyCodes.cleaned("e1u-rx") == "EUR")
+        #expect(CurrencyCodes.cleaned("£é") == "")
+        #expect(Array(CurrencyCodes.all.prefix(3)) == ["USD", "EUR", "GBP"])
+        // The same check saving uses.
+        #expect(CurrencyCodes.isValid("CHF") && !CurrencyCodes.isValid("XQZ") && !CurrencyCodes.isValid(""))
+        let english = Locale(identifier: "en_US")
+        #expect(CurrencyCodes.suggestions(for: "", locale: english).isEmpty)
+        #expect(CurrencyCodes.suggestions(for: "GBP", locale: english).isEmpty)
+        #expect(CurrencyCodes.suggestions(for: "G", locale: english).first == "GBP")
+        // By name too, at most five.
+        #expect(CurrencyCodes.suggestions(for: "YEN", locale: english).contains("JPY"))
+        #expect(CurrencyCodes.suggestions(for: "DOL", locale: english).count == 5)
     }
 }

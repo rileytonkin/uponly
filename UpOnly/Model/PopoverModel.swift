@@ -16,11 +16,7 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     private var personalStart: MonthKey?
     private var choseInitialMonth = false
     private var explicitlySelectedMonth = false
-    weak var owner: UpOnlySession?
     var books: [BusinessBook] { document?.businessAccounting ?? [] }
-    var scopeTitle: String {
-        switch scope { case .all: "All"; case .personal: "Personal"; case .business(let id): books.first { $0.id == id }?.name ?? "Company" }
-    }
     var periodTitle: String { period == .monthly ? month.title : period == .annual ? String(month.year) : "All time" }
     // One selection drives both dashboard sections. Asset history must not be
     // anchored to today while the visible selector names a historical month.
@@ -235,7 +231,6 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
                                unavailable: unavailable, businesses: contributions.values.sorted { $0.book.name < $1.book.name }, warnings: warnings.sorted(), missingMonths: missing)
         } catch { return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount) }
     }
-    func markReviewed() { Task { await owner?.perform { doc in if !doc.reviewedMonths.contains(month.description) { doc.reviewedMonths.append(month.description) } } } }
 }
 
 // Review is an explicit user assertion, never inferred from a balance, an import
@@ -301,9 +296,9 @@ nonisolated enum DashboardPeriod {
     }
     /// The saved days a range is drawn from, opening with the close before it starts. A day's sample is its close, so
     /// the day the range starts in already includes hours inside the range: 7D from 2 pm on the 18th opens at the
-    /// 17th's close, not the 18th's.
+    /// 17th's close, not the 18th's. A range ending now ends with today's saved day on this Mac.
     static func samples(in interval: DateInterval, scope: ValuationScope, document: VaultDocument) -> [DailyValuation] {
-        let first = UTCDay.start(of: interval.start).addingTimeInterval(-86400), last = UTCDay.start(of: interval.end)
+        let first = UTCDay.start(of: interval.start).addingTimeInterval(-86400), last = UTCDay.day(of: interval.end)
         return document.dailyValuations.filter {
             guard $0.scope == scope else { return false }
             let day = UTCDay.start(of: $0.utcDay)
