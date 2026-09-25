@@ -19,7 +19,7 @@ nonisolated enum PriceError: LocalizedError {
         }
     }
 }
-private final class NoPriceRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+final class NoPriceRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
 /// Hosts that answered 429, and when they may be called again.
