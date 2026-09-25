@@ -181,6 +181,41 @@ struct UpOnlyAmountEntry: View {
         }.frame(maxWidth: .infinity)
     }
 }
+/// A currency as a form row: USD unless you type another code, with matching currencies (by code or name) offered
+/// underneath while typing.
+struct UpOnlyCurrencyRows: View {
+    @Binding var code: String
+    var divided = true
+    @FocusState private var focused: Bool
+    private static let codes: [String] = {
+        // The ones people most often hold first, then every other common code.
+        let first = ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "HKD", "SGD", "INR", "BRL", "MXN", "COP", "ARS", "CLP", "PEN", "NZD", "SEK", "NOK", "DKK", "PLN", "AED", "ZAR", "KRW", "TRY"]
+        return first + Locale.commonISOCurrencyCodes.filter { !first.contains($0) }.sorted()
+    }()
+    private static func name(_ code: String) -> String { Locale.current.localizedString(forCurrencyCode: code) ?? code }
+    private var suggestions: [String] {
+        let typed = code.trimmingCharacters(in: .whitespaces).uppercased()
+        guard focused, !typed.isEmpty, !(typed.count == 3 && Self.codes.contains(typed)) else { return [] }
+        return Array(Self.codes.filter { $0.hasPrefix(typed) || Self.name($0).localizedCaseInsensitiveContains(typed) }.prefix(3))
+    }
+    var body: some View {
+        UpOnlyFormRow(label: "Currency", divided: divided) {
+            TextField("USD", text: $code).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
+                .focused($focused).accessibilityLabel("Currency code")
+                // Three letters, capitals, as currency codes are written.
+                .onChange(of: code) { _, next in
+                    let clean = String(next.uppercased().filter(\.isLetter).prefix(3))
+                    if clean != next { code = clean }
+                }
+        }
+        ForEach(suggestions, id: \.self) { choice in
+            ManageRow(title: choice, caption: Self.name(choice), divided: true, action: { code = choice; focused = false }) {
+                Text(Locale(identifier: "en_US@currency=" + choice).currencySymbol ?? choice).font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.6)
+                    .frame(width: 24, height: 24).background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+            } menu: { EmptyView() }
+        }
+    }
+}
 /// A form row's value that opens a choice: the value and a small chevron, as a date or a menu.
 struct UpOnlyFormValue: View {
     var value: String

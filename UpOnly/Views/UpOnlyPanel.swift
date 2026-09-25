@@ -352,7 +352,7 @@ struct UpOnlyUnlockedPanel: View {
                 .accessibilityIdentifier("ManageUpOnly")
             UpOnlyPrivacyButton(inMenu: true)
             Divider()
-            Button { session.lockAndAuthenticate() } label: { Label("Lock", systemImage: "lock") }
+            Button { session.lockAndClose() } label: { Label("Lock", systemImage: "lock") }
                 .keyboardShortcut("l", modifiers: .command).accessibilityLabel("Lock Up Only")
         } label: {
             Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold))

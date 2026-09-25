@@ -397,6 +397,15 @@ final class UpOnlySession {
         authenticationContext?.invalidate(); authenticationContext = nil
     }
 
+    /// Closes the menu bar menu, set by the app. Nil in the preview window, where there's no menu to close.
+    var closeMenuHandler: (() -> Void)?
+    /// Lock from the menu: it closes first, then locks, and the next opening asks for Touch ID. Starting Touch ID
+    /// while the menu shrank to the lock pill made macOS flash its own prompt in the middle of the screen.
+    func lockAndClose() {
+        guard let closeMenuHandler else { lockAndAuthenticate(); return }
+        closeMenuHandler()
+        lock()
+    }
     func lockAndAuthenticate() {
         lock()
         // Re-arm the embedded fingerprint only. Without Touch ID, asking to lock shouldn't pop a password dialog.
@@ -1517,7 +1526,7 @@ extension UpOnlySession {
     }
     private func validateSourceKey(_ key: String, prices: Bool) throws {
         guard key.utf8.count <= 512, !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              !prices || !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ImportFailure("Paste a valid API key from your provider, without line breaks.") }
+              true else { throw ImportFailure("Paste a valid API key from your provider, without line breaks.") }
     }
     func saveSources(prices: Bool, fx: Bool, key: String, metals: Bool? = nil, metalKey: String? = nil, wise: Bool? = nil) async throws {
         try validateSourceKey(key, prices: prices)

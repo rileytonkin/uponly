@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 // Small views, styles and dashboard arithmetic shared across pages.
 
@@ -189,29 +190,104 @@ struct UpOnlyPrivacyButton: View {
     }
 }
 
-/// Logos of banks people use, bundled with the app like the coins' (none is fetched), matched from an account's name.
+/// One bank the app knows, from the bundled catalog: about a thousand of the world's biggest banks, neobanks, wallets
+/// and brokers, each with its own app icon. Nothing is fetched; the list ships with the app.
+nonisolated struct BankCatalogEntry: Decodable, Sendable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let aliases: [String]
+    /// ISO country codes, or "GLOBAL".
+    let countries: [String]
+    let kind: String
+    let logo: Bool
+    /// "United Kingdom", "Neobank · Brazil", "Worldwide": where it is, for telling same-named banks apart.
+    var caption: String {
+        let places = countries.contains("GLOBAL") ? ["Worldwide"] : countries.prefix(2).compactMap { Locale.current.localizedString(forRegionCode: $0) }
+        let place = places.joined(separator: ", ") + (countries.count > 2 && !countries.contains("GLOBAL") ? " and more" : "")
+        let kinds = ["neobank": "Neobank", "broker": "Broker", "wallet": "Wallet", "crypto": "Crypto exchange", "credit-union": "Credit union",
+                     "building-society": "Building society", "card": "Cards", "mobile-money": "Mobile money", "cooperative": "Cooperative"]
+        return [kinds[kind], place.isEmpty ? nil : place].compactMap { $0 }.joined(separator: " · ")
+    }
+    /// The currency an account here most likely holds: this Mac's region's if the bank is there, else its first country's.
+    var currency: String? {
+        let region = Locale.current.region?.identifier
+        guard let country = countries.first(where: { $0 == region }) ?? countries.first(where: { $0 != "GLOBAL" }) else { return nil }
+        return Locale(identifier: "en_" + country).currency?.identifier
+    }
+}
+nonisolated enum BankCatalog {
+    static let all: [BankCatalogEntry] = {
+        guard let data = NSDataAsset(name: "BankCatalog")?.data else { return [] }
+        return (try? JSONDecoder().decode([BankCatalogEntry].self, from: data)) ?? []
+    }()
+    /// Lower-case words without accents, so "Itaú" and "itau" match.
+    static func words(_ text: String) -> [String] {
+        text.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: nil).lowercased()
+            .split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    }
+    /// Words too common to name a bank on their own ("Joint", "Savings", "First").
+    private static let common: Set<String> = ["bank", "banco", "banca", "banque", "banks", "savings", "saving", "cash", "card", "cards", "wallet",
+        "pay", "money", "credit", "debit", "first", "national", "capital", "personal", "business", "joint", "account", "accounts", "current",
+        "checking", "main", "everyday", "international", "global", "trust", "union", "federal", "mutual", "digital", "direct", "online", "mobile",
+        "one", "plus", "prime", "united", "community", "citizens", "peoples", "state", "city", "commerce", "investment", "invest", "finance",
+        "financial", "group", "home", "usd", "eur", "gbp", "the", "de", "do", "da", "del", "la", "le", "of", "and", "y", "e"]
+    /// Each bank's name and aliases as word sequences, longest first so "Bank of America" wins over "America".
+    private static let phrases: [(words: [String], index: Int)] = {
+        var list: [(words: [String], index: Int)] = []
+        for (index, bank) in all.enumerated() {
+            for text in [bank.name] + bank.aliases {
+                let phrase = words(text)
+                // A lone short or everyday word would match far too much.
+                if phrase.isEmpty || (phrase.count == 1 && (phrase[0].count < 3 || common.contains(phrase[0]))) { continue }
+                list.append((phrase, index))
+            }
+        }
+        return list.sorted { $0.words.count != $1.words.count ? $0.words.count > $1.words.count : $0.index < $1.index }
+    }()
+    /// Each bank's name and aliases as words, worked out once for typing suggestions.
+    private static let searchable: [(name: [String], aliases: [[String]])] = all.map { (words($0.name), $0.aliases.map(words)) }
+    private static let cache = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
+    /// The bank an account called `name` is at: a bank's name or alias as whole words in it ("Monzo Joint" is Monzo).
+    static func bank(named name: String) -> BankCatalogEntry? {
+        if let hit = cache.withLock({ $0[name] }) { return hit < 0 ? nil : all[hit] }
+        let account = words(name)
+        let exact = all.firstIndex { words($0.name) == account }
+        let found = exact ?? phrases.first { phrase in
+            account.count >= phrase.words.count && (0...(account.count - phrase.words.count)).contains { Array(account[$0..<($0 + phrase.words.count)]) == phrase.words }
+        }?.index
+        cache.withLock { $0[name] = found ?? -1 }
+        return found.map { all[$0] }
+    }
+    /// Banks for what's being typed: names (then aliases) whose words start with it, banks in this Mac's region
+    /// first, then the biggest.
+    static func suggestions(_ query: String, limit: Int = 5) -> [BankCatalogEntry] {
+        let typed = words(query)
+        guard !typed.isEmpty else { return [] }
+        let region = Locale.current.region?.identifier, prefix = typed.joined(separator: " ")
+        func score(_ target: [String]) -> Int {
+            if target.joined(separator: " ").hasPrefix(prefix) { return 3 }
+            // Every typed word starts some word of the name, in order: "bank am" finds "Bank of America".
+            var position = 0
+            for word in typed {
+                guard let next = target[position...].firstIndex(where: { $0.hasPrefix(word) }) else { return 0 }
+                position = next + 1
+                if position > target.count { return 0 }
+            }
+            return 2
+        }
+        let ranked = all.enumerated().compactMap { index, bank -> (bank: BankCatalogEntry, score: Int, index: Int)? in
+            let best = max(score(searchable[index].name), searchable[index].aliases.contains { score($0) > 0 } ? 1 : 0)
+            guard best > 0 else { return nil }
+            return (bank, best * 2 + (region.map { bank.countries.contains($0) } == true ? 1 : 0), index)
+        }
+        return ranked.sorted { $0.score != $1.score ? $0.score > $1.score : $0.index < $1.index }.prefix(limit).map(\.bank)
+    }
+}
+/// The logo for an account, matched from its name; a synced account comes from Wise.
 nonisolated enum BankLogos {
-    /// Name words or phrases, and the logo each means.
-    static let names: [(match: String, logo: String)] = [
-        ("monzo", "monzo"), ("wise", "wise"), ("transferwise", "wise"), ("kast", "kast"), ("onesafe", "onesafe"), ("revolut", "revolut"),
-        ("starling", "starling"), ("n26", "n26"), ("chase", "chase"), ("bank of america", "bank-of-america"), ("wells fargo", "wells-fargo"),
-        ("citi", "citi"), ("citibank", "citi"), ("capital one", "capital-one"), ("amex", "american-express"), ("american express", "american-express"),
-        ("schwab", "schwab"), ("vanguard", "vanguard"), ("barclays", "barclays"), ("hsbc", "hsbc"), ("lloyds", "lloyds"), ("halifax", "halifax"),
-        ("nationwide", "nationwide"), ("anz", "anz"), ("nab", "nab"), ("ubs", "ubs"), ("mercury", "mercury"), ("brex", "brex"), ("paypal", "paypal"),
-        ("payoneer", "payoneer"), ("coinbase", "coinbase"), ("kraken", "kraken"), ("binance", "binance"), ("ally", "ally"), ("sofi", "sofi"),
-        ("chime", "chime"), ("bunq", "bunq"), ("nubank", "nubank"), ("bancolombia", "bancolombia"), ("dbs", "dbs"), ("ocbc", "ocbc"), ("td", "td"),
-        ("bmo", "bmo"), ("goldman sachs", "goldman-sachs"), ("marcus", "goldman-sachs"), ("morgan stanley", "morgan-stanley"),
-        ("interactive brokers", "interactive-brokers"), ("ibkr", "interactive-brokers"), ("robinhood", "robinhood"), ("trading 212", "trading-212"),
-        ("monese", "monese"), ("metro bank", "metro-bank"), ("deutsche bank", "deutsche-bank"), ("bnp", "bnp-paribas"), ("credit agricole", "credit-agricole"),
-        ("stripe", "stripe"), ("emirates nbd", "emirates-nbd"), ("standard chartered", "standard-chartered"), ("macquarie", "macquarie"),
-    ]
-    /// The logo for an account called `name`; a synced account comes from Wise.
     static func logo(for name: String, synced: Bool = false) -> String? {
         if synced { return "wise" }
-        let lower = name.lowercased()
-        let words = lower.split { !$0.isLetter && !$0.isNumber }.map(String.init)
-        let joined = " " + words.joined(separator: " ") + " "
-        return names.first { joined.contains(" " + $0.match + " ") }?.logo
+        return BankCatalog.bank(named: name).flatMap { $0.logo ? $0.id : nil }
     }
 }
 /// A bank at a glance: its logo when it's one the app knows, else a picture (a Wise profile's), else the bank symbol.
