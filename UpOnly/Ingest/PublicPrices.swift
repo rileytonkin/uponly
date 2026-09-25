@@ -627,6 +627,28 @@ extension PublicPrices {
     }
 
     /// Binance's pair against USDT for a ticker, or nil when it can't be one.
+    /// A past day's closing price in dollars, per coin or per gram of gold, for filling in what a purchase cost.
+    /// Coins: CoinGecko's prices for that day within the past year, else the coin's Binance pair (checked against
+    /// today's price, since a ticker can belong to two coins). Gold: Binance's PAXG. Nil when none is published.
+    static func closingPrice(assetID: String, symbol: String?, day: Date, today: Decimal?, key: String, now: Date = Date()) async -> Decimal? {
+        let start = UTCDay.start(of: day), end = start.addingTimeInterval(86400)
+        guard end <= now else { return nil }
+        func binanceClose(_ pair: String) async -> Decimal? {
+            guard let data = try? await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1")]) else { return nil }
+            return (try? decodeKlines(data, asset: CanonicalAssetID(rawValue: pair), start: start, end: end, fetchedAt: now))?.last?.priceUSD.value
+        }
+        if let metal = PreciousMetal.asset(CanonicalAssetID(rawValue: assetID)) {
+            guard metal == .gold, let ounce = await binanceClose("PAXGUSDT") else { return nil }
+            return try? PriceHistory.pricePerGram(ounce)
+        }
+        if now.timeIntervalSince(start) < 364 * 86400,
+           let data = try? await request(host: "api.coingecko.com", path: "/api/v3/coins/" + assetID + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(end.timeIntervalSince1970)))], key: key),
+           let price = (try? PriceHistory.decodeCrypto(data, request: PriceHistoryRequest(source: .crypto, key: "asset:" + assetID, identifier: assetID, start: start, end: end), fetchedAt: now))?.last?.priceUSD.value {
+            return price
+        }
+        guard let symbol, let pair = binancePair(symbol), let today, await binanceMatches(pair: pair, reference: today, now: now) else { return nil }
+        return await binanceClose(pair)
+    }
     static func binancePair(_ symbol: String) -> String? {
         let upper = symbol.uppercased()
         guard (2...12).contains(upper.count), upper.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }), upper != "USDT" else { return nil }

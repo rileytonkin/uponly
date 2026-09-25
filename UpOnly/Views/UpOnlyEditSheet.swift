@@ -7,6 +7,8 @@ struct UpOnlyEditSheet: View {
     var compact = true
     let onCancel: () -> Void
     let onSave: () -> Void
+    /// The Add page's confirmation, for a new transaction; given, it's called instead of `onSave`.
+    var onSaved: ((UpOnlySavedSummary) -> Void)? = nil
     @State private var name = ""
     @State private var currency = "USD"
     @State private var amount = ""
@@ -107,8 +109,7 @@ struct UpOnlyEditSheet: View {
         let books = session.document?.businessAccounting ?? []
         return VStack(spacing: 16) {
             VStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: entryKind == .income ? "arrow.down.left" : entryKind == .refund ? "arrow.uturn.backward" : entryKind == .transfer ? "arrow.left.arrow.right" : "arrow.up.right",
-                                  tint: entryKind == .income || entryKind == .refund ? UpOnlyTint.gain : entryKind == .transfer ? .secondary : UpOnlyTint.cashFlow, size: 44)
+                UpOnlySymbolBadge(symbol: Self.kindBadge(entryKind).symbol, tint: Self.kindBadge(entryKind).tint, size: 44)
                 UpOnlyAmountEntry(text: $amount, unit: currency.uppercased().nilIfEmpty ?? "USD", sign: kindSign(entryKind),
                                   tint: entryKind == .income || entryKind == .refund ? UpOnlyTint.gain : .primary, label: "Amount", focused: $amountFocused)
                 Text(meaning(entryKind, books: books)).font(UpOnlyType.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -139,6 +140,15 @@ struct UpOnlyEditSheet: View {
                     }
                 }
             }
+        }
+    }
+    /// Which way the money moved, as an arrow: out for spending, in for income, back for a refund, across for a transfer.
+    static func kindBadge(_ kind: EntryKind) -> (symbol: String, tint: Color) {
+        switch kind {
+        case .income: ("arrow.down.left", UpOnlyTint.gain)
+        case .refund: ("arrow.uturn.backward", UpOnlyTint.gain)
+        case .transfer: ("arrow.left.arrow.right", Color.secondary)
+        case .expense: ("arrow.up.right", UpOnlyTint.cashFlow)
         }
     }
     /// How the transaction will count, in a sentence, so the type and "for" choices explain themselves.
@@ -346,6 +356,13 @@ struct UpOnlyEditSheet: View {
             case .entry:
                 let entry = try validEntry()
                 try await session.mutate { doc in doc.entries.append(entry); doc.track(.cashFlow) }
+                if let onSaved {
+                    let badge = Self.kindBadge(entry.kind)
+                    let when = dayKnown ? date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) : MonthKey(entry.month)?.title ?? entry.month
+                    onSaved(UpOnlySavedSummary(title: "Transaction saved", amount: kindSign(entry.kind) + readBack(entry.amount, fraction: 2...2), unit: entry.currency,
+                                               detail: entry.label + " · " + when, badge: .symbol(badge.symbol, badge.tint), destination: ("Open Income & spending", .cashFlow)))
+                    return
+                }
             case .editEntry(let original):
                 let edited = try validEntry()
                 // Replaced in place: same identity and position, so filters and the review keep pointing at it.
