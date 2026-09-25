@@ -86,7 +86,8 @@ nonisolated struct QuantityObservation: Codable, Sendable, Equatable {
     }
 }
 
-/// What was paid for an increase in a holding. Optional; quantities stay the source of truth.
+/// What was paid for an increase in a holding. Optional; quantities stay the source of truth. Moving coins to another
+/// portfolio adds one there, dated the move, for the share of cost they take with them.
 nonisolated struct PurchaseLot: Codable, Identifiable, Sendable, Equatable {
     var id = UUID()
     var holdingID: UUID

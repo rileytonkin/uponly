@@ -55,6 +55,14 @@ nonisolated struct OwnershipPeriod: Codable, Sendable, Equatable {
 }
 extension BusinessBook {
     func ownership(at month: String) -> OwnershipPeriod? { ownership.filter { $0.fromMonth <= month }.max { $0.fromMonth < $1.fromMonth } }
+    /// Whether `month` should say its accounting is saved and a refresh is needed: only when the last fetch is over a
+    /// day old, and only for months a refresh could still change: the current one, and last month while it's
+    /// unreported. Older months are settled, so a stale fetch doesn't make every month provisional.
+    func needsRefresh(for month: MonthKey, now: Date = Date()) -> Bool {
+        guard now.timeIntervalSince(fetchedAt) > 86400 else { return false }
+        let current = MonthKey.current(now: now)
+        return month == current || (month == current.previous && !months.contains { $0.month == month.description })
+    }
 }
 
 /// Successful source updates cannot erase a different company's cached history.
@@ -414,11 +422,16 @@ nonisolated enum OwnerPayments {
         }
     }
     static func isCompanyCounterparty(_ label: String, month: String, document: VaultDocument) -> Bool {
+        company(for: label, month: month, document: document) != nil
+    }
+    /// The ID of the connected company `label` names exactly, among those you own part of in `month`; the first
+    /// configured one if two share the name.
+    static func company(for label: String, month: String, document: VaultDocument) -> String? {
         let name = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return false }
-        return (document.businessAccounting ?? []).contains { book in
+        guard !name.isEmpty else { return nil }
+        return (document.businessAccounting ?? []).first { book in
             guard let ownership = book.ownership(at: month), ownership.numerator > 0 else { return false }
             return (book.transferCounterparties ?? privateCounterparties[book.id] ?? []).contains { $0.caseInsensitiveCompare(name) == .orderedSame }
-        }
+        }?.id
     }
 }

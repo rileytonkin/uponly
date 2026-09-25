@@ -168,6 +168,9 @@ nonisolated struct MonthTotals {
     /// USD paid to you by a connected company. Included in `moneyIn` and `personalIncome`;
     /// "All" replaces it with your share of that company's profit.
     var ownerPayments: Decimal = 0
+    /// `ownerPayments` by company ID. "All" takes a company's payments out only when it adds that company's profit
+    /// share; until then they stay income, so an unreported month doesn't lose money you were paid.
+    var ownerPaymentsByCompany: [String: Decimal] = [:]
     var net: Decimal { moneyIn - moneyOut + otherBusiness }
 }
 nonisolated struct CurrencyMonthTotals: Identifiable {
@@ -221,24 +224,26 @@ nonisolated enum MonthlyLedger {
         if books.isEmpty { return result }
         let personalUnavailable = result.unavailable != nil
         var partial = result.totals ?? MonthTotals()
-        // Company profit already includes what the company paid you, so the payment itself is not counted again here.
-        if partial.ownerPayments != 0, let moneyIn = try? MoneyInput.add(partial.moneyIn, -partial.ownerPayments), let income = try? MoneyInput.add(partial.personalIncome, -partial.ownerPayments) {
-            partial.moneyIn = moneyIn; partial.personalIncome = income
-        }
-        var missing: [String] = []
+        var missing: [String] = [], netted = Decimal.zero
+        let now = Date()
         for book in books {
             let observation = book.months.first { $0.month == monthID }
             let ownership = book.ownership(at: monthID)
             let share = observation.flatMap { row in ownership.flatMap { try? $0.portion(row.profitUSD) } }
             result.businesses.append(BusinessContribution(book: book, observation: observation, share: share, ownershipLabel: ownership?.label ?? "Ownership missing"))
             if let share {
-                var total = partial
-                guard let sum = try? MoneyInput.add(total.otherBusiness, share) else { return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount) }
-                total.otherBusiness = sum; partial = total
+                // Company profit already includes what the company paid you, so its payments are swapped for the share
+                // rather than counted twice. A company whose profit isn't added keeps its payments as income.
+                let paid = partial.ownerPaymentsByCompany[book.id] ?? 0
+                guard let sum = try? MoneyInput.add(partial.otherBusiness, share), let moneyIn = try? MoneyInput.add(partial.moneyIn, -paid),
+                      let income = try? MoneyInput.add(partial.personalIncome, -paid), let swapped = try? MoneyInput.add(netted, paid) else {
+                    return PanelState(totals: nil, isEstimated: true, waitingCaption: "An amount is outside the supported range", unavailable: .invalidAmount)
+                }
+                partial.otherBusiness = sum; partial.moneyIn = moneyIn; partial.personalIncome = income; netted = swapped
             } else { missing.append(book.name) }
             if let warning = book.warning { result.warnings.append(book.name + ": " + warning) }
             if let warning = observation?.warning { result.warnings.append(book.name + ": " + warning) }
-            if Date().timeIntervalSince(book.fetchedAt) > 86400 { result.warnings.append(book.name + ": showing saved accounting; refresh needed.") }
+            if book.needsRefresh(for: month, now: now) { result.warnings.append(book.name + ": showing saved accounting; refresh needed.") }
             result.isEstimated = result.isEstimated || observation?.estimated == true || !result.warnings.isEmpty
         }
         result.partialTotals = partial
@@ -251,7 +256,7 @@ nonisolated enum MonthlyLedger {
             if result.unavailable == .noEntries { result.waitingCaption = "Personal income and spending are not recorded for this month. Your known business shares are shown below." }
         } else if result.unavailable == nil {
             result.totals = partial
-            result.waitingCaption = result.warnings.isEmpty ? (partial.ownerPayments != 0 ? "Outside income − personal spending + your share of business profit. Company payments to you are counted through profit, not twice." : "Personal income − personal spending + your share of business profit.") : "Accounting includes estimates or checks needing review."
+            result.waitingCaption = result.warnings.isEmpty ? (netted != 0 ? "Outside income − personal spending + your share of business profit. Company payments to you are counted through profit, not twice." : "Personal income − personal spending + your share of business profit.") : "Accounting includes estimates or checks needing review."
         }
         return result
     }
@@ -287,7 +292,10 @@ nonisolated enum MonthlyLedger {
                 else { totals.moneyOut = try MoneyInput.add(totals.moneyOut, spent) }
                 if e.kind == .income {
                     totals.personalIncome = try MoneyInput.add(totals.personalIncome, value)
-                    if OwnerPayments.isCompanyCounterparty(e.label, month: monthID, document: document) { totals.ownerPayments = try MoneyInput.add(totals.ownerPayments, value) }
+                    if let company = OwnerPayments.company(for: e.label, month: monthID, document: document) {
+                        totals.ownerPayments = try MoneyInput.add(totals.ownerPayments, value)
+                        totals.ownerPaymentsByCompany[company] = try MoneyInput.add(totals.ownerPaymentsByCompany[company] ?? 0, value)
+                    }
                 } else { totals.personalSpend = try MoneyInput.add(totals.personalSpend, spent) }
             }
             _ = try MoneyInput.add(totals.moneyIn, -totals.moneyOut)
