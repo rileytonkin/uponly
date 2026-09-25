@@ -156,6 +156,8 @@ final class UpOnlySession {
     private(set) var authenticationContext: LAContext?
     private(set) var passwordUnlockRequested = false
     private(set) var authenticationFailed = false
+    /// Unlock found only the recovery file an unfinished setup left (`VaultLayout.holdsOnlyWrapper`): the lock screen offers Start over.
+    private(set) var canStartOver = false
     @ObservationIgnored private(set) var unlockTiming: UnlockTiming?
     var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
     /// Privacy mode's stand-in factor: amounts show scaled by it, so they look real but say nothing. Nil when figures
@@ -392,6 +394,8 @@ final class UpOnlySession {
         } catch VaultError.needsRecovery { if sessionToken == token { state = .recovery } }
         catch VaultError.cancelled { if sessionToken == token { authenticationFailed = true } }
         catch VaultError.keychainUnavailable(_) { if sessionToken == token { authenticationFailed = true; message = "macOS couldn’t access this app’s secure storage. Please reopen the updated app and try again." } }
+        catch VaultError.unknownSchema { if sessionToken == token { authenticationFailed = true; message = Self.newerVersionNotice } }
+        catch VaultError.notFound where layout.holdsOnlyWrapper(vault.io) { if sessionToken == token { canStartOver = true } }
         catch { if sessionToken == token { authenticationFailed = true; message = "Your vault could not be opened. Please try unlocking again." } }
     }
 
@@ -432,7 +436,18 @@ final class UpOnlySession {
             publish(opened.document, freshUnlock: true)
             if await vault.openedPrevious { message = Self.previousCopyNotice }
         } catch VaultError.cancelled { }
+        catch VaultError.unknownSchema { if sessionToken == token { message = Self.newerVersionNotice } }
         catch { if sessionToken == token { message = "That recovery code could not open this vault." } }
+    }
+
+    /// Start over, when setup stopped before saving the vault: its unused recovery file is moved beside the vault folder,
+    /// never deleted, and setup begins again.
+    func startOver() async {
+        guard canStartOver, !isBusy else { return }
+        canStartOver = false
+        do { _ = try await vault.startOver() }
+        catch { message = "Up Only couldn’t start over, so nothing was moved. Try unlocking again." }
+        state = layout.holdsVault(vault.io) ? .locked : .newVault
     }
 
     func returnToUnlock() {
@@ -761,6 +776,7 @@ final class UpOnlySession {
     }
 
     static let previousCopyNotice = "Your vault file was damaged, so Up Only opened the copy from your previous save. Your most recent change may be missing."
+    static let newerVersionNotice = "This vault was saved by a newer version of Up Only. Update the app to open it."
     static let inactivityInterval: TimeInterval = 5 * 60
     func recordActivity(at date: Date = Date()) { lastActivity = date }
     func handleActivity(at date: Date = Date()) {

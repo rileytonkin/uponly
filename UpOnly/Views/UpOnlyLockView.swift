@@ -12,7 +12,8 @@ struct UpOnlyLockView: View {
     @State private var recoveryText = ""
     @State private var showRecovery = false
     @State private var showRestore = false
-    private var compactUnlock: Bool { session.state == .locked && !showRecovery && !showRestore }
+    @State private var confirmingStartOver = false
+    private var compactUnlock: Bool { session.state == .locked && !showRecovery && !showRestore && !session.canStartOver }
     private var codeIsComplete: Bool { (try? RecoveryCode(canonical: recoveryText)) != nil }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -79,6 +80,18 @@ struct UpOnlyLockView: View {
                         Text("Restore an encrypted backup…").fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity)
                     }.buttonStyle(.bordered)
                 }.controlSize(.large).disabled(session.isBusy)
+            } else if session.canStartOver && session.state == .locked {
+                // Setup stopped after saving the recovery file and before the vault, so there is nothing to unlock.
+                UpOnlyWordmark(width: 64)
+                if confirmingStartOver {
+                    UpOnlyConfirmation(title: "Start over?", detail: "Setup begins again. The unused recovery file is kept beside the vault folder.",
+                                       confirmTitle: "Start over", confirm: { confirmingStartOver = false; Task { await session.startOver() } },
+                                       cancel: { confirmingStartOver = false })
+                } else {
+                    Text("Setup didn’t finish").font(UpOnlyType.title)
+                    Text("No vault was saved, so there’s nothing to unlock.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button("Start over…") { confirmingStartOver = true }.buttonStyle(.glassProminent).disabled(session.isBusy)
+                }
             } else {
                 // The logo and the fingerprint side by side in a small pill, nothing between them.
                 HStack(spacing: 10) {

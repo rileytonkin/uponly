@@ -18,27 +18,52 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
     var wiseEnabled: Bool = false
     var accountingEnabled: Bool = false
     static var service: String { (Bundle.main.bundleIdentifier ?? "org.uponly") + ".background" }
-    /// In the data-protection Keychain, like the vault key, in the app's default access group (the first of its
-    /// keychain-access-groups), on this Mac only. Readable from the Mac's first unlock, so refreshes run while the vault is locked.
-    private static var item: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "sources",
-         kSecAttrSynchronizable as String: kCFBooleanFalse as Any, kSecUseDataProtectionKeychain as String: true]
-    }
-    /// Where earlier builds kept it: the login keychain.
-    private static var legacyItem: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "sources",
-         kSecUseDataProtectionKeychain as String: false]
-    }
-    static func load() throws -> Self? {
-        if let data = try read(item) { return try JSONDecoder().decode(Self.self, from: data) }
-        // Moved once: the old item is deleted only after the new one is saved, and keeps working until then.
-        guard let data = try? read(legacyItem) else { return nil }
+    /// Moved once from the login keychain, where earlier builds kept it, and only when nothing is saved in its new place.
+    /// The old item is deleted only after the new one is saved, and keeps working until then. An item that can't be read
+    /// now, old or new, is never taken for none: loading fails and tries again next time, so nothing is replaced or orphaned.
+    static func load(from keychain: BackgroundConfigurationStore = BackgroundKeychain()) throws -> Self? {
+        if let data = try keychain.read(legacy: false) { return try JSONDecoder().decode(Self.self, from: data) }
+        guard let data = try keychain.read(legacy: true) else { return nil }
         let legacy = try JSONDecoder().decode(Self.self, from: data)
-        if (try? legacy.save()) != nil { _ = SecItemDelete(legacyItem as CFDictionary) }
+        // Saved as it was read, so nothing in it is lost on the way.
+        if (try? keychain.save(data)) != nil { keychain.deleteLegacy() }
         return legacy
     }
-    private static func read(_ match: [String: Any]) throws -> Data? {
-        var query = match
+    func save(to keychain: BackgroundConfigurationStore = BackgroundKeychain()) throws {
+        try keychain.save(JSONEncoder().encode(self))
+    }
+}
+/// Where the background configuration is kept: the Keychain in the app, a stand-in in tests.
+protocol BackgroundConfigurationStore: Sendable {
+    /// The saved bytes, or nil if there are none. Throws when there may be some that can't be read now.
+    nonisolated func read(legacy: Bool) throws -> Data?
+    /// Saves to the current item, replacing what's there.
+    nonisolated func save(_ data: Data) throws
+    /// Deletes the item earlier builds saved.
+    nonisolated func deleteLegacy()
+}
+nonisolated struct BackgroundKeychain: BackgroundConfigurationStore {
+    /// In the data-protection Keychain, like the vault key, in the app's default access group (the first of its
+    /// keychain-access-groups), on this Mac only. Readable from the Mac's first unlock, so refreshes run while the vault is locked.
+    var item: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: BackgroundConfiguration.service, kSecAttrAccount as String: "sources",
+         kSecAttrSynchronizable as String: kCFBooleanFalse as Any, kSecUseDataProtectionKeychain as String: true]
+    }
+    /// Where earlier builds kept it: the login keychain, with the same service and account.
+    var legacyItem: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: BackgroundConfiguration.service, kSecAttrAccount as String: "sources",
+         kSecUseDataProtectionKeychain as String: false]
+    }
+    /// A new item's attributes: the item, its label and its protection class.
+    func addition(_ data: Data) -> [String: Any] {
+        var add = item
+        add[kSecValueData as String] = data
+        add[kSecAttrLabel as String] = "Up Only background sources"
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return add
+    }
+    func read(legacy: Bool) throws -> Data? {
+        var query = legacy ? legacyItem : item
         query[kSecReturnData as String] = true
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var result: CFTypeRef?
@@ -47,16 +72,14 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
         guard status == errSecSuccess, let data = result as? Data else { throw ImportFailure("Background source configuration is unavailable.") }
         return data
     }
-    func save() throws {
-        let data = try JSONEncoder().encode(self)
-        let status = SecItemUpdate(Self.item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+    func save(_ data: Data) throws {
+        let status = SecItemUpdate(item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
-            var add = Self.item
-            add[kSecValueData as String] = data
-            add[kSecAttrLabel as String] = "Up Only background sources"
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw ImportFailure("Background sources could not be saved.") }
+            guard SecItemAdd(addition(data) as CFDictionary, nil) == errSecSuccess else { throw ImportFailure("Background sources could not be saved.") }
         } else if status != errSecSuccess { throw ImportFailure("Background sources could not be updated.") }
+    }
+    func deleteLegacy() {
+        _ = SecItemDelete(legacyItem as CFDictionary)
     }
 }
 // In an extension, so the memberwise initializer stays.
