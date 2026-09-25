@@ -2,6 +2,8 @@ import Foundation
 
 nonisolated enum VaultSchema {
     static let document = 1
+    /// Every document schema this build can open. A file naming any other was made by a newer version.
+    static let documents = 1...document
     static let envelope = 1
     static let persistedFile = 1
     static let recoveryWrapper = 1

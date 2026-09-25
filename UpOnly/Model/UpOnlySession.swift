@@ -233,7 +233,7 @@ final class UpOnlySession {
         liveAuthenticator = authenticator
         vault = VaultStore(layout: layout, io: DiskFileIO(), keys: KeychainVaultKeyStore(), authenticator: authenticator)
         #endif
-        state = vault.io.fileExists(at: layout.current) ? .locked : .newVault
+        state = layout.holdsVault(vault.io) ? .locked : .newVault
         if !isFixture {
             installLockObservers()
             let monitor = NWPathMonitor()
@@ -373,7 +373,7 @@ final class UpOnlySession {
         } catch VaultError.cancelled { }
         catch {
             if sessionToken == token {
-                state = vault.io.fileExists(at: layout.current) ? .locked : .newVault
+                state = layout.holdsVault(vault.io) ? .locked : .newVault
                 message = state == .newVault
                     ? "Your vault could not be created. Setup hasn’t finished; please try again."
                     : "Setup could not finish. Your saved vault is still here; try unlocking to continue."
@@ -397,7 +397,7 @@ final class UpOnlySession {
 
     func returnToUnlock() {
         guard !isBusy, state != .unlocked else { return }
-        state = vault.io.fileExists(at: layout.current) ? .locked : .newVault
+        state = layout.holdsVault(vault.io) ? .locked : .newVault
         message = nil
         // No evaluation is running now; show the fingerprint/password button instead of a spinner.
         if state == .locked { authenticationFailed = true }
@@ -463,7 +463,7 @@ final class UpOnlySession {
         message = nil
         isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
         sourceIssues = [:]
-        state = vault.io.fileExists(at: layout.current) ? .locked : .newVault
+        state = layout.holdsVault(vault.io) ? .locked : .newVault
     }
 
     private func publish(_ document: VaultDocument, freshUnlock: Bool = false) {

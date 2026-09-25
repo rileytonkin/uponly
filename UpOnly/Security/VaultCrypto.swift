@@ -54,7 +54,7 @@ nonisolated enum VaultCrypto {
         }
     }
 
-    static func wrapVaultKey(_ vaultKey: Data, recovery: RecoveryCode, vaultID: UUID) throws -> RecoveryWrapperFile {
+    static func wrapVaultKey(_ vaultKey: Data, recovery: RecoveryCode, vaultID: UUID, keyID: Data? = nil) throws -> RecoveryWrapperFile {
         let recoveryKey = SymmetricKey(data: recovery.secret)
         let sealed = try seal(
             vaultKey,
@@ -68,8 +68,14 @@ nonisolated enum VaultCrypto {
             vaultID: vaultID,
             nonce: sealed.nonce,
             ciphertext: sealed.ciphertext,
-            tag: sealed.tag
+            tag: sealed.tag,
+            keyID: keyID
         )
+    }
+
+    /// Names a vault key without revealing it, so a waiting wrapper can say which key it holds before anyone has its code.
+    static func keyID(_ key: SymmetricKey) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data("Up Only vault key ID".utf8), using: key)).prefix(16)
     }
 
     static func unwrapVaultKey(_ wrapper: RecoveryWrapperFile, recovery: RecoveryCode) throws -> Data {
@@ -105,25 +111,34 @@ nonisolated enum VaultCrypto {
             generation: document.generation,
             nonce: sealed.nonce,
             ciphertext: sealed.ciphertext,
-            tag: sealed.tag
+            tag: sealed.tag,
+            schema: document.schema > 1 ? document.schema : nil
         )
     }
 
+    /// A header naming a schema this build doesn't know means a newer version wrote the file, so it's refused before any
+    /// key is tried and never mistaken for damage. A file without one is tried with every schema this build knows, newest first.
     static func reveal(_ file: PersistedVaultFile, key: SymmetricKey) throws -> VaultDocument {
         guard file.format == VaultSchema.persistedFile else { throw VaultError.unknownSchema }
-        let plaintext = try open(
-            nonce: file.nonce,
-            ciphertext: file.ciphertext,
-            tag: file.tag,
-            key: key,
-            schema: VaultSchema.document,
-            vaultID: file.vaultID,
-            generation: file.generation
-        )
+        if let schema = file.schema, !VaultSchema.documents.contains(schema) { throw VaultError.unknownSchema }
+        var found: (plaintext: Data, schema: Int)?
+        for schema in file.schema.map({ [$0] }) ?? Array(VaultSchema.documents.reversed()) where found == nil {
+            if let plaintext = try? open(
+                nonce: file.nonce,
+                ciphertext: file.ciphertext,
+                tag: file.tag,
+                key: key,
+                schema: schema,
+                vaultID: file.vaultID,
+                generation: file.generation
+            ) { found = (plaintext: plaintext, schema: schema) }
+        }
+        guard let opened = found else { throw VaultError.wrongKey }
         // The ciphertext authenticated, so a document this build can't decode was written by a newer version, not damaged.
+        // An older schema opens as it is; migrating it is up to the build that raises the schema.
         let document: VaultDocument
-        do { document = try VaultJSON.decode(VaultDocument.self, from: plaintext) } catch { throw VaultError.unknownSchema }
-        guard document.schema == VaultSchema.document else { throw VaultError.unknownSchema }
+        do { document = try VaultJSON.decode(VaultDocument.self, from: opened.plaintext) } catch { throw VaultError.unknownSchema }
+        guard document.schema == opened.schema else { throw VaultError.unknownSchema }
         guard document.vaultID == file.vaultID, document.generation == file.generation else {
             throw VaultError.corrupt
         }
