@@ -84,7 +84,7 @@ extension PublicPrices {
         guard document.settings.automaticFX else { return [] }
         let rows = document.entries.filter { $0.bucket == .personal && $0.kind != .transfer && $0.amount != 0 && $0.currency != "USD" }
         var pairs = Set(rows.compactMap { row -> String? in
-            guard let key = MonthKey(row.month), key <= AssetOwnership.month(at: now), month == nil || key == month,
+            guard let key = MonthKey(row.month), key <= MonthKey.current(now: now), month == nil || key == month,
                   MonthlyLedger.rate(currency: row.currency, month: key, document: document, now: now) == nil else { return nil }
             return key.description + ":" + row.currency
         })

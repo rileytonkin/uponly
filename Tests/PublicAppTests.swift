@@ -837,8 +837,8 @@ struct BulkInputTests {
         let portfolio = Portfolio(name: "Ledger", createdAt: now.addingTimeInterval(-86400 * 30)); doc.portfolios = [portfolio]
         doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 1, at: now.addingTimeInterval(-86400 * 10), document: doc)
         let holding = try #require(doc.holdings.first)
-        // An edit earlier today, as Manage makes it.
-        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 2, at: max(UTCDay.start(of: now), now.addingTimeInterval(-60)), document: doc)
+        // An edit earlier today, as Manage makes it (late in the evening west of UTC, at the day's last second, like this one).
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 2, at: UTCDay.moment(for: UTCDay.today(now: now), now: now.addingTimeInterval(-60)), document: doc)
         var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t3", mode: .holdings)
         draft.rows[0].holding.portfolioID = portfolio.id
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc, now: now).document)
@@ -847,6 +847,31 @@ struct BulkInputTests {
         draft.rows[0].holding.quantity = "1"
         let restored = ImportBatchProcessor.evaluate(draft, document: doc, now: now)
         #expect(restored.duplicates == 0 && restored.document?.effectiveQuantity(holdingID: holding.id, at: now) == 1)
+    }
+    @Test("At 11:30 pm in Buenos Aires, already tomorrow in UTC, today's holding and balance are saved under today and tomorrow is refused")
+    func localEvening() throws {
+        let buenosAires = TimeZone(identifier: "America/Argentina/Buenos_Aires")!
+        let sep24 = try ImportDateFormat.iso.date("2026-09-24"), now = sep24.addingTimeInterval(26.5 * 3600)
+        var draft = try batch("Portfolio\tCoin\tQuantity\nLedger\tbitcoin\t1", mode: .holdings)
+        draft.rows[0].holding.date = "2026-09-24"; draft.rows[0].holding.paid = "60000"
+        let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty(), now: now, timeZone: buenosAires, catalog: []).document)
+        let observed = try #require(saved.quantities.first?.effectiveAt)
+        #expect(UTCDay.start(of: observed) == sep24 && observed <= now)
+        #expect(saved.purchases?.first.map { ImportDateFormat.today($0.at) } == "2026-09-24")
+        let holding = try #require(saved.holdings.first)
+        #expect(saved.effectiveQuantity(holdingID: holding.id, at: now) == 1)
+        // Sep 25 is tomorrow there, though it's today in UTC.
+        draft.rows[0].holding.date = "2026-09-25"
+        #expect(ImportBatchProcessor.evaluate(draft, document: empty(), now: now, timeZone: buenosAires, catalog: []).hasErrors)
+        // A balance saved twice that evening: both fall on the day's last second, and the newer replaces the older.
+        let first = try batch("Account,Currency,Balance,ObservedOn\nChecking,USD,100,2026-09-24", mode: .bankBalances)
+        let one = try #require(ImportBatchProcessor.evaluate(first, document: empty(), now: now, timeZone: buenosAires).document)
+        #expect(one.bankBalances.map { UTCDay.start(of: $0.observedAt) } == [sep24])
+        var second = try batch("Account,Currency,Balance,ObservedOn\nChecking,USD,120,2026-09-24", mode: .bankBalances)
+        let checking = try #require(one.accounts.first)
+        second.rows[0].bank.account = ImportAccount(existingID: checking.id, name: checking.name, currency: "USD")
+        let two = try #require(ImportBatchProcessor.evaluate(second, document: one, now: now.addingTimeInterval(600), timeZone: buenosAires).document)
+        #expect(two.bankBalances.map(\.amount.value) == [120])
     }
     @Test("Restating a total and its cost on the same day replaces that day's purchase lot")
     func restatedLot() throws {

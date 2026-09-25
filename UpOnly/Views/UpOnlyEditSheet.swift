@@ -12,7 +12,8 @@ struct UpOnlyEditSheet: View {
     @State private var name = ""
     @State private var currency = "USD"
     @State private var amount = ""
-    @State private var date = Date()
+    /// A saved day (its UTC midnight), today on this Mac to start with.
+    @State private var date = UTCDay.today()
     @State private var destination: UUID?
     @State private var entryMonth = MonthKey.current().description
     @State private var kind = "expense"
@@ -77,10 +78,10 @@ struct UpOnlyEditSheet: View {
                 kind = entry.kind.rawValue; bucket = entry.bucket.rawValue; amount = UpOnlyFormat.quantity(entry.amount)
                 currency = entry.currency; name = entry.label; entryMonth = entry.month; businessID = entry.businessID
                 if let day = entry.day, let parsed = try? ImportDateFormat.iso.date(day) { date = parsed }
-                else { dayKnown = false; date = MonthKey(entry.month).map(Self.lastDay) ?? Date() }
+                else { dayKnown = false; date = MonthKey(entry.month).map(Self.lastDay) ?? UTCDay.today() }
             case .exchangeRate:
                 currency = session.requestedRateCurrency ?? "GBP"
-                if let cutoff = rateCutoff { date = cutoff }
+                if let month = MonthKey(session.entryMonthForManagement) { date = Self.lastDay(of: month) }
                 amountFocused = true
             case .move: amountFocused = true
             case .purchases: break
@@ -157,7 +158,7 @@ struct UpOnlyEditSheet: View {
     }
     /// How the transaction will count, in a sentence, so the type and "for" choices explain themselves.
     private func meaning(_ kind: EntryKind, books: [BusinessBook]) -> String {
-        let month = dayKnown ? (MonthKey.current(now: date)).title : MonthKey(entryMonth)?.title ?? "this month"
+        let month = dayKnown ? MonthKey(day: date).title : MonthKey(entryMonth)?.title ?? "this month"
         if bucket != Bucket.personal.rawValue { return "Paid for " + (books.first { $0.id == businessID }?.name ?? "a business") + ", so it’s left out of your own spending" }
         switch kind {
         case .expense: return "Counts as spending in " + month
@@ -173,9 +174,10 @@ struct UpOnlyEditSheet: View {
         case .otherBusiness, .reserve: return "A business account"
         }
     }
+    /// A month's last day, or today while it's this month.
     private static func lastDay(of month: MonthKey) -> Date {
-        let start = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) ?? Date()
-        return min(Date(), start.addingTimeInterval(-86400))
+        let start = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) ?? UTCDay.today()
+        return min(UTCDay.today(), start.addingTimeInterval(-86400))
     }
     // MARK: Other forms
 
@@ -311,7 +313,7 @@ struct UpOnlyEditSheet: View {
     private func validEntry() throws -> Entry {
         let label = try validName(name, what: "a description")
         // A picked day sets the month; otherwise the month it was opened with stands.
-        let month: MonthKey? = dayKnown ? MonthKey.current(now: date) : MonthKey(entryMonth)
+        let month: MonthKey? = dayKnown ? MonthKey(day: date) : MonthKey(entryMonth)
         guard let month, month <= .current(), month.year >= 1900,
               let entryKind = EntryKind(rawValue: kind), let entryBucket = Bucket(rawValue: bucket) else { throw VaultError.invalidAmount }
         let value = try validAmount()
@@ -330,14 +332,18 @@ struct UpOnlyEditSheet: View {
                 guard let destination else { throw ImportFailure("Choose a destination portfolio.") }
                 let quantity = try validAmount()
                 guard quantity > 0, quantity <= (session.document?.effectiveQuantity(holdingID: holding.id, at: Date()) ?? 0) else { throw ImportFailure("Enter an amount greater than zero and no more than your available quantity.") }
-                try await session.mutate { doc in doc = try HoldingMutations.moveHolding(assetID: holding.assetID, quantity: quantity, from: holding.portfolioID, to: destination, at: Date(), document: doc) }
+                // Dated today on this Mac, like an entry, so the move and the cost it carries file under today.
+                let at = UTCDay.moment(for: UTCDay.today())
+                try await session.mutate { doc in doc = try HoldingMutations.moveHolding(assetID: holding.assetID, quantity: quantity, from: holding.portfolioID, to: destination, at: at, document: doc) }
             case .purchases(let holding):
                 guard let bought = try? MoneyInput.parseExact(lotQuantity), MoneyInput.isFinite(bought), bought > 0 else { throw ImportFailure("Enter the quantity bought, greater than zero.") }
                 let paid = try validAmount()
                 let code = try validCurrency()
-                guard date <= Date() else { throw ImportFailure("Choose today or an earlier date.") }
+                guard date <= UTCDay.today() else { throw ImportFailure("Choose today or an earlier date.") }
+                // Today's purchase at now, after anything else today; an earlier day at its start.
+                let at = UTCDay.moment(for: date)
                 try await session.mutate { doc in
-                    doc.purchases = (doc.purchases ?? []) + [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(bought), paid: PreciseDecimal(paid), currency: code, at: date)]
+                    doc.purchases = (doc.purchases ?? []) + [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(bought), paid: PreciseDecimal(paid), currency: code, at: at)]
                 }
                 lotQuantity = ""; amount = ""; return
             case .renameAccount(let account):

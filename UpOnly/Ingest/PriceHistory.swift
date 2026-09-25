@@ -105,13 +105,15 @@ nonisolated enum PriceHistory {
     private struct DayKey: Hashable { var id: String; var day: Date }
     static func applying(_ update: PriceUpdate, to document: VaultDocument, now: Date) throws -> VaultDocument {
         var next = document
-        let today = UTCDay.start(of: now)
+        // Prices are kept by UTC day, the market's; today's value is saved with each change, so only days already over
+        // are recomputed.
+        let today = UTCDay.start(of: now), openDay = UTCDay.firstOpenDay(now: now)
         // Only past days that gained an observation are recomputed; a rate also carries forward up to seven days.
         var changedDays = Set<Date>()
         func touch(_ day: Date, carry: Int = 0) {
             for offset in 0...carry {
                 let date = day.addingTimeInterval(Double(offset) * 86400)
-                if date < today { changedDays.insert(date) }
+                if date < openDay { changedDays.insert(date) }
             }
         }
         var quoteKeys = Set(next.quotes.map { $0.assetID.rawValue + ":" + String($0.providerTime.timeIntervalSince1970) })

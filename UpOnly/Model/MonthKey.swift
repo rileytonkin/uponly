@@ -12,6 +12,12 @@ nonisolated struct MonthKey: Hashable, Comparable, Sendable, CustomStringConvert
         self.month = index + 1
     }
 
+    /// The month a saved day is in: its UTC month, the same on every Mac.
+    init(day: Date) {
+        let parts = UTCDay.calendar.dateComponents([.year, .month], from: day)
+        self.init(year: parts.year ?? 2026, month: parts.month ?? 1)
+    }
+
     init?(_ raw: String) {
         let parts = raw.split(separator: "-")
         guard parts.count == 2,
@@ -36,10 +42,10 @@ nonisolated struct MonthKey: Hashable, Comparable, Sendable, CustomStringConvert
         (lhs.year, lhs.month) < (rhs.year, rhs.month)
     }
 
-    /// The Gregorian UTC month, like every statement, sync and ownership month, whatever calendar the Mac uses.
-    static func current(now: Date = Date()) -> MonthKey {
-        let parts = UTCDay.calendar.dateComponents([.year, .month], from: now)
-        return MonthKey(year: parts.year ?? 2026, month: parts.month ?? 1)
+    /// This month: the Gregorian month of the Mac's date (`UTCDay.today`), whatever calendar it displays. At 10 pm on
+    /// Sep 30 in Buenos Aires, already October in UTC, it's September.
+    static func current(now: Date = Date(), timeZone: TimeZone = .current) -> MonthKey {
+        MonthKey(day: UTCDay.today(now: now, timeZone: timeZone))
     }
 
     var title: String {

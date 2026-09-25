@@ -37,7 +37,7 @@ extension UpOnlyManagement {
     /// says), and whether it counts.
     func accountCaption(_ members: [Account], date: Date?, synced: Bool = false, name: String = "") -> String {
         var parts: [String] = []
-        if let date { parts.append((synced ? "Synced " : "Updated ") + Self.when(date)) }
+        if let date { parts.append((synced ? "Synced " : "Updated ") + Self.when(date, synced: synced)) }
         else { parts.append(synced ? "Not synced yet" : "Balance needed") }
         if let document = session.document, let first = members.first {
             if let owner = AssetOwnership.businessID(for: first, in: document) {
@@ -49,12 +49,13 @@ extension UpOnlyManagement {
         }
         return parts.joined(separator: " · ")
     }
-    /// "today", "yesterday", "Sep 9", or "Sep 9, 2025" from another year.
-    static func when(_ date: Date) -> String {
-        let calendar = UTCDay.calendar, today = UTCDay.start(of: Date())
-        if calendar.isDate(date, inSameDayAs: today) { return "today" }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: today), calendar.isDate(date, inSameDayAs: yesterday) { return "yesterday" }
-        return calendar.component(.year, from: date) == calendar.component(.year, from: today) ? UpOnlyFormat.utcDay(date) : UpOnlyFormat.utcDate(date)
+    /// "today", "yesterday", "Sep 9", or "Sep 9, 2025" from another year, with today as it is on this Mac: the saved day
+    /// a balance is for, or for a sync (a moment), the date it happened here.
+    static func when(_ date: Date, synced: Bool = false) -> String {
+        let calendar = UTCDay.calendar, day = synced ? UTCDay.today(now: date) : UTCDay.day(of: date), today = UTCDay.today()
+        if day == today { return "today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: today), day == yesterday { return "yesterday" }
+        return calendar.component(.year, from: day) == calendar.component(.year, from: today) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
     }
     /// A balance in dollars at the latest saved rate, for the right-hand column every row shares.
     func usd(_ amount: Decimal, currency: String) -> Decimal? {

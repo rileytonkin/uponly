@@ -21,16 +21,18 @@ struct UpOnlyDateButton: View {
     }
 }
 
+/// Picks a saved day: `date` is its UTC midnight, so the calendar works in UTC to show and set that date, and stops at
+/// today's date on this Mac.
 struct UpOnlyDateCalendar: View {
     @Binding var date: Date
     var done: () -> Void
     var body: some View {
         VStack(spacing: 12) {
             // No focus ring: the calendar is the popover's only control.
-            DatePicker("Observation date", selection: $date, in: ...Date(), displayedComponents: .date)
+            DatePicker("Observation date", selection: $date, in: ...UTCDay.today(), displayedComponents: .date)
                 .datePickerStyle(.graphical).labelsHidden().environment(\.timeZone, UTCDay.timeZone).focusEffectDisabled()
             HStack {
-                Button("Today") { date = Date() }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                Button("Today") { date = UTCDay.today() }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
                 Spacer()
                 Button("Done", action: done).buttonStyle(.glassProminent).buttonBorderShape(.capsule).keyboardShortcut(.defaultAction)
             }.font(.system(size: 12))
