@@ -225,6 +225,8 @@ struct VaultLayout: Sendable, Equatable {
     var formatActive: URL { root.appendingPathComponent("encrypted.format") }
     var writerDisabled: URL { root.appendingPathComponent("plaintext-writer.disabled") }
     var backupTemp: URL { root.appendingPathComponent("backup.tmp", isDirectory: true) }
+    /// Beside the folder while a restore replaces it (`VaultStore.replace`), naming where the vault was moved.
+    var restoreJournal: URL { root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + ".restore.journal") }
 
     func ensureDirectories(_ io: VaultFileIO) throws {
         try io.createDirectory(at: root)
@@ -232,8 +234,35 @@ struct VaultLayout: Sendable, Equatable {
     }
 
     /// Any of a vault's own files means a vault is here, even without its main file: it must never look like a fresh start.
+    /// So does a restore that stopped partway, which may have left the vault in the folder beside this one.
     func holdsVault(_ io: VaultFileIO) -> Bool {
-        [current, previous, recovery, pendingRecovery].contains { io.fileExists(at: $0) }
+        [current, previous, recovery, pendingRecovery, restoreJournal].contains { io.fileExists(at: $0) }
+    }
+
+    /// Whether the folder holds its recovery wrapper and provably no vault data: nothing else but an empty Inbox, Finder's
+    /// `.DS_Store` and a half-written wrapper. It's what setup leaves if it stops between saving the wrapper and the vault.
+    func holdsOnlyWrapper(_ io: VaultFileIO) -> Bool {
+        guard io.fileExists(at: recovery), !io.fileExists(at: restoreJournal),
+              let names = try? io.contentsOfDirectory(at: root).map(\.lastPathComponent) else { return false }
+        // `DiskFileIO.write` names its temporary file "." + name + "." + a UUID.
+        let wrapperTemp = "." + recovery.lastPathComponent + "."
+        return names.allSatisfy { name in
+            name == recovery.lastPathComponent || name == ".DS_Store"
+                || (name.hasPrefix(wrapperTemp) && UUID(uuidString: String(name.dropFirst(wrapperTemp.count))) != nil)
+                || (name == inbox.lastPathComponent && (try? io.contentsOfDirectory(at: inbox))?.isEmpty == true)
+        }
+    }
+
+    /// Where Start over moves a wrapper left without a vault: beside the folder, “Vault recovery.wrapper.unused”,
+    /// numbered while earlier ones are still there.
+    func unusedWrapper(_ io: VaultFileIO) -> URL {
+        let parent = root.deletingLastPathComponent(), name = root.lastPathComponent + " recovery.wrapper.unused"
+        var candidate = parent.appendingPathComponent(name), number = 2
+        while io.fileExists(at: candidate) {
+            candidate = parent.appendingPathComponent(name + " \(number)")
+            number += 1
+        }
+        return candidate
     }
 
     /// Where a damaged main file is moved aside: `vault.uponly.damaged`, numbered while earlier ones are still there.

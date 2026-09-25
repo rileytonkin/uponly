@@ -1,20 +1,27 @@
 import Foundation
+import Security
 import Testing
 @testable import UpOnly
 
 final class SetupTestKeyStore: VaultKeyStoring, @unchecked Sendable {
     let memory = MemoryKeyStore()
     var storeError: VaultError?
+    /// Thrown after the key is stored, as if the Keychain reported a failure for an update that landed.
+    var failAfterStore: VaultError?
     var loadError: VaultError?
     var probeReturnsMissing = false
+    /// Runs as a store starts, before it can fail, e.g. to stop disk writes as if the app quit during the Keychain update.
+    var beforeStore: (() -> Void)?
     /// Runs once a key is stored, e.g. to stop disk writes as if the app quit right after the Keychain update.
     var onStore: (() -> Void)?
     private(set) var lastStoredID: UUID?
     func store(vaultID: UUID, key: Data, context: AnyObject?) throws {
+        beforeStore?()
         if let storeError { throw storeError }
         try memory.store(vaultID: vaultID, key: key, context: context)
         lastStoredID = vaultID
         onStore?()
+        if let failAfterStore { throw failAfterStore }
     }
     func load(vaultID: UUID, context: AnyObject?) throws -> Data {
         if let loadError { throw loadError }
@@ -30,6 +37,56 @@ final class PromptTestAuthenticator: VaultAuthenticating, @unchecked Sendable {
     func evaluate() async throws { during?() }
     func invalidate() {}
     var keychainContext: AnyObject? { nil }
+}
+
+/// A disk that stops taking changes at the step `crashBefore` picks, as if the app quit just before it: that step and every
+/// later write, move or removal fail, and reads show what a relaunch finds. Its locks never conflict, so a second store can
+/// stand for the relaunched app.
+final class CrashingFileIO: VaultFileIO, @unchecked Sendable {
+    let disk = MemoryFileIO()
+    var crashBefore: ((_ step: String, _ url: URL) -> Bool)?
+    var crashed = false
+    private func step(_ name: String, _ url: URL) throws {
+        if !crashed, crashBefore?(name, url) == true { crashed = true }
+        if crashed { throw VaultError.diskWriteFailed }
+    }
+    func data(at url: URL) throws -> Data { try disk.data(at: url) }
+    func write(_ data: Data, to url: URL, sync: Bool) throws { try step("write", url); try disk.write(data, to: url, sync: sync) }
+    func replaceItem(at original: URL, withItemAt temp: URL) throws { try step("replace", original); try disk.replaceItem(at: original, withItemAt: temp) }
+    func installItem(at destination: URL, from staging: URL) throws { try step("install", destination); try disk.installItem(at: destination, from: staging) }
+    func replacementDirectory(for destination: URL) throws -> URL { try disk.replacementDirectory(for: destination) }
+    func preserveVerifiedCopy(from src: URL, to dst: URL) throws { try step("copy", dst); try disk.preserveVerifiedCopy(from: src, to: dst) }
+    func removeItem(at url: URL) throws { try step("remove", url); try disk.removeItem(at: url) }
+    func fileExists(at url: URL) -> Bool { disk.fileExists(at: url) }
+    func isDirectory(at url: URL) throws -> Bool { try disk.isDirectory(at: url) }
+    func isSymbolicLink(at url: URL) throws -> Bool { try disk.isSymbolicLink(at: url) }
+    func createDirectory(at url: URL) throws { try step("folder", url); try disk.createDirectory(at: url) }
+    func contentsOfDirectory(at url: URL) throws -> [URL] { try disk.contentsOfDirectory(at: url) }
+    func acquireExclusiveLock(at url: URL) throws -> AdvisoryLock { SharedLock() }
+    func stored(_ url: URL) -> Data? { disk.stored(url) }
+}
+private struct SharedLock: AdvisoryLock { func release() {} }
+
+/// The background configuration's two Keychain items in memory, with failures to order and a log of every change.
+final class MemoryBackgroundStore: BackgroundConfigurationStore, @unchecked Sendable {
+    var current: Data?, legacy: Data?
+    /// Which reads fail, by `legacy`.
+    var unreadable: Set<Bool> = []
+    var saveFails = false
+    private(set) var changes: [String] = []
+    func read(legacy isLegacy: Bool) throws -> Data? {
+        if unreadable.contains(isLegacy) { throw VaultError.unavailable }
+        return isLegacy ? legacy : current
+    }
+    func save(_ data: Data) throws {
+        changes.append("save")
+        if saveFails { throw VaultError.unavailable }
+        current = data
+    }
+    func deleteLegacy() {
+        changes.append("delete old")
+        legacy = nil
+    }
 }
 
 struct VaultStoreTests {
@@ -1152,5 +1209,325 @@ struct VaultStoreTests {
             try await schedule.finish(vaultID: vaultID, root: root, failed: true, source: "crypto", now: now)
             #expect(await schedule.failed(vaultID: vaultID, root: root, source: "crypto"))
         }
+    }
+
+    // MARK: Restoring an earlier backup of the same vault
+
+    /// A vault with one account, backed up under `old`; then a second account and a change to `new`. The backup is an
+    /// earlier one of the same vault, under the key the change replaced.
+    private func earlierBackup(_ store: VaultStore, old: RecoveryCode, new: RecoveryCode) async throws -> BackupPackage {
+        let first = try await createWithAccount(store, old)
+        let earlier = try await BackupCoordinator.makePackage(store: store, producers: [])
+        var next = first.document
+        next.generation += 1
+        next.accounts.append(Account(name: "Second bank", currency: "USD"))
+        try await store.commit(next, expectedGeneration: first.document.generation, sessionID: first.sessionID)
+        try await store.rotateRecovery(new, sessionID: first.sessionID)
+        return earlier
+    }
+
+    /// Whether the restore's journal and staging copy are both gone from beside the vault folder.
+    private func restoreFinished(_ io: VaultFileIO, _ layout: VaultLayout) -> Bool {
+        guard let names = try? io.contentsOfDirectory(at: layout.root.deletingLastPathComponent()) else { return false }
+        return !io.fileExists(at: layout.restoreJournal) && !names.contains { $0.lastPathComponent.contains(".restore-") }
+    }
+
+    @Test("Owner's check: create, replace the code, lock, unlock, export and restore with the new code; the old code opens only the earlier backup")
+    @MainActor func recoveryCodeRoundTrip() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("UpOnlyTest-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let io = DiskFileIO()
+        let layout = VaultLayout(root: root.appendingPathComponent("Vault", isDirectory: true))
+        let store = VaultStore(layout: layout, io: io, keys: MemoryKeyStore(), authenticator: FixtureAuthenticator())
+        let session = UpOnlySession(testing: store, layout: layout)
+        let oldCode = RecoveryCode.random(), newCode = RecoveryCode.random()
+        await session.create(recovery: oldCode)
+        try await session.mutate { $0.accounts = [Account(name: "Sample bank", currency: "GBP")] }
+        // A backup made before the code change.
+        let earlier = try await BackupCoordinator.makePackage(store: store, producers: [])
+        try await session.mutate { $0.accounts.append(Account(name: "Second bank", currency: "USD")) }
+        #expect(await session.replaceRecoveryCode(newCode))
+        session.lock()
+        #expect(session.state == .locked)
+        await session.unlock()
+        #expect(session.state == .unlocked && session.document?.accounts.count == 2)
+        // Exported, then read back as Restore reads it.
+        let backups = root.appendingPathComponent("Backups", isDirectory: true)
+        try io.createDirectory(at: backups)
+        let exported = backups.appendingPathComponent("Up Only Backup.uponlybackup", isDirectory: true)
+        let export = try await BackupCoordinator.makePackage(store: store, producers: [])
+        try BackupCoordinator.publish(export, to: exported, io: io)
+        let package = try BackupCoordinator.read(from: exported, io: io)
+        // Into a fresh folder: the old code doesn't open the new backup and nothing is written; the new code restores it.
+        #expect(BackupCoordinator.opens(package, with: newCode) && !BackupCoordinator.opens(package, with: oldCode))
+        let fresh = VaultLayout(root: root.appendingPathComponent("Fresh", isDirectory: true).appendingPathComponent("Vault", isDirectory: true))
+        let freshSession = UpOnlySession(testing: VaultStore(layout: fresh, io: io, keys: MemoryKeyStore(), authenticator: FixtureAuthenticator()), layout: fresh)
+        #expect(await freshSession.restoreBackup(package, recovery: oldCode, confirmed: true) == .failed)
+        #expect(!io.fileExists(at: fresh.root))
+        #expect(await freshSession.restoreBackup(package, recovery: newCode, confirmed: true) == .restored)
+        #expect(freshSession.state == .unlocked && freshSession.document?.accounts.count == 2)
+        freshSession.lock()
+        // The earlier backup restores over the vault with its own code, not the new one.
+        #expect(await session.restoreBackup(earlier, recovery: newCode, confirmed: true) == .failed)
+        #expect(session.state == .unlocked && session.document?.accounts.count == 2)
+        #expect(await session.restoreBackup(earlier, recovery: oldCode, confirmed: true) == .restored)
+        #expect(session.state == .unlocked && session.document?.accounts.count == 1)
+        #expect(restoreFinished(io, layout))
+        // The Keychain and the files agree, so it unlocks without a code.
+        session.lock()
+        await session.unlock()
+        #expect(session.state == .unlocked && session.document?.accounts.count == 1)
+        // The replaced vault is kept beside it, whole, and opens with the code it had.
+        let aside = try #require(try io.contentsOfDirectory(at: root).first { $0.lastPathComponent.hasPrefix("Vault (replaced ") })
+        let replaced = VaultLayout(root: aside)
+        let wrapper = try VaultJSON.decode(RecoveryWrapperFile.self, from: io.data(at: replaced.recovery))
+        let file = try VaultJSON.decode(PersistedVaultFile.self, from: io.data(at: replaced.current))
+        #expect(try VaultCrypto.reveal(file, key: VaultCrypto.key(from: VaultCrypto.unwrapVaultKey(wrapper, recovery: newCode))).accounts.count == 2)
+    }
+
+    @Test("An earlier backup of this vault, from before a recovery-code change, restores over it with its own code")
+    func replaceWithEarlierBackup() async throws {
+        let io = MemoryFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-earlier-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let old = RecoveryCode.random(), new = RecoveryCode.random()
+        let earlier = try await earlierBackup(store, old: old, new: new)
+        let id = earlier.manifest.vaultID, current = try #require(io.stored(layout.current))
+        #expect(BackupCoordinator.opens(earlier, with: old) && !BackupCoordinator.opens(earlier, with: new))
+        let aside = layout.replacedRoot(at: Date(), io: io)
+        let opened = try await store.replace(with: earlier, recovery: old, aside: aside)
+        #expect(opened.document.accounts.count == 1 && io.stored(layout.current) == earlier.vault)
+        #expect(restoreFinished(io, layout))
+        // The Keychain holds the backup's key, so the restored vault unlocks without a code.
+        store.lock()
+        #expect(try await store.unlock().document.accounts.count == 1)
+        // The replaced vault is kept aside, whole, and opens with the code it had.
+        #expect(io.stored(VaultLayout(root: aside).current) == current)
+        let wrapper = try VaultJSON.decode(RecoveryWrapperFile.self, from: try #require(io.stored(VaultLayout(root: aside).recovery)))
+        let file = try VaultJSON.decode(PersistedVaultFile.self, from: current)
+        #expect(try VaultCrypto.reveal(file, key: VaultCrypto.key(from: VaultCrypto.unwrapVaultKey(wrapper, recovery: new))).accounts.count == 2)
+        // Recovery follows the restored backup's code.
+        try keys.delete(vaultID: id)
+        store.lock()
+        await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await store.recover(new) }
+        #expect(try await store.recover(old).document.accounts.count == 1)
+    }
+
+    @Test("If the Keychain doesn't take the backup's key, the restore is undone and the vault's own key is kept",
+          arguments: ["refused", "reported failed after landing"])
+    func replaceKeychainFailureRollsBack(_ failure: String) async throws {
+        let io = MemoryFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-earlier-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let old = RecoveryCode.random(), new = RecoveryCode.random()
+        let earlier = try await earlierBackup(store, old: old, new: new)
+        let id = earlier.manifest.vaultID, original = try #require(io.stored(layout.current))
+        let key = try keys.load(vaultID: id, context: nil)
+        if failure == "refused" { keys.storeError = .keychainUnavailable(-25308) } else { keys.failAfterStore = .keychainUnavailable(-25308) }
+        let aside = layout.replacedRoot(at: Date(), io: io)
+        await #expect(throws: VaultError.keychainUnavailable(-25308)) { _ = try await store.replace(with: earlier, recovery: old, aside: aside) }
+        keys.storeError = nil; keys.failAfterStore = nil
+        #expect(try keys.load(vaultID: id, context: nil) == key)
+        #expect(!io.fileExists(at: aside) && io.stored(layout.current) == original)
+        #expect(restoreFinished(io, layout))
+        #expect(await !store.isUnlocked)
+        #expect(try await store.unlock().document.accounts.count == 2)
+    }
+
+    @Test("A restore cut off anywhere is finished or undone at the next unlock, and the Keychain and the files agree",
+          arguments: ["before the move", "while staging", "before installing the copy", "at the Keychain update", "after the Keychain update"])
+    func interruptedRestore(_ point: String) async throws {
+        let io = CrashingFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-crash-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let old = RecoveryCode.random(), new = RecoveryCode.random()
+        let earlier = try await earlierBackup(store, old: old, new: new)
+        let aside = layout.replacedRoot(at: Date(), io: io)
+        switch point {
+        case "before the move": io.crashBefore = { step, url in step == "install" && url.path == aside.path }
+        case "while staging": io.crashBefore = { step, url in step == "write" && url.path.contains(".restore-") }
+        case "before installing the copy": io.crashBefore = { step, url in step == "install" && url.path == layout.root.path }
+        case "at the Keychain update": keys.beforeStore = { io.crashed = true }; keys.storeError = .keychainUnavailable(-25308)
+        default: keys.onStore = { io.crashed = true }
+        }
+        _ = try? await store.replace(with: earlier, recovery: old, aside: aside)
+        keys.beforeStore = nil; keys.storeError = nil; keys.onStore = nil
+        io.crashBefore = nil; io.crashed = false
+        // The relaunched app shows unlock, never setup, and unlocking settles the restore first.
+        #expect(layout.holdsVault(io))
+        let relaunched = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let committed = point == "after the Keychain update", accounts = committed ? 1 : 2
+        #expect(try await relaunched.unlock().document.accounts.count == accounts)
+        #expect(restoreFinished(io, layout))
+        #expect(io.fileExists(at: aside) == committed)
+        // The Keychain opens what's there, and so does the code that goes with it.
+        relaunched.lock()
+        #expect(try await relaunched.unlock().document.accounts.count == accounts)
+        try keys.delete(vaultID: earlier.manifest.vaultID)
+        relaunched.lock()
+        await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await relaunched.recover(committed ? new : old) }
+        #expect(try await relaunched.recover(committed ? old : new).document.accounts.count == accounts)
+    }
+
+    @Test("A restore cut off at its Keychain update is settled by whichever code opens a folder, and a wrong code moves nothing",
+          arguments: ["backup's", "current", "wrong"])
+    func interruptedRestoreRecovery(_ code: String) async throws {
+        let io = CrashingFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-crash-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let old = RecoveryCode.random(), new = RecoveryCode.random()
+        let earlier = try await earlierBackup(store, old: old, new: new)
+        let aside = layout.replacedRoot(at: Date(), io: io)
+        keys.beforeStore = { io.crashed = true }; keys.storeError = .keychainUnavailable(-25308)
+        _ = try? await store.replace(with: earlier, recovery: old, aside: aside)
+        keys.beforeStore = nil; keys.storeError = nil
+        io.crashed = false
+        // The backup's copy is in place and the vault aside; Touch ID can't help, so the user recovers with a code.
+        #expect(io.stored(layout.current) == earlier.vault && io.fileExists(at: aside) && io.fileExists(at: layout.restoreJournal))
+        try keys.delete(vaultID: earlier.manifest.vaultID)
+        let relaunched = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        switch code {
+        case "backup's":
+            #expect(try await relaunched.recover(old).document.accounts.count == 1)
+            #expect(io.fileExists(at: aside))
+        case "current":
+            #expect(try await relaunched.recover(new).document.accounts.count == 2)
+            #expect(!io.fileExists(at: aside))
+        default:
+            await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await relaunched.recover(.random()) }
+            #expect(io.stored(layout.current) == earlier.vault && io.fileExists(at: aside) && io.fileExists(at: layout.restoreJournal))
+            return
+        }
+        #expect(!io.fileExists(at: layout.restoreJournal))
+        // Recovery saved the key it opened with, so the Keychain agrees with what's there.
+        relaunched.lock()
+        #expect(try await relaunched.unlock().document.accounts.count == (code == "backup's" ? 1 : 2))
+    }
+
+    // MARK: Start over after an unfinished setup
+
+    @Test("Unlock offers Start over when setup left only its recovery wrapper, which is moved aside under a numbered name")
+    @MainActor func sessionStartsOver() async throws {
+        let io = CrashingFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-unfinished-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let code = RecoveryCode.random()
+        // Setup stops between saving the wrapper and the vault.
+        io.crashBefore = { step, url in step == "write" && url.path == layout.current.appendingPathExtension("tmp").path }
+        await #expect(throws: VaultError.diskWriteFailed) { _ = try await store.create(recovery: code, confirmation: code.canonical) }
+        io.crashBefore = nil; io.crashed = false
+        let wrapper = try #require(io.stored(layout.recovery))
+        #expect(!io.fileExists(at: layout.current) && layout.holdsVault(io) && layout.holdsOnlyWrapper(io))
+        // One set aside before keeps its name and contents.
+        let first = layout.unusedWrapper(io)
+        #expect(first.lastPathComponent == layout.root.lastPathComponent + " recovery.wrapper.unused")
+        try io.disk.write(Data("earlier".utf8), to: first, sync: true)
+        let session = UpOnlySession(testing: store, layout: layout)
+        session.returnToUnlock()
+        #expect(session.state == .locked && !session.canStartOver)
+        await session.unlock()
+        #expect(session.canStartOver && session.message == nil)
+        await session.startOver()
+        #expect(session.state == .newVault && !session.canStartOver && session.message == nil)
+        let moved = first.deletingLastPathComponent().appendingPathComponent(first.lastPathComponent + " 2")
+        #expect(io.stored(moved) == wrapper && io.stored(first) == Data("earlier".utf8) && !io.fileExists(at: layout.recovery))
+        // Setup runs again in the same folder.
+        await session.create(recovery: .random())
+        #expect(session.state == .unlocked)
+    }
+
+    @Test("Start over is refused, moving nothing, while the folder holds any vault data",
+          arguments: ["previous", "damaged", "half-written vault", "waiting wrapper", "pending import", "restore journal"])
+    func startOverNeedsOnlyWrapper(_ extra: String) async throws {
+        let h = harness()
+        try h.layout.ensureDirectories(h.io)
+        let wrapper = Data("wrapper".utf8)
+        try h.io.write(wrapper, to: h.layout.recovery, sync: true)
+        // Finder's file and a half-written wrapper aren't vault data.
+        try h.io.write(Data(), to: h.layout.root.appendingPathComponent(".DS_Store"), sync: true)
+        try h.io.write(Data(), to: h.layout.root.appendingPathComponent(".recovery.wrapper." + UUID().uuidString), sync: true)
+        #expect(h.layout.holdsOnlyWrapper(h.io))
+        let url: URL = switch extra {
+        case "previous": h.layout.previous
+        case "damaged": h.layout.root.appendingPathComponent("vault.uponly.damaged")
+        case "half-written vault": h.layout.root.appendingPathComponent(".vault.uponly.tmp." + UUID().uuidString)
+        case "waiting wrapper": h.layout.pendingRecovery
+        case "pending import": h.layout.inbox.appendingPathComponent("batch")
+        default: h.layout.restoreJournal
+        }
+        try h.io.write(Data("x".utf8), to: url, sync: true)
+        #expect(!h.layout.holdsOnlyWrapper(h.io))
+        await #expect(throws: VaultError.alreadyExists) { _ = try await h.store.startOver() }
+        #expect(h.io.stored(h.layout.recovery) == wrapper && h.io.stored(url) == Data("x".utf8))
+    }
+
+    // MARK: A vault from a newer version
+
+    @Test("A vault saved by a newer version says so on unlock and on recovery, and its files are left as they are")
+    @MainActor func sessionNewerVault() async throws {
+        let h = harness()
+        let created = try await createWithAccount(h.store, h.recovery)
+        var newer = created.document
+        newer.schema = VaultSchema.document + 1
+        newer.generation += 1
+        let key = try VaultCrypto.key(from: h.keys.load(vaultID: newer.vaultID, context: nil))
+        let bytes = try VaultJSON.encode(VaultCrypto.persist(newer, key: key))
+        try h.io.write(bytes, to: h.layout.current, sync: true)
+        let previous = h.io.stored(h.layout.previous)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        session.returnToUnlock()
+        await session.unlock()
+        #expect(session.state == .locked && session.message == "This vault was saved by a newer version of Up Only. Update the app to open it.")
+        await session.recover(code: h.recovery.canonical)
+        #expect(session.state == .locked && session.message == UpOnlySession.newerVersionNotice)
+        #expect(h.io.stored(h.layout.current) == bytes && h.io.stored(h.layout.previous) == previous)
+        #expect(!h.io.fileExists(at: h.layout.root.appendingPathComponent("vault.uponly.damaged")))
+    }
+
+    // MARK: The background configuration's Keychain move
+
+    @Test("The background configuration moves from the login keychain once, deleting the old item only after the new one is saved")
+    func backgroundConfigurationMigration() throws {
+        let signing = VaultCrypto.makeSigningKeyPair()
+        let config = BackgroundConfiguration(vaultID: UUID(), inboxPublicKey: Data([4]), signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR"], metals: [.gold], pricesEnabled: true, fxEnabled: true, metalsEnabled: false, coinGeckoKey: "")
+        let saved = try JSONEncoder().encode(config)
+        let keychain = MemoryBackgroundStore()
+        #expect(try BackgroundConfiguration.load(from: keychain) == nil)
+        keychain.legacy = saved
+        // A move that fails leaves the old item in place, and it still loads.
+        keychain.saveFails = true
+        #expect(try BackgroundConfiguration.load(from: keychain) == config)
+        #expect(keychain.legacy == saved && keychain.current == nil && keychain.changes == ["save"])
+        // The next load moves it: saved first, and only then the old item deleted.
+        keychain.saveFails = false
+        #expect(try BackgroundConfiguration.load(from: keychain) == config)
+        #expect(keychain.current == saved && keychain.legacy == nil && keychain.changes == ["save", "save", "delete old"])
+        // Once moved, loading changes nothing, even if an earlier build saves an old item again.
+        keychain.legacy = saved
+        #expect(try BackgroundConfiguration.load(from: keychain) == config)
+        #expect(keychain.changes.count == 3 && keychain.legacy == saved)
+        // An item that can't be read now is never taken for none: nothing is saved or deleted.
+        keychain.unreadable = [false]
+        #expect(throws: VaultError.unavailable) { _ = try BackgroundConfiguration.load(from: keychain) }
+        keychain.current = nil; keychain.unreadable = [true]
+        #expect(throws: VaultError.unavailable) { _ = try BackgroundConfiguration.load(from: keychain) }
+        #expect(keychain.changes.count == 3 && keychain.legacy == saved)
+        // Saving writes the new item only.
+        try config.save(to: keychain)
+        #expect(keychain.changes == ["save", "save", "delete old", "save"] && keychain.legacy == saved)
+    }
+
+    @Test("The background configuration is kept on this Mac only and readable after its first unlock; the old item is the login keychain's")
+    func backgroundConfigurationItems() {
+        let keychain = BackgroundKeychain(), add = keychain.addition(Data([1]))
+        #expect(add[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        #expect(add[kSecUseDataProtectionKeychain as String] as? Bool == true && add[kSecAttrSynchronizable as String] as? Bool == false)
+        #expect(keychain.legacyItem[kSecUseDataProtectionKeychain as String] as? Bool == false)
+        for item in [add, keychain.legacyItem] {
+            #expect(item[kSecAttrService as String] as? String == BackgroundConfiguration.service)
+            #expect(item[kSecAttrAccount as String] as? String == "sources")
+        }
+        #expect(BackgroundConfiguration.service == (Bundle.main.bundleIdentifier ?? "org.uponly") + ".background")
     }
 }

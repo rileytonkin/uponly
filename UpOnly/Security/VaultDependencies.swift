@@ -156,6 +156,10 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
             files[origPrefix + rest] = data
             files.removeValue(forKey: path)
         }
+        // Folders inside move with it, as on disk.
+        let nested = directories.filter { $0.hasPrefix(tempPrefix) }
+        directories = directories.filter { !$0.hasPrefix(origPrefix) && !$0.hasPrefix(tempPrefix) }
+        for path in nested { directories.insert(origPrefix + String(path.dropFirst(tempPrefix.count))) }
         directories.remove(temp.path)
         directories.insert(original.path)
     }
@@ -186,6 +190,7 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         directories.remove(url.path)
         let prefix = url.path.hasSuffix("/") ? url.path : url.path + "/"
         files = files.filter { !$0.key.hasPrefix(prefix) }
+        directories = directories.filter { !$0.hasPrefix(prefix) }
     }
 
     func fileExists(at url: URL) -> Bool {

@@ -132,7 +132,9 @@ See [SECURITY.md](SECURITY.md) for storage, network boundaries and limitations. 
 
 **Create a new recovery code…** in Backup & security replaces the code after Touch ID or your Mac password; the old code stops opening this vault. Backups you exported earlier still open only with the code that was current when you exported them, so export a new backup afterwards.
 
-A backup can be restored from the welcome screen, or over an existing vault with **Restore from a backup…** in Backup & security. Restoring over a vault that has records asks first. The current vault is moved, not deleted, to a folder named “Vault (replaced <date and time>)” next to it; if the restore fails, it is put back and Up Only locks.
+A backup can be restored from the welcome screen, or over an existing vault with **Restore from a backup…** in Backup & security. Restoring over a vault that has records asks first. The current vault is moved, not deleted, to a folder named “Vault (replaced <date and time>)” next to it; if the restore fails, it is put back and Up Only locks, and if the app quits partway the next unlock finishes or undoes it. An earlier backup of the same vault, made before a recovery-code change, restores too: use the code it was exported with. The replaced copy then opens only with the code it had.
+
+If setup was interrupted after saving the recovery file but before the vault, the lock screen says so and offers **Start over**, which moves the unused recovery file beside the vault folder (never deleting it) and begins setup again. A vault saved by a newer version of Up Only isn't opened or changed; the lock screen asks you to update the app.
 
 This is an early source release. Automated tests exercise encryption, failure paths, recovery, valuation and input validation. They are not an external security certification.
 

@@ -105,18 +105,8 @@ nonisolated enum BackupCoordinator {
         io: VaultFileIO,
         authenticator: VaultAuthenticating? = nil
     ) throws -> (document: VaultDocument, pending: [(name: String, bytes: Data)]) {
-        try verifyPackage(package)
         if io.fileExists(at: layout.current) { throw VaultError.alreadyExists }
-        let wrapper = try VaultJSON.decode(RecoveryWrapperFile.self, from: package.recovery)
-        let keyData = try VaultCrypto.unwrapVaultKey(wrapper, recovery: recovery)
-        let vaultKey = try VaultCrypto.key(from: keyData)
-        let persisted = try VaultJSON.decode(PersistedVaultFile.self, from: package.vault)
-        guard persisted.vaultID == package.manifest.vaultID,
-              persisted.generation == package.manifest.generation,
-              wrapper.vaultID == persisted.vaultID else {
-            throw VaultError.backupIncoherent
-        }
-        let document = try VaultCrypto.reveal(persisted, key: vaultKey)
+        let opened = try open(package, recovery: recovery)
         if !io.fileExists(at: layout.root.deletingLastPathComponent()) {
             try io.createDirectory(at: layout.root.deletingLastPathComponent())
         }
@@ -125,30 +115,54 @@ nonisolated enum BackupCoordinator {
         guard !io.fileExists(at: layout.root) else { throw VaultError.alreadyExists }
         let stagingRoot = layout.root.deletingLastPathComponent()
             .appendingPathComponent(layout.root.lastPathComponent + ".restore-" + UUID().uuidString, isDirectory: true)
-        let staging = VaultLayout(root: stagingRoot)
         defer { try? io.removeItem(at: stagingRoot) }
+        try stage(package, at: stagingRoot, io: io)
         do {
-            try staging.ensureDirectories(io)
-            try io.write(package.vault, to: staging.current, sync: true)
-            try io.write(package.recovery, to: staging.recovery, sync: true)
+            try keys.store(vaultID: opened.document.vaultID, key: opened.key, context: authenticator?.keychainContext)
+            try io.installItem(at: layout.root, from: stagingRoot)
+            return (opened.document, package.pending)
+        } catch {
+            if let vaultError = error as? VaultError { throw vaultError }
+            throw VaultError.backupIncoherent
+        }
+    }
+
+    /// Checks a backup and opens it with `recovery` before anything is written: its document and vault key.
+    static func open(_ package: BackupPackage, recovery: RecoveryCode) throws -> (document: VaultDocument, key: Data) {
+        try verifyPackage(package)
+        let wrapper = try VaultJSON.decode(RecoveryWrapperFile.self, from: package.recovery)
+        let keyData = try VaultCrypto.unwrapVaultKey(wrapper, recovery: recovery)
+        let persisted = try VaultJSON.decode(PersistedVaultFile.self, from: package.vault)
+        guard persisted.vaultID == package.manifest.vaultID,
+              persisted.generation == package.manifest.generation,
+              wrapper.vaultID == persisted.vaultID else {
+            throw VaultError.backupIncoherent
+        }
+        return (try VaultCrypto.reveal(persisted, key: VaultCrypto.key(from: keyData)), keyData)
+    }
+
+    /// Writes the backup's files into a new vault folder at `staging`, flushed, and reads them back.
+    static func stage(_ package: BackupPackage, at staging: URL, io: VaultFileIO) throws {
+        let folder = VaultLayout(root: staging)
+        do {
+            try folder.ensureDirectories(io)
+            try io.write(package.vault, to: folder.current, sync: true)
+            try io.write(package.recovery, to: folder.recovery, sync: true)
             if let previous = package.previous {
-                try io.write(previous, to: staging.previous, sync: true)
+                try io.write(previous, to: folder.previous, sync: true)
             }
             for item in package.pending {
-                try io.write(item.bytes, to: staging.inbox.appendingPathComponent(item.name), sync: true)
+                try io.write(item.bytes, to: folder.inbox.appendingPathComponent(item.name), sync: true)
             }
-            guard try io.data(at: staging.current) == package.vault,
-                  try io.data(at: staging.recovery) == package.recovery else {
+            guard try io.data(at: folder.current) == package.vault,
+                  try io.data(at: folder.recovery) == package.recovery else {
                 throw VaultError.backupIncoherent
             }
             for item in package.pending {
-                guard try io.data(at: staging.inbox.appendingPathComponent(item.name)) == item.bytes else {
+                guard try io.data(at: folder.inbox.appendingPathComponent(item.name)) == item.bytes else {
                     throw VaultError.backupIncoherent
                 }
             }
-            try keys.store(vaultID: document.vaultID, key: keyData, context: authenticator?.keychainContext)
-            try io.installItem(at: layout.root, from: stagingRoot)
-            return (document, package.pending)
         } catch {
             if let vaultError = error as? VaultError { throw vaultError }
             throw VaultError.backupIncoherent
