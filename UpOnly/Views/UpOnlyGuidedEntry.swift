@@ -73,7 +73,21 @@ struct UpOnlyGuidedEntry: View {
             }
             if let error { Label(error, systemImage: "exclamationmark.circle").font(UpOnlyType.body).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             if working { HStack(spacing: 8) { ProgressView().controlSize(.small); Text(step == 2 ? "Saving…" : "Checking…").font(UpOnlyType.body).foregroundStyle(.secondary) } }
+            // The amount and review pages end with their button at the foot of the page, as the saved page does.
+            if step == 1 {
+                Spacer(minLength: 0)
+                primary("Review") {
+                    fillCostFromClose()
+                    Task { await evaluate() }
+                }.disabled(quantity.wrappedValue.isEmpty || working)
+            } else if step == 2 {
+                Spacer(minLength: 0)
+                // No Return shortcut here, so a second Return after Review can't save unseen.
+                primary("Save", shortcut: false) { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
+            }
         }
+        // On the Add page, the amount and review pages fill the menu's height (Manage has its own header and scroll).
+        .frame(minHeight: step > 0 && session.addingInMenu && !session.managementInMenu ? max(0, (session.dashboardHeight ?? 0) - 2 * UpOnlyLayout.inset) : nil, alignment: .top)
         }
         }
         .disabled(working || session.isBusy)
@@ -252,10 +266,6 @@ struct UpOnlyGuidedEntry: View {
                     if row.holding.portfolioID == nil { ownerRow($row.holding.ownerBusinessID) }
                 }
             }
-            primary("Review") {
-                fillCostFromClose()
-                Task { await evaluate() }
-            }.disabled(quantity.wrappedValue.isEmpty || working)
         }.task { amountFocused = true }
             .task(id: priceKey) { await fetchLivePrice() }
             .task(id: closeKey) { await fetchClosePrice() }
@@ -429,6 +439,14 @@ struct UpOnlyGuidedEntry: View {
         let paidValue = (try? numberFormat.decimal(paid, typed: true)).map { readBack($0, fraction: 2...18) } ?? paid
         return VStack(spacing: 16) {
             hero(editable: false)
+            // With a cost, what it's made since: the move as a pill and the gain in dollars.
+            if let gain = gainSinceCost {
+                HStack(spacing: 8) {
+                    UpOnlyChangeBadge(fraction: gain.fraction)
+                    UpOnlyPrivateText((gain.amount < 0 ? "−" : "+") + UpOnlyFormat.exactMoney(abs(gain.amount)) + " since " + closeDay)
+                        .font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity)
+            }
             ManageCard {
                 if mode == .bankBalances {
                     UpOnlyFormRow(label: "Account") { formValue(row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil) }
@@ -441,17 +459,31 @@ struct UpOnlyGuidedEntry: View {
                     }
                 }
             }
+            // What saving will do, in a quiet card of its own.
             if mode != .bankBalances, !holdingNotes.isEmpty || review?.states[row.id] != nil {
-                VStack(alignment: .leading, spacing: 8) {
-                    if let state = review?.states[row.id] { Label(reviewSummary(state), systemImage: "checkmark.circle").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    ForEach(holdingNotes, id: \.self) { note in
-                        Label(note, systemImage: "info.circle").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                ManageCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let state = review?.states[row.id] { note(reviewSummary(state), symbol: "checkmark.circle.fill", tint: UpOnlyTint.gain) }
+                        ForEach(holdingNotes, id: \.self) { note($0, symbol: "info.circle.fill", tint: .secondary) }
+                    }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            // No Return shortcut here, so a second Return after Review can't save unseen.
-            primary("Save", shortcut: false) { Task { await save() } }.disabled(working || review?.hasErrors != false || review?.added == 0)
         }
+    }
+    private func note(_ text: String, symbol: String, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 12)).foregroundStyle(tint)
+            Text(text).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    /// The holding's value now against what it cost, in dollars (a cost in another currency at the latest saved rate).
+    private var gainSinceCost: (fraction: Decimal, amount: Decimal)? {
+        guard mode != .bankBalances, !UTCDay.isSameDay(holdingDate.wrappedValue, Date()), let worth = approxUSD,
+              let paid = try? numberFormat.decimal(row.holding.paid, typed: true), paid > 0 else { return nil }
+        let currency = row.holding.paidCurrency.uppercased().nilIfEmpty ?? "USD"
+        let rate: Decimal? = currency == "USD" ? 1 : session.document?.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" }.max { $0.providerTime < $1.providerTime }?.rate.value
+        guard let rate, let cost = try? MoneyInput.multiply(paid, rate, allowingRounding: true), cost > 0 else { return nil }
+        return ((worth - cost) / cost, worth - cost)
     }
     /// Turns the import engine's "previous → new Coin" state into a sentence.
     private func reviewSummary(_ state: ImportRowState) -> String {
