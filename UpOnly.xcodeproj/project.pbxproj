@@ -11,11 +11,21 @@
 		0551FD5B53556BD683780365 /* PopoverModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126BDC3C9A4A1979B2C758AA /* PopoverModel.swift */; };
 		11B0AE726A44823F66966909 /* UpOnlyFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E176ABBBFCE9A2BAD8326050 /* UpOnlyFixture.swift */; };
 		13D67285E7EEA4233526A25D /* PublicPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */; };
+		BFE8521E642880DA80F716A0 /* WiseAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7604B1BD8E5B7307F86FFE9 /* WiseAPI.swift */; };
+		D4ADBC05557E1C57A7850BD0 /* PriceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12114112BF2733B07BF222A6 /* PriceHistory.swift */; };
+		F8531DA07F37A657B30868CD /* ExchangeRates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 470D6D2B0283006C27A4F0BE /* ExchangeRates.swift */; };
+		AC7E6475DDD5930CBD95DF77 /* MetalPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B012ECA50137677E1DF8C8E0 /* MetalPrices.swift */; };
+		A90EFDD3E88E3066DCDF8437 /* CryptoPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8501290DC05168A4D5DD0D /* CryptoPrices.swift */; };
 		1A0B2640ACA685D063453793 /* UpOnlySetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6AD1A2DD38325FF702427EF /* UpOnlySetup.swift */; };
 		1AB0F7656EAC5C19E47DB328 /* PopoverModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126BDC3C9A4A1979B2C758AA /* PopoverModel.swift */; };
 		1B6B0E59C6C2790C7FAADC23 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300C3E4D76D618517D899CD /* Config.swift */; };
 		1E8A9C8FA6DFAB2ABA41A75D /* UpOnlyManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 299AEE2C5DAF4B1624371F8C /* UpOnlyManagement.swift */; };
 		1F26FED116CE862F792D0F56 /* PublicPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */; };
+		48A32FA217B9BC9FB74740E5 /* WiseAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7604B1BD8E5B7307F86FFE9 /* WiseAPI.swift */; };
+		C97172F7C3B3A474EEA00801 /* PriceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12114112BF2733B07BF222A6 /* PriceHistory.swift */; };
+		94E874D5E7E28B823257204E /* ExchangeRates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 470D6D2B0283006C27A4F0BE /* ExchangeRates.swift */; };
+		AD5498B5B5875B93B50A6D23 /* MetalPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B012ECA50137677E1DF8C8E0 /* MetalPrices.swift */; };
+		2459C579B4CF37355915DC2B /* CryptoPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8501290DC05168A4D5DD0D /* CryptoPrices.swift */; };
 		204C98DCFD756290F761E6EE /* PortfolioModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CF899C6630B9A8C8439F574 /* PortfolioModels.swift */; };
 		21D3D88AFE08710A458A2D2A /* VaultCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = E026F1FCD21F5DE102BF4E3C /* VaultCrypto.swift */; };
 		2E03F37BA918F277F46E8EA1 /* UpOnlySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 830946773D055B16590B028F /* UpOnlySession.swift */; };
@@ -123,6 +133,11 @@
 		15329A954164ED55D99396ED /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };
 		1A96F7B1FE84B960918B4DF7 /* NetWorthCalculator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NetWorthCalculator.swift; path = Model/NetWorthCalculator.swift; sourceTree = "<group>"; };
 		1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PublicPrices.swift; path = Ingest/PublicPrices.swift; sourceTree = "<group>"; };
+		F7604B1BD8E5B7307F86FFE9 /* WiseAPI.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WiseAPI.swift; path = Ingest/WiseAPI.swift; sourceTree = "<group>"; };
+		12114112BF2733B07BF222A6 /* PriceHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PriceHistory.swift; path = Ingest/PriceHistory.swift; sourceTree = "<group>"; };
+		470D6D2B0283006C27A4F0BE /* ExchangeRates.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExchangeRates.swift; path = Ingest/ExchangeRates.swift; sourceTree = "<group>"; };
+		B012ECA50137677E1DF8C8E0 /* MetalPrices.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MetalPrices.swift; path = Ingest/MetalPrices.swift; sourceTree = "<group>"; };
+		EB8501290DC05168A4D5DD0D /* CryptoPrices.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CryptoPrices.swift; path = Ingest/CryptoPrices.swift; sourceTree = "<group>"; };
 		25507AF43A97D41B240765B2 /* VaultTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VaultTypes.swift; path = Security/VaultTypes.swift; sourceTree = "<group>"; };
 		299AEE2C5DAF4B1624371F8C /* UpOnlyManagement.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyManagement.swift; path = Views/UpOnlyManagement.swift; sourceTree = "<group>"; };
 		2ED71CAC3053FCC4645F3584 /* UpOnlyChart.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyChart.swift; path = Views/UpOnlyChart.swift; sourceTree = "<group>"; };
@@ -226,6 +241,11 @@
 				4300C3E4D76D618517D899CD /* Config.swift */,
 				D180EDF0610BC67774AB7415 /* CSVReader.swift */,
 				1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */,
+				F7604B1BD8E5B7307F86FFE9 /* WiseAPI.swift */,
+				12114112BF2733B07BF222A6 /* PriceHistory.swift */,
+				470D6D2B0283006C27A4F0BE /* ExchangeRates.swift */,
+				B012ECA50137677E1DF8C8E0 /* MetalPrices.swift */,
+				EB8501290DC05168A4D5DD0D /* CryptoPrices.swift */,
 				E507EAC3074AC2B97A73DD43 /* Ledger.swift */,
 				ACCF10000000000000000001 /* BusinessAccounting.swift */,
 				ACCF20000000000000000001 /* BackgroundRefresh.swift */,
@@ -424,6 +444,11 @@
 				C45B41CB1B1DDCD1781FD309 /* Config.swift in Sources */,
 				6BD73C030333610D235627A6 /* CSVReader.swift in Sources */,
 				13D67285E7EEA4233526A25D /* PublicPrices.swift in Sources */,
+				BFE8521E642880DA80F716A0 /* WiseAPI.swift in Sources */,
+				D4ADBC05557E1C57A7850BD0 /* PriceHistory.swift in Sources */,
+				F8531DA07F37A657B30868CD /* ExchangeRates.swift in Sources */,
+				AC7E6475DDD5930CBD95DF77 /* MetalPrices.swift in Sources */,
+				A90EFDD3E88E3066DCDF8437 /* CryptoPrices.swift in Sources */,
 				647D7514013E30025118C430 /* Ledger.swift in Sources */,
 				ACCF10000000000000000002 /* BusinessAccounting.swift in Sources */,
 				ACCF20000000000000000002 /* BackgroundRefresh.swift in Sources */,
@@ -482,6 +507,11 @@
 				1B6B0E59C6C2790C7FAADC23 /* Config.swift in Sources */,
 				EC4B64B397855211A36ECE69 /* CSVReader.swift in Sources */,
 				1F26FED116CE862F792D0F56 /* PublicPrices.swift in Sources */,
+				48A32FA217B9BC9FB74740E5 /* WiseAPI.swift in Sources */,
+				C97172F7C3B3A474EEA00801 /* PriceHistory.swift in Sources */,
+				94E874D5E7E28B823257204E /* ExchangeRates.swift in Sources */,
+				AD5498B5B5875B93B50A6D23 /* MetalPrices.swift in Sources */,
+				2459C579B4CF37355915DC2B /* CryptoPrices.swift in Sources */,
 				F2365B36E18D55F729195236 /* Ledger.swift in Sources */,
 				ACCF10000000000000000003 /* BusinessAccounting.swift in Sources */,
 				ACCF20000000000000000003 /* BackgroundRefresh.swift in Sources */,

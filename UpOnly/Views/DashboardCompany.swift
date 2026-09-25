@@ -100,31 +100,23 @@ extension UpOnlyUnlockedPanel {
             if !portfolios.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(Set(portfolios.map(\.kind)).count > 1 ? "Crypto & metals" : portfolios[0].kind == .metals ? "Metals" : "Crypto").font(UpOnlyType.section)
-                    assetList(portfolios.map { portfolio -> AssetRow in
-                        let parts = holdingValues.filter { component in document?.holdings.first { $0.id == component.id }?.portfolioID == portfolio.id }
-                        return AssetRow(id: portfolio.id.uuidString, name: portfolio.name, detail: parts.isEmpty ? nil : parts.map(\.label).joined(separator: ", "),
-                                        value: AssetOwnership.sum(parts).map(UpOnlyFormat.exactMoney) ?? (parts.isEmpty ? "No holdings" : "Price needed"),
-                                        // Crypto always wears Bitcoin's logo; metals their largest holding's.
-                                        logo: portfolio.kind == .crypto ? "bitcoin" : parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document?.holdings.first { $0.id == part.id }?.assetID.rawValue },
-                                        symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
-                                        tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, selected: companyFocus == .portfolio(portfolio.id),
-                                        trailing: .button(symbol: "chevron.right", label: "Open " + portfolio.name, action: {
-                                            select(.portfolio(portfolio.id), .drill)
-                                        })) {
-                            companyFocus = companyFocus == .portfolio(portfolio.id) ? .all : .portfolio(portfolio.id)
+                    // Every holding on its own row, biggest first, as a portfolio page lists them; each opens its portfolio.
+                    assetList(holdingValues.sorted { ($0.usdValue?.value ?? 0) > ($1.usdValue?.value ?? 0) }.compactMap { part -> AssetRow? in
+                        guard let holding = document?.holdings.first(where: { $0.id == part.id }), let portfolio = portfolios.first(where: { $0.id == holding.portfolioID }) else { return nil }
+                        let metal = portfolio.kind == .metals
+                        return AssetRow(id: part.id.uuidString, name: part.label,
+                                        detail: part.nativeAmount.map { ManageFormat.amount($0.value, of: holding, catalog: session.catalog) }, detailIsAmount: true,
+                                        value: part.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? "Price needed",
+                                        logo: holding.assetID.rawValue, symbol: metal ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
+                                        tint: metal ? UpOnlyTint.metals : UpOnlyTint.crypto) {
+                            select(.portfolio(portfolio.id), .drill)
                         }
                     })
                 }
             }
-            if let book {
-                // The sheet's own basis and warnings; the figures above already cover the selected range.
-                DisclosureGroup("Accounting details") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(book.basis)
-                        if let warning = book.warning { Text(warning) }
-                        if let url = URL(string: book.sourceURL), url.scheme == "https" { Link("Open accounting sheet", destination: url).buttonStyle(.bordered) }
-                    }.font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
-                }.font(UpOnlyType.body)
+            // Only a problem with the accounting is worth a line here; how profit is measured stays with the sheet.
+            if let warning = book?.warning {
+                Label(warning, systemImage: "exclamationmark.triangle").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
