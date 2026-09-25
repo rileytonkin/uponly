@@ -38,18 +38,29 @@ struct ValuationResult: Sendable, Equatable {
 }
 
 nonisolated enum NetWorthCalculator {
+    /// `index` must come from this document; pass one when valuing many moments so it's built once. Without one it's
+    /// built here, and only when the day isn't already saved.
     static func value(
         at date: Date,
         scope: ValuationScope,
         document: VaultDocument,
-        now: Date = Date()
+        now: Date = Date(),
+        index: ValuationIndex? = nil
     ) -> ValuationResult {
         let day = UTCDay.start(of: date)
         let isHistorical = day < UTCDay.start(of: now)
         if isHistorical, let stored = document.storedValuation(day: day, scope: scope), stored.isComplete {
             return result(from: stored, at: date)
         }
-        return compute(at: date, scope: scope, document: document, now: now, historical: isHistorical)
+        return compute(at: date, scope: scope, document: document, now: now, historical: isHistorical, index: index ?? ValuationIndex(document: document))
+    }
+
+    /// A day's sample while its history is rebuilt: what `value` gives, looked up in `index`. Only for days whose saved
+    /// samples were cleared first, so there is none to reuse; a sample keeps no last complete value, so none is searched
+    /// for. Both searches scan every saved day, which over years of history cost more than the valuations.
+    static func rebuiltSample(at date: Date, scope: ValuationScope, document: VaultDocument, now: Date, index: ValuationIndex) -> DailyValuation? {
+        sample(from: compute(at: date, scope: scope, document: document, now: now,
+                             historical: UTCDay.start(of: date) < UTCDay.start(of: now), index: index, findsLastComplete: false))
     }
 
     static func sample(from result: ValuationResult) -> DailyValuation? {
@@ -120,7 +131,9 @@ nonisolated enum NetWorthCalculator {
         scope: ValuationScope,
         document: VaultDocument,
         now: Date,
-        historical: Bool
+        historical: Bool,
+        index: ValuationIndex,
+        findsLastComplete: Bool = true
     ) -> ValuationResult {
         var missing: [MissingValuation] = []
         var stale: [StaleValuation] = []
@@ -128,26 +141,26 @@ nonisolated enum NetWorthCalculator {
         let holdings: [ValuationComponent]
         switch scope {
         case .allTracked:
-            banks = bankComponents(at: date, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
-            holdings = holdingComponents(at: date, scope: scope, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+            banks = bankComponents(at: date, document: document, historical: historical, index: index, missing: &missing, stale: &stale)
+            holdings = holdingComponents(at: date, scope: scope, document: document, now: now, historical: historical, index: index, missing: &missing, stale: &stale)
         case .banks:
-            banks = bankComponents(at: date, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+            banks = bankComponents(at: date, document: document, historical: historical, index: index, missing: &missing, stale: &stale)
             holdings = []
         case .portfolio:
             banks = []
-            holdings = holdingComponents(at: date, scope: scope, document: document, now: now, historical: historical, missing: &missing, stale: &stale)
+            holdings = holdingComponents(at: date, scope: scope, document: document, now: now, historical: historical, index: index, missing: &missing, stale: &stale)
         }
         let components = banks + holdings
-        let includedAccounts = includedAccountIDs(scope: scope, document: document, at: date)
+        let includedAccounts = includedAccountIDs(scope: scope, document: document, at: date, index: index)
         let includedPortfolios = includedPortfolioIDs(scope: scope, document: document, at: date)
-        let observed = hasObservation(scope: scope, document: document, at: date, includedAccounts: includedAccounts, includedPortfolios: includedPortfolios)
+        let observed = hasObservation(scope: scope, at: date, index: index, includedAccounts: includedAccounts, includedPortfolios: includedPortfolios)
         if !observed {
             return ValuationResult(
                 at: date,
                 scope: scope,
                 components: [],
                 total: nil,
-                lastComplete: lastCompleteSample(in: document, scope: scope, at: date),
+                lastComplete: findsLastComplete ? lastCompleteSample(in: document, scope: scope, at: date) : nil,
                 missing: [],
                 stale: [],
                 includedAccountIDs: includedAccounts,
@@ -169,7 +182,7 @@ nonisolated enum NetWorthCalculator {
             scope: scope,
             components: components,
             total: total,
-            lastComplete: total == nil ? lastCompleteSample(in: document, scope: scope, at: date) : (total!, date),
+            lastComplete: total.map { (value: $0, at: date) } ?? (findsLastComplete ? lastCompleteSample(in: document, scope: scope, at: date) : nil),
             missing: missing,
             stale: stale,
             includedAccountIDs: includedAccounts,
@@ -194,11 +207,11 @@ nonisolated enum NetWorthCalculator {
             }
     }
 
-    private static func includedAccountIDs(scope: ValuationScope, document: VaultDocument, at date: Date) -> [UUID] {
+    private static func includedAccountIDs(scope: ValuationScope, document: VaultDocument, at date: Date, index: ValuationIndex) -> [UUID] {
         switch scope {
         case .portfolio: return []
         case .allTracked, .banks:
-            return document.accounts.map(\.id).filter { document.isBankTracked($0, at: date) }.sorted { $0.uuidString < $1.uuidString }
+            return document.accounts.map(\.id).filter { index.isBankTracked($0, at: date) }.sorted { $0.uuidString < $1.uuidString }
         }
     }
 
@@ -214,17 +227,15 @@ nonisolated enum NetWorthCalculator {
 
     private static func hasObservation(
         scope: ValuationScope,
-        document: VaultDocument,
         at date: Date,
+        index: ValuationIndex,
         includedAccounts: [UUID],
         includedPortfolios: [UUID]
     ) -> Bool {
-        let hasBank = includedAccounts.contains { accountID in
-            document.bankBalances.contains { $0.accountID == accountID && $0.observedAt <= date }
-        }
-        let holdings = document.holdings.filter { includedPortfolios.contains($0.portfolioID) }
-        let hasQuantity = holdings.contains { holding in
-            document.quantities.contains { $0.holdingID == holding.id && $0.effectiveAt <= date }
+        let hasBank = includedAccounts.contains { index.hasBalance($0, by: date) }
+        // Every holding the portfolios ever had, as before: an archived one still shows the portfolio was observed.
+        let hasQuantity = includedPortfolios.contains { portfolioID in
+            index.holdings(in: portfolioID).contains { index.hasQuantity($0.id, by: date) }
         }
         switch scope {
         case .banks: return hasBank
@@ -236,14 +247,14 @@ nonisolated enum NetWorthCalculator {
     private static func bankComponents(
         at date: Date,
         document: VaultDocument,
-        now: Date,
         historical: Bool,
+        index: ValuationIndex,
         missing: inout [MissingValuation],
         stale: inout [StaleValuation]
     ) -> [ValuationComponent] {
         var result: [ValuationComponent] = []
-        for account in document.accounts where document.isBankTracked(account.id, at: date) {
-            let observation = latestBalance(accountID: account.id, at: date, document: document)
+        for account in document.accounts where index.isBankTracked(account.id, at: date) {
+            let observation = index.balance(account.id, at: date)
             guard let observation else {
                 let component = ValuationComponent(
                     id: account.id,
@@ -265,7 +276,7 @@ nonisolated enum NetWorthCalculator {
                 amount: observation.amount.value,
                 currency: observation.currency,
                 at: date,
-                document: document,
+                index: index,
                 historical: historical
             )
             // Age is judged at the valuation's own date, so a rebuilt past day isn't stale just for being past.
@@ -307,6 +318,7 @@ nonisolated enum NetWorthCalculator {
         document: VaultDocument,
         now: Date,
         historical: Bool,
+        index: ValuationIndex,
         missing: inout [MissingValuation],
         stale: inout [StaleValuation]
     ) -> [ValuationComponent] {
@@ -321,17 +333,13 @@ nonisolated enum NetWorthCalculator {
         }
         var result: [ValuationComponent] = []
         for portfolio in portfolios {
-            for holding in document.activeHoldings(in: portfolio.id, at: date) {
-                guard let quantity = document.effectiveQuantity(holdingID: holding.id, at: date) else {
+            for holding in index.holdings(in: portfolio.id) where holding.isActive(at: date) {
+                guard let quantity = index.quantity(holding.id, at: date) else {
                     continue
                 }
                 if quantity == 0 { continue }
-                let quote = latestQuote(
-                    assetID: holding.assetID,
-                    at: date,
-                    document: document,
-                    historical: historical
-                )
+                // A past day takes a price from that day only.
+                let quote = index.quote(holding.assetID, at: date, sameDayOnly: historical)
                 guard let quote else {
                     result.append(
                         ValuationComponent(
@@ -381,52 +389,95 @@ nonisolated enum NetWorthCalculator {
         return result
     }
 
-    private static func latestBalance(
-        accountID: UUID,
-        at date: Date,
-        document: VaultDocument
-    ) -> BankBalanceObservation? {
-        document.bankBalances.lazy
-            .filter { $0.accountID == accountID && $0.observedAt <= date }
-            .latest { $0.observedAt < $1.observedAt }
-    }
-
-    private static func latestQuote(
-        assetID: CanonicalAssetID,
-        at date: Date,
-        document: VaultDocument,
-        historical: Bool
-    ) -> QuoteObservation? {
-        let day = UTCDay.start(of: date)
-        return document.quotes.lazy
-            .filter { $0.assetID == assetID && $0.providerTime <= date && (!historical || UTCDay.start(of: $0.providerTime) == day) }
-            .latest { $0.providerTime < $1.providerTime }
-    }
+    /// How far back a past day looks for an exchange rate: weekends and holidays publish none.
+    static let rateLookback: TimeInterval = 7 * 86400
 
     private static func convert(
         amount: Decimal,
         currency: String,
         at date: Date,
-        document: VaultDocument,
+        index: ValuationIndex,
         historical: Bool
     ) -> (usd: Decimal?, fxTime: Date?, missing: String?) {
         if currency == "USD" || amount == 0 {
             return (amount, nil, nil)
         }
-        let match = document.fx.lazy
-            .filter {
-                $0.sourceCurrency == currency
-                    && $0.targetCurrency == "USD"
-                    && $0.providerTime <= date
-                    && (!historical || date.timeIntervalSince($0.providerTime) <= 7 * 86400)
-            }
-            .latest { $0.providerTime < $1.providerTime }
-        guard let match else { return (nil, nil, "fx") }
+        guard let match = index.rate(currency, at: date, within: historical ? rateLookback : nil) else { return (nil, nil, "fx") }
         do {
             return (try MoneyInput.multiply(amount, match.rate.value, allowingRounding: true), match.providerTime, nil)
         } catch {
             return (nil, match.providerTime, "overflow")
         }
+    }
+}
+
+/// Each account's balances and tracking, each holding's quantities, each asset's prices and each currency's dollar
+/// rates, sorted once, so a valuation finds the one in effect by binary search rather than scanning every observation
+/// for every part of every day. Answers exactly as the scans did: ties keep the later record, as `latest(by:)` does.
+nonisolated struct ValuationIndex: Sendable {
+    private var balances: [UUID: [BankBalanceObservation]]
+    private var tracking: [UUID: [BankTrackingObservation]]
+    private var trackedAccounts: Set<UUID>
+    private var quantities: [UUID: [QuantityObservation]]
+    private var quotes: [CanonicalAssetID: [QuoteObservation]]
+    private var rates: [String: [FXObservation]]
+    /// Each portfolio's holdings in the document's order.
+    private var portfolioHoldings: [UUID: [Holding]]
+
+    init(document: VaultDocument) {
+        balances = Self.grouped(document.bankBalances, by: \.accountID) { $0.observedAt < $1.observedAt }
+        tracking = Self.grouped(document.bankTracking, by: \.accountID) { ($0.effectiveAt, $0.ordinal) < ($1.effectiveAt, $1.ordinal) }
+        trackedAccounts = Set(document.trackedBankAccountIDs)
+        quantities = Self.grouped(document.quantities, by: \.holdingID, QuantityObservation.ordering)
+        // Only prices of held assets and rates of balances' currencies are ever looked up.
+        let assets = Set(document.holdings.map(\.assetID)), currencies = Set(document.bankBalances.map(\.currency))
+        quotes = Self.grouped(document.quotes.filter { assets.contains($0.assetID) }, by: \.assetID) { $0.providerTime < $1.providerTime }
+        rates = Self.grouped(document.fx.filter { $0.targetCurrency == "USD" && currencies.contains($0.sourceCurrency) }, by: \.sourceCurrency) { $0.providerTime < $1.providerTime }
+        portfolioHoldings = Dictionary(grouping: document.holdings, by: \.portfolioID)
+    }
+
+    /// The latest balance at or before `date`.
+    func balance(_ accountID: UUID, at date: Date) -> BankBalanceObservation? { Self.last(balances[accountID], atOrBefore: date) { $0.observedAt } }
+    func hasBalance(_ accountID: UUID, by date: Date) -> Bool { balances[accountID]?.first.map { $0.observedAt <= date } ?? false }
+    /// `VaultDocument.isBankTracked`: the latest tracking change by `date`; an account with changes only later isn't
+    /// tracked yet, and one with none follows the tracked list.
+    func isBankTracked(_ accountID: UUID, at date: Date) -> Bool {
+        if let last = Self.last(tracking[accountID], atOrBefore: date, { $0.effectiveAt }) { return last.tracked }
+        if tracking[accountID] != nil { return false }
+        return trackedAccounts.contains(accountID)
+    }
+    /// `VaultDocument.effectiveQuantity`.
+    func quantity(_ holdingID: UUID, at date: Date) -> Decimal? { Self.last(quantities[holdingID], atOrBefore: date) { $0.effectiveAt }?.quantity.value }
+    func hasQuantity(_ holdingID: UUID, by date: Date) -> Bool { quantities[holdingID]?.first.map { $0.effectiveAt <= date } ?? false }
+    /// The latest price at or before `date`; with `sameDayOnly`, only one from `date`'s UTC day. Only for a held asset.
+    func quote(_ assetID: CanonicalAssetID, at date: Date, sameDayOnly: Bool) -> QuoteObservation? {
+        guard let quote = Self.last(quotes[assetID], atOrBefore: date, { $0.providerTime }) else { return nil }
+        return !sameDayOnly || UTCDay.isSameDay(quote.providerTime, date) ? quote : nil
+    }
+    /// The latest dollar rate at or before `date`, no older than `lookback` when one is given. Only for a currency some
+    /// balance is in.
+    func rate(_ currency: String, at date: Date, within lookback: TimeInterval?) -> FXObservation? {
+        guard let rate = Self.last(rates[currency], atOrBefore: date, { $0.providerTime }) else { return nil }
+        if let lookback, date.timeIntervalSince(rate.providerTime) > lookback { return nil }
+        return rate
+    }
+    func holdings(in portfolioID: UUID) -> [Holding] { portfolioHoldings[portfolioID] ?? [] }
+
+    /// Grouped by `key`, each group sorted by `ordered` and, where that ties, by position, so the last of equals is the
+    /// later record.
+    private static func grouped<Key: Hashable, Element>(_ items: [Element], by key: (Element) -> Key, _ ordered: (Element, Element) -> Bool) -> [Key: [Element]] {
+        var groups: [Key: [(offset: Int, element: Element)]] = [:]
+        for (offset, element) in items.enumerated() { groups[key(element), default: []].append((offset, element)) }
+        return groups.mapValues { group in
+            group.sorted { ordered($0.element, $1.element) || (!ordered($1.element, $0.element) && $0.offset < $1.offset) }.map { $0.element }
+        }
+    }
+    /// The last of `items`, sorted by `time`, whose time is at or before `date`.
+    private static func last<Element>(_ items: [Element]?, atOrBefore date: Date, _ time: (Element) -> Date) -> Element? {
+        guard let items else { return nil }
+        var low = 0, high = items.count
+        while low < high { let mid = (low + high) / 2; if time(items[mid]) <= date { low = mid + 1 } else { high = mid } }
+        return low > 0 ? items[low - 1] : nil
     }
 }
 
@@ -439,46 +490,118 @@ nonisolated struct HoldingPerformance: Equatable {
     var costCurrency: String?
     var gainUSD: Decimal?
     var returnFraction: Decimal?
-    /// Set when the lots bought less than is held now: the cost is what `coveredQuantity` of `heldQuantity` cost, and no gain is known.
+    /// Set when the lots cover less than is held now: the cost is what `coveredQuantity` of `heldQuantity` cost, and no gain is known.
     var coveredQuantity: Decimal?
     var heldQuantity: Decimal?
     static func summary(holdingID: UUID, valueUSD: Decimal?, document: VaultDocument, at date: Date = Date()) -> HoldingPerformance {
         var result = HoldingPerformance()
         result.since = document.quantities.filter { $0.holdingID == holdingID }.map(\.effectiveAt).min()
-        let lots = (document.purchases ?? []).filter { $0.holdingID == holdingID && $0.at <= date }
-        guard !lots.isEmpty else { return result }
-        let bought = lots.reduce(Decimal(0)) { $0 + $1.quantity.value }
-        let held = document.effectiveQuantity(holdingID: holdingID, at: date)
-        let covered = held.map { bought >= $0 } ?? false
-        if let held, !covered { result.coveredQuantity = bought; result.heldQuantity = held }
-        // Average cost: after a sale, what is still held carries its share of everything paid.
-        func heldCost(_ paid: Decimal) -> Decimal? {
-            guard covered, let held, held != bought else { return paid }
-            var value = paid * held / bought, rounded = Decimal()
-            NSDecimalRound(&rounded, &value, 2, .plain)
-            return rounded.isNaN ? nil : rounded
-        }
-        var total: Decimal = 0
-        var convertible = true
-        for lot in lots {
-            guard let rate = MonthlyLedger.rate(currency: lot.currency, month: AssetOwnership.month(at: lot.at), document: document, now: date),
-                  let usd = try? MoneyInput.multiply(lot.paid.value, rate, allowingRounding: true),
-                  let sum = try? MoneyInput.add(total, usd, allowingRounding: true) else { convertible = false; break }
-            total = sum
-        }
-        if convertible {
-            guard let cost = heldCost(total) else { return result }
+        guard let basis = costBasis(holdingID: holdingID, document: document, at: date) else { return result }
+        let covered = basis.held.map { basis.covered >= $0 } ?? false
+        if let held = basis.held, !covered { result.coveredQuantity = basis.covered; result.heldQuantity = held }
+        if let cost = basis.costUSD.flatMap(cents) {
             result.costUSD = cost
             if covered, let valueUSD, let gain = try? MoneyInput.add(valueUSD, -cost, allowingRounding: true) {
                 result.gainUSD = gain
                 if cost > 0 { result.returnFraction = gain / cost }
             }
-        } else if Set(lots.map(\.currency)).count == 1 {
-            var native: Decimal = 0
-            for lot in lots { guard let sum = try? MoneyInput.add(native, lot.paid.value) else { return result }; native = sum }
-            result.costNative = heldCost(native); result.costCurrency = lots[0].currency
+        } else if let native = basis.costNative.flatMap(cents), let currency = basis.currency {
+            result.costNative = native; result.costCurrency = currency
         }
         return result
+    }
+
+    /// What is still held of a holding's recorded purchases, and what that cost.
+    struct Basis: Equatable {
+        /// Quantity still held that has a recorded cost; never more than `held`.
+        var covered: Decimal = 0
+        /// What `covered` cost in dollars, each purchase at the rate on its day; nil when one has no rate.
+        var costUSD: Decimal? = 0
+        /// The same in the purchases' own currency, when they all share one; nil when they don't.
+        var costNative: Decimal? = 0
+        var currency: String?
+        /// The quantity held; nil before the first dated quantity.
+        var held: Decimal?
+    }
+    /// Average cost, replayed in date order. A purchase adds its quantity and what it cost. A fall in the quantity held
+    /// takes cost out pro rata at the running average, so what's left keeps its average; a holding that goes to zero
+    /// starts afresh when bought again. A quantity change comes before a purchase at the same moment, so selling out
+    /// and buying back on one day keeps the new purchase. Purchases recording more than is held at the end (a cost
+    /// restated for the whole position, or a sale never entered) cost what's held at their average. Unrounded; nil
+    /// without a purchase by `date`.
+    static func costBasis(holdingID: UUID, document: VaultDocument, at date: Date) -> Basis? {
+        let lots = (document.purchases ?? []).enumerated().filter { $0.element.holdingID == holdingID && $0.element.at <= date }
+            .sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }.map { $0.element }
+        guard !lots.isEmpty else { return nil }
+        let changes = document.quantities.enumerated().filter { $0.element.holdingID == holdingID && $0.element.effectiveAt <= date }
+            .sorted { QuantityObservation.ordering($0.element, $1.element) || (!QuantityObservation.ordering($1.element, $0.element) && $0.offset < $1.offset) }
+            .map { $0.element }
+        var basis = Basis()
+        // Keeps `part` of `whole` of everything recorded.
+        func keep(_ part: Decimal, of whole: Decimal) {
+            basis.covered = scaled(basis.covered, part, whole) ?? 0
+            basis.costUSD = basis.costUSD.flatMap { scaled($0, part, whole) }
+            basis.costNative = basis.costNative.flatMap { scaled($0, part, whole) }
+        }
+        func apply(_ change: QuantityObservation) {
+            let quantity = change.quantity.value
+            if quantity == 0 { basis = Basis() } else if let held = basis.held, quantity < held { keep(quantity, of: held) }
+            basis.held = quantity
+        }
+        func add(_ lot: PurchaseLot) {
+            guard let covered = try? MoneyInput.add(basis.covered, lot.quantity.value, allowingRounding: true) else { basis.costUSD = nil; basis.costNative = nil; return }
+            basis.covered = covered
+            basis.costUSD = basis.costUSD.flatMap { total in
+                purchaseRate(lot.currency, at: lot.at, document: document, now: date)
+                    .flatMap { try? MoneyInput.multiply(lot.paid.value, $0, allowingRounding: true) }
+                    .flatMap { try? MoneyInput.add(total, $0, allowingRounding: true) }
+            }
+            if basis.currency == nil { basis.currency = lot.currency } else if basis.currency != lot.currency { basis.costNative = nil }
+            basis.costNative = basis.costNative.flatMap { try? MoneyInput.add($0, lot.paid.value, allowingRounding: true) }
+        }
+        var next = 0
+        for lot in lots {
+            while next < changes.count, changes[next].effectiveAt <= lot.at { apply(changes[next]); next += 1 }
+            add(lot)
+        }
+        while next < changes.count { apply(changes[next]); next += 1 }
+        if let held = basis.held, basis.covered > held { keep(held, of: basis.covered); basis.covered = held }
+        return basis
+    }
+    /// What `quantity` moved out of a holding cost, as a purchase in `destinationID` on the day of the move, so the
+    /// cost goes with the coins. Nil when none of what moved has a recorded cost, or its purchases are in several
+    /// currencies without a rate for one of them. The source needs nothing: its lower quantity takes the same share out.
+    static func carriedLot(moving quantity: Decimal, from holdingID: UUID, to destinationID: UUID, at date: Date, document: VaultDocument) -> PurchaseLot? {
+        guard let basis = costBasis(holdingID: holdingID, document: document, at: date), let held = basis.held, held > 0 else { return nil }
+        let part = min(quantity, held)
+        guard let covered = scaled(basis.covered, part, held), covered > 0 else { return nil }
+        let share: Decimal?, currency: String
+        if let usd = basis.costUSD { share = scaled(usd, part, held).flatMap(cents); currency = "USD" }
+        else if let native = basis.costNative, let code = basis.currency { share = scaled(native, part, held).flatMap(cents); currency = code }
+        else { return nil }
+        guard let paid = share else { return nil }
+        return PurchaseLot(holdingID: destinationID, quantity: PreciseDecimal(covered), paid: PreciseDecimal(paid), currency: currency, at: date)
+    }
+    /// Dollars for one unit of `currency` on a purchase's day: the latest rate that day, or in the week before it, as a
+    /// balance that day is valued. Not the month's closing rate, which may come weeks after the purchase.
+    static func purchaseRate(_ currency: String, at date: Date, document: VaultDocument, now: Date) -> Decimal? {
+        if currency == "USD" { return 1 }
+        let cutoff = min(UTCDay.start(of: date).addingTimeInterval(86400 - 1), max(date, now))
+        return document.fx.lazy
+            .filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" && $0.providerTime <= cutoff && cutoff.timeIntervalSince($0.providerTime) <= NetWorthCalculator.rateLookback }
+            .latest { $0.providerTime < $1.providerTime }?.rate.value
+    }
+    /// `amount × part ÷ whole`, nil when it can't be worked out.
+    private static func scaled(_ amount: Decimal, _ part: Decimal, _ whole: Decimal) -> Decimal? {
+        guard whole != 0, var product = try? MoneyInput.multiply(amount, part, allowingRounding: true) else { return nil }
+        var divisor = whole, result = Decimal()
+        let status = NSDecimalDivide(&result, &product, &divisor, .plain)
+        return (status == .noError || status == .lossOfPrecision) && !result.isNaN ? result : nil
+    }
+    private static func cents(_ amount: Decimal) -> Decimal? {
+        var value = amount, rounded = Decimal()
+        NSDecimalRound(&rounded, &value, 2, .plain)
+        return rounded.isNaN ? nil : rounded
     }
 }
 
@@ -493,11 +616,13 @@ nonisolated enum HoldingMutations {
         // Old samples for these days no longer describe the holdings held then; drop them
         // so a day without saved prices shows as a gap rather than a wrong value.
         next.dailyValuations.removeAll { let day = UTCDay.start(of: $0.utcDay); return day >= first && day < last }
+        // Only the saved days change below, so one index serves every day.
+        let index = ValuationIndex(document: next)
         var day = first
         while day < last {
             let at = day.addingTimeInterval(86400 - 1)
             // Every scope is valued before the day's samples are added, and each (day, scope) is written once.
-            let samples = scopes.compactMap { NetWorthCalculator.sample(from: NetWorthCalculator.value(at: at, scope: $0, document: next, now: now)) }
+            let samples = scopes.compactMap { NetWorthCalculator.rebuiltSample(at: at, scope: $0, document: next, now: now, index: index) }
             next.dailyValuations.append(contentsOf: samples)
             day = day.addingTimeInterval(86400)
         }
@@ -606,6 +731,10 @@ nonisolated enum HoldingMutations {
                 ordinal: secondOrdinal
             )
         )
+        // What the moved coins cost goes with them, worked out from the source as it stood before the move.
+        if let lot = HoldingPerformance.carriedLot(moving: quantity, from: sourceHolding.id, to: destHolding.id, at: date, document: document) {
+            next.purchases = (next.purchases ?? []) + [lot]
+        }
         return next
     }
 
@@ -860,9 +989,12 @@ nonisolated struct PeriodChange: Equatable {
         amount = current - previous
         fraction = previous > 0 ? (current - previous) / previous : nil
     }
-    /// The same parts then and now; nil when none of them existed then or either side can't be valued.
+    /// Only the parts there both then and now: an account or coin added during the range isn't a gain, nor one gone
+    /// since a loss. Nil when no part is in both, or one of them can't be valued on either side.
     init?(parts current: [ValuationComponent], then earlier: [ValuationComponent]) {
-        guard !current.isEmpty, !earlier.isEmpty, let now = AssetOwnership.sum(current), let then = AssetOwnership.sum(earlier) else { return nil }
+        let before = Set(earlier.map(\.id)), after = Set(current.map(\.id))
+        let kept = current.filter { before.contains($0.id) }, was = earlier.filter { after.contains($0.id) }
+        guard !kept.isEmpty, let now = AssetOwnership.sum(kept), let then = AssetOwnership.sum(was) else { return nil }
         self.init(from: then, to: now)
     }
 }
@@ -890,7 +1022,8 @@ extension HoldingPerformance {
 /// straight across months. Each gap is estimated from the nearest saved values instead, and named, so the hover can
 /// say what was estimated. The saved days themselves are never changed.
 nonisolated struct ChartEstimates {
-    /// How far from a saved value a price, rate or balance may be carried when there is nothing on the other side.
+    /// How far from a saved value a price, rate or balance may be carried when there is nothing on the other side,
+    /// and the longest gap a price or rate is drawn across.
     static let window: TimeInterval = 90 * 86400
     /// A saved value this close is used as it is, rather than drawn between its neighbours.
     static let near: TimeInterval = 3 * 86400
@@ -934,12 +1067,14 @@ nonisolated struct ChartEstimates {
         return before?.value ?? after?.value
     }
     /// A price or rate for a moment: a saved one within `near`; otherwise a straight line between the saved ones on
-    /// either side, however far apart; otherwise the nearest within `window`. Returns the dates it came from.
+    /// either side when they're at most `window` apart; otherwise, with nothing on one side, the nearest within
+    /// `window`. A longer gap between saved values stays a gap. Returns the dates it came from.
     static func estimate(_ series: Series, at moment: Date) -> (value: Decimal, from: Date, to: Date?)? {
         if let close = nearest(series, to: moment, within: near) { return (close.value, close.time, nil) }
         let (before, after) = neighbours(series, moment)
         if let before, let after {
             let span = after.time.timeIntervalSince(before.time)
+            guard span <= window else { return nil }
             let part = Decimal(moment.timeIntervalSince(before.time) / span)
             return (before.value + (after.value - before.value) * part, before.time, after.time)
         }

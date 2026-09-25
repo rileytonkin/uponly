@@ -248,8 +248,7 @@ struct PublicAppTests {
         doc.entries = [Entry(month: month, kind: .income, amount: 100, currency: "USD", label: "Personal"), Entry(month: month, bucket: .otherBusiness, kind: .income, amount: 200, currency: "USD", label: "Business")]
         let model = PopoverModel(); model.replace(with: doc)
         #expect(model.state.totals?.personalIncome == 100)
-        #expect(model.breakdown(.income).count == 1)
-        #expect(model.breakdown(.income)[0].amount == 100)
+        #expect(model.personalEntries.filter { $0.kind == .income }.map(\.amount) == [100])
     }
     @Test("Combined personal activity reconciles both entry types across monthly, annual and all-time periods")
     @MainActor func combinedPersonalActivity() {
