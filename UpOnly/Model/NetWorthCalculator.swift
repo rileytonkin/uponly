@@ -805,11 +805,15 @@ nonisolated enum BalanceReconstruction {
             if day < anchorDay { result.append(observation(account, amount: running, day: day, now: now)) }
             running -= byDay[day] ?? 0
         }
-        // Forwards: statements newer than the anchor extend it.
-        var forward = anchor.amount.value
+        // Forwards: statements newer than the anchor extend it, but not across a month or more with no statement rows:
+        // that's months nobody imported, and carrying the balance over them would invent one. (Wise syncs everything,
+        // so a quiet month there is real and its history carries on.)
+        var forward = anchor.amount.value, previousDay = anchorDay
         for day in byDay.keys.filter({ $0 > anchorDay }).sorted() {
+            if account.externalProfileID == nil, day.timeIntervalSince(previousDay) > 31 * 86400 { break }
             forward += byDay[day] ?? 0
             result.append(observation(account, amount: forward, day: day, now: now))
+            previousDay = day
         }
         return result.sorted { $0.observedAt < $1.observedAt }
     }

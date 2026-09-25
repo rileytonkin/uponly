@@ -259,7 +259,11 @@ nonisolated enum MonthlyLedger {
         let monthID = month.description
         let entries = document.entries.filter { $0.month == monthID && $0.kind != .transfer && $0.bucket == .personal }
         let provisional = month == .current() || !document.reviewedMonths.contains(monthID)
-        guard !entries.isEmpty else { return PanelState(totals: nil, isEstimated: provisional, waitingCaption: "No entries recorded", unavailable: .noEntries) }
+        guard !entries.isEmpty else {
+            // A past month you confirmed had nothing to record is a complete month of zero, not a missing one.
+            if !provisional { return PanelState(totals: MonthTotals(), isEstimated: false, waitingCaption: "Nothing recorded this month") }
+            return PanelState(totals: nil, isEstimated: provisional, waitingCaption: "No entries recorded", unavailable: .noEntries)
+        }
         // One dated rate per currency is shared by every entry in this month.
         // Re-scanning years of FX history for each transaction delays unlock.
         let currencies = Set(entries.filter { $0.amount != 0 }.map(\.currency))

@@ -53,13 +53,17 @@ nonisolated enum UpOnlyStandIn {
         let magnitude = max(abs(NSDecimalNumber(decimal: total ?? 100_000).doubleValue), 1)
         return base / Decimal(pow(10, ceil(log10(magnitude))))
     }
-    private static let money = try! NSRegularExpression(pattern: #"(?<![\w.,])([$£€¥₹₩₫₱₪₦₴₺₽฿]|[A-Z]{3}[\s\u00A0])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"#)
-    private static let quantity = try! NSRegularExpression(pattern: #"(?<![\w.,$£€¥₹])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?=[\s\u00A0](?:[A-Z][A-Z0-9]{1,9}|ozt|kg|g)\b)"#)
+    // Symbols with a country prefix count too ("CA$", "A$", "R$", "HK$", "CN¥"), as do codes before the number ("CHF 1,234").
+    private static let money = try! NSRegularExpression(pattern: #"(?<![\w.,])((?:[A-Z]{1,3})?[$£€¥₹₩₫₱₪₦₴₺₽฿]|[A-Z]{3}[\s\u00A0])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"#)
+    // A number before any ticker (one letter, or starting with a digit: "S", "1INCH"), a coin's name ("Arbitrum") or a unit.
+    private static let quantity = try! NSRegularExpression(pattern: #"(?<![\w.,$£€¥₹])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?=[\s\u00A0](?:[A-Z0-9][A-Za-z0-9]{0,15}|ozt|kg|g)\b)"#)
+    // A bare number on its own ("25,000,000"), as a form reads back what was typed.
+    private static let bare = try! NSRegularExpression(pattern: #"^[\s\u00A0]*[−-]?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)[\s\u00A0]*$"#)
     /// The same text with each amount and quantity scaled: "$1,234.56", "£20.00", "CHF 1,234.00", "0.1 BTC", "2 ozt".
     /// Percentages, dates and counts are left alone.
     static func scale(_ text: String, by factor: Decimal) -> String {
         var result = text
-        for (expression, group, isQuantity) in [(money, 2, false), (quantity, 1, true)] {
+        for (expression, group, isQuantity) in [(money, 2, false), (quantity, 1, true), (bare, 1, true)] {
             let source = result as NSString
             for match in expression.matches(in: result, range: NSRange(location: 0, length: source.length)).reversed() {
                 let range = match.range(at: group)

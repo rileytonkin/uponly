@@ -689,6 +689,32 @@ struct OwnedAssetTests {
         #expect(BalanceReconstruction.apply(accountIDs: [monzo.id], to: &doc, now: formatter.date(from: "2026-09-20")!) == nil)
         #expect(NetWorthCalculator.value(at: formatter.date(from: "2026-09-05")!, scope: .banks, document: doc).components.first?.nativeAmount?.value == 1220)
     }
+    @Test("A balance isn't carried across months with no statement rows")
+    func reconstructionStopsAtGaps() throws {
+        var doc = document()
+        let monzo = Account(name: "Monzo", currency: "GBP"); doc.accounts = [monzo]; doc.trackedBankAccountIDs = [monzo.id]
+        let formatter = BalanceReconstruction.dayFormatter()
+        // A balance typed in January, then only June's statement imported: February to May were never seen.
+        doc.bankBalances = [BankBalanceObservation(id: UUID(), accountID: monzo.id, amount: PreciseDecimal(1000), currency: "GBP", observedAt: formatter.date(from: "2026-01-05")!, source: "Import", sourceIdentity: "x")]
+        func entry(_ day: String, _ amount: Decimal) -> Entry {
+            var e = Entry(month: MonthKey(String(day.prefix(7)))!, kind: .expense, amount: amount, currency: "GBP", label: day, source: .csv, sourceRef: monzo.id.uuidString + ":" + day)
+            e.day = day; e.outflow = true; return e
+        }
+        doc.entries = [entry("2026-01-20", 100), entry("2026-06-10", 50), entry("2026-06-20", 25)]
+        let derived = try #require(BalanceReconstruction.derive(accountID: monzo.id, document: doc, now: formatter.date(from: "2026-07-01")!))
+        // January's row follows the balance; June's aren't invented from it.
+        #expect(derived.map { formatter.string(from: $0.observedAt) } == ["2026-01-20"])
+        #expect(derived.first?.amount.value == 900)
+    }
+    @Test("A past month confirmed as having nothing to record counts as zero, not missing")
+    func reviewedEmptyMonth() {
+        var doc = document()
+        let month = MonthKey.current().previous
+        #expect(MonthlyLedger.personal(month, document: doc).unavailable == .noEntries)
+        doc.reviewedMonths = [month.description]
+        let state = MonthlyLedger.personal(month, document: doc)
+        #expect(state.unavailable == nil && state.totals?.net == 0 && !state.isEstimated)
+    }
     @Test("Company cash and crypto use historical ownership; full balances stay unchanged")
     func historicalOwnership() throws {
         var doc = document(); doc.businessAccounting = [try book()]

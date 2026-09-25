@@ -459,7 +459,7 @@ final class UpOnlySession {
         monthModel = nil
         dashboardSelection = .all
         // The dashboard's height stays: it's layout, not data, and the next unlock opens straight at it.
-        showingSwitcher = false; cashFlowScope = nil; dashboardTrail = []
+        showingSwitcher = false; cashFlowScope = nil; dashboardTrail = []; dashboardDetailOpen = false
         message = nil
         isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
         sourceIssues = [:]
@@ -529,6 +529,13 @@ final class UpOnlySession {
             }
         }
         guard token == sessionToken, state == .unlocked else { return }
+        // A load cut short (the page changed, the menu closed) isn't a load: what it didn't bring is asked for again
+        // next time, and its ranges aren't marked ready on saved prices alone.
+        if Task.isCancelled {
+            for job in jobs where fetched[job.key] == nil { intradayFetchedAt[job.key] = nil }
+            if !fetched.isEmpty { intraday.merge(fetched) { _, latest in latest } }
+            return
+        }
         // One change for everything that arrived, so the chart redraws once.
         if !fetched.isEmpty { intraday.merge(fetched) { _, latest in latest } }
         intradayReady.formUnion(ranges.filter { $0.intradayStep != nil }.map(\.title))
@@ -1882,7 +1889,9 @@ extension UpOnlySession {
         var failed = false
         for update in result.packets {
             guard token == sessionToken, state == .unlocked else { return }
-            do { try await mutatePrepared { try BackgroundRefresh.applying(update, to: $0) } } catch { failed = true }
+            do { try await mutatePrepared { try BackgroundRefresh.applying(update, to: $0) } }
+            catch is CancellationError { return }  // the refresh loop was restarted: not a failed update
+            catch { failed = true }
         }
         if failed, token == sessionToken { backgroundIssues = Array(Set(backgroundIssues + ["Cached updates"])) }
     }
