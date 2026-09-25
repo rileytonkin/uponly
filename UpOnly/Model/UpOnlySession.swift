@@ -467,10 +467,6 @@ final class UpOnlySession {
         // No evaluation is running now; show the fingerprint/password button instead of a spinner.
         if state == .locked { authenticationFailed = true }
     }
-    /// Stops a Touch ID prompt that is waiting for a finger, e.g. when the user switches to the recovery code.
-    func cancelPendingUnlock() {
-        authenticationContext?.invalidate(); authenticationContext = nil
-    }
 
     /// Closes the menu bar menu, set by the app. Nil in the preview window, where there's no menu to close.
     var closeMenuHandler: (() -> Void)?
@@ -510,9 +506,7 @@ final class UpOnlySession {
     private func publish(_ document: VaultDocument, freshUnlock: Bool = false) {
         self.document = document; documentRevision += 1
         if freshUnlock || monthModel == nil {
-            let model = PopoverModel()
-            model.owner = self
-            monthModel = model
+            monthModel = PopoverModel()
         }
         if freshUnlock || !document.showsDestination(destination) { destination = document.defaultDestination }
         if freshUnlock || !document.showsSection(managementSection) { managementSection = document.defaultManagementSection }
@@ -1729,18 +1723,21 @@ extension UpOnlySession {
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return .cancelled }
         isBusy = true; message = nil
         // Reading and hashing up to a few hundred megabytes stays off the main thread.
-        let package = try? await Task.detached(priority: .userInitiated) { () throws -> BackupPackage in
+        let read = await Task.detached(priority: .userInitiated) { () throws -> BackupPackage in
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             return try BackupCoordinator.read(from: url, io: DiskFileIO())
-        }.value
+        }.result
         guard token == sessionToken else { return .cancelled }
         isBusy = false
-        guard let package else { message = Self.restoreFailure(replacing: replacing); return .failed }
+        let package: BackupPackage
+        do { package = try read.get() } catch { message = Self.restoreFailure(error, replacing: replacing); return .failed }
         return await restoreBackup(package, recovery: recovery, confirmed: confirmed)
     }
-    private static func restoreFailure(replacing: Bool) -> String {
-        replacing ? "Restore failed. Your current vault is unchanged." : "Restore failed. Check the backup and recovery code. An existing vault is never replaced."
+    /// A backup from a newer version says so; anything else, that the restore failed and what was kept.
+    private static func restoreFailure(_ error: Error, replacing: Bool) -> String {
+        if error as? VaultError == .unknownSchema { return "This backup was saved by a newer version of Up Only. Update the app to restore it." }
+        return replacing ? "Restore failed. Your current vault is unchanged." : "Restore failed. Check the backup and recovery code. An existing vault is never replaced."
     }
 
     /// The restore both entry points share. A code that doesn't open the backup stops here, and replacing a vault with
@@ -1780,7 +1777,7 @@ extension UpOnlySession {
                     if await vault.isUnlocked { writers.release() } else { lockAndAuthenticate() }
                     message = vault.io.fileExists(at: aside)
                         ? "Restore failed. Your vault is in the folder “\(aside.lastPathComponent)” beside where it was."
-                        : Self.restoreFailure(replacing: true)
+                        : Self.restoreFailure(error, replacing: true)
                     return .failed
                 }
                 guard token == sessionToken else { return .failed }
@@ -1812,7 +1809,7 @@ extension UpOnlySession {
             return .restored
         } catch VaultError.cancelled { return .cancelled }
         catch {
-            if token == sessionToken { message = Self.restoreFailure(replacing: replacing) }
+            if token == sessionToken { message = Self.restoreFailure(error, replacing: replacing) }
             return .failed
         }
     }

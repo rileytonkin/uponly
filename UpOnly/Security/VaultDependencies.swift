@@ -95,7 +95,6 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
     private var directories: Set<String> = []
     private var heldLocks: Set<String> = []
     private var unreadable: Set<String> = []
-    private var unlistable: Set<String> = []
 
     var failWrite = false
     var failReplace = false
@@ -109,10 +108,6 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         unreadable.insert(url.path)
     }
 
-    func markUnlistable(_ url: URL) {
-        lock.lock(); defer { lock.unlock() }
-        unlistable.insert(url.path)
-    }
 
     func data(at url: URL) throws -> Data {
         onRead?()
@@ -214,7 +209,6 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
 
     func contentsOfDirectory(at url: URL) throws -> [URL] {
         lock.lock(); defer { lock.unlock() }
-        if unlistable.contains(url.path) { throw CocoaError(.fileReadNoPermission) }
         let prefix = url.path.hasSuffix("/") ? url.path : url.path + "/"
         var names = Set<String>()
         for key in files.keys where key.hasPrefix(prefix) {

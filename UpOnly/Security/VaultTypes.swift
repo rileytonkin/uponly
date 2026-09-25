@@ -54,7 +54,6 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     case oversizedBatch
     case oversizedInbox
     case invalidSignature
-    case wrongVault
     case unknownSchema
     case invalidAmount
     case invalidCurrency
@@ -66,10 +65,6 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     case confirmationMismatch
     case backupIncoherent
     case pauseFailed
-    case malformedLegacy
-    case verificationFailed
-    case cleanupFailed
-    case formatNotActive
     case unsafeFilename
     case unavailable
     case overflow
@@ -90,11 +85,11 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
         case .diskWriteFailed: "The change couldn’t be saved. Check available disk space and try again."
         case .oversizedVault: "Your vault has reached its 128 MB limit. Export a backup from Security; new imports cannot be saved."
         case .oversizedBatch, .oversizedInbox: "This import is too large. Split it into smaller files and try again."
-        case .unknownSchema, .formatNotActive: "This file needs a compatible version of Up Only. Check for an app update."
+        case .unknownSchema: "This file needs a compatible version of Up Only. Check for an app update."
         case .staleGeneration, .invalidGeneration, .alreadyOpen, .barrierHeld, .pauseFailed: "Another change is still finishing. Wait a moment, then try again."
         case .missingRecoveryWrapper: "This backup is missing recovery information. Choose another backup."
-        case .corrupt, .backupIncoherent, .invalidSignature, .wrongVault, .malformedLegacy, .verificationFailed, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
-        case .cleanupFailed, .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
+        case .corrupt, .backupIncoherent, .invalidSignature, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
+        case .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
         }
     }
 

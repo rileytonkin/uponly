@@ -16,7 +16,6 @@ nonisolated enum PerformancePeriod: String, CaseIterable { case monthly = "Month
     private var personalStart: MonthKey?
     private var choseInitialMonth = false
     private var explicitlySelectedMonth = false
-    weak var owner: UpOnlySession?
     var books: [BusinessBook] { document?.businessAccounting ?? [] }
     var periodTitle: String { period == .monthly ? month.title : period == .annual ? String(month.year) : "All time" }
     // One selection drives both dashboard sections. Asset history must not be

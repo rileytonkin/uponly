@@ -221,10 +221,6 @@ struct VaultLayout: Sendable, Equatable {
     var pendingRecovery: URL { root.appendingPathComponent("recovery.wrapper.next") }
     var lockFile: URL { root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + ".writer.lock") }
     var inbox: URL { root.appendingPathComponent("Inbox", isDirectory: true) }
-    var journal: URL { root.appendingPathComponent("cutover.journal") }
-    var formatActive: URL { root.appendingPathComponent("encrypted.format") }
-    var writerDisabled: URL { root.appendingPathComponent("plaintext-writer.disabled") }
-    var backupTemp: URL { root.appendingPathComponent("backup.tmp", isDirectory: true) }
     /// Beside the folder while a restore replaces it (`VaultStore.replace`), naming where the vault was moved.
     var restoreJournal: URL { root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + ".restore.journal") }
 

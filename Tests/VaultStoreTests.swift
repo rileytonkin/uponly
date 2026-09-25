@@ -1485,6 +1485,21 @@ struct VaultStoreTests {
         #expect(!h.io.fileExists(at: h.layout.root.appendingPathComponent("vault.uponly.damaged")))
     }
 
+    @Test("A backup from a newer version says so, and the open vault stays as it was")
+    @MainActor func sessionNewerBackup() async throws {
+        var backup = try await otherBackup()
+        backup.package.manifest.format += 1
+        let h = harness()
+        _ = try await createWithAccount(h.store, h.recovery)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        await session.unlock()
+        let vaultID = session.document?.vaultID
+        #expect(await session.restoreBackup(backup.package, recovery: backup.code, confirmed: true) == .failed)
+        #expect(session.message == "This backup was saved by a newer version of Up Only. Update the app to restore it.")
+        #expect(session.state == .unlocked && session.document?.vaultID == vaultID)
+    }
+
     // MARK: The background configuration's Keychain move
 
     @Test("The background configuration moves from the login keychain once, deleting the old item only after the new one is saved")
