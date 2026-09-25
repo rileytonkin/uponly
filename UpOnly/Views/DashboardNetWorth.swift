@@ -136,12 +136,16 @@ extension UpOnlyUnlockedPanel {
         // Privacy mode: stand-in figures, scaled like the total above.
         let scale = session.privacyMode ? session.standInFactor : 1
         let text = scale.map { UpOnlyFormat.movement(allTime.gain * $0, fraction: fraction, cents: false) } ?? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: fraction)
-        let covered = allTime.covered < allTime.total ? " · \(allTime.covered) of \(allTime.total) holdings" : ""
-        let note = scale.map { " on " + UpOnlyFormat.money(allTime.cost * $0) + " paid" + covered } ?? covered
-        let label = Text("All-time  ").foregroundStyle(.secondary)
-        let figure = Text(text).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(allTime.gain))
-        return Text("\(label)\(figure)\(Text(note).font(UpOnlyType.caption).foregroundStyle(.secondary))")
-            .font(UpOnlyType.body).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        // One short line: the profit. What it's measured on (what was paid, and how many holdings have a cost) is the
+        // tooltip, with a small mark when only some holdings are counted.
+        let partial = allTime.covered < allTime.total
+        let note = [scale.map { "On " + UpOnlyFormat.money(allTime.cost * $0) + " paid" }, partial ? "\(allTime.covered) of \(allTime.total) holdings have a cost" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+        return HStack(spacing: 6) {
+            Text("All-time").foregroundStyle(.secondary)
+            Text(text).font(UpOnlyType.body.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(allTime.gain))
+            if partial { Image(systemName: "info.circle").font(.system(size: 10)).foregroundStyle(.tertiary) }
+        }.font(UpOnlyType.body).lineLimit(1).help(note)
             .accessibilityElement(children: .ignore).accessibilityLabel("All-time profit")
             .accessibilityValue([session.privacyMode ? "amount hidden" : UpOnlyFormat.movement(allTime.gain, fraction: nil, cents: false),
                                  fraction.map(UpOnlyFormat.percent), note.isEmpty ? nil : note.trimmingCharacters(in: .whitespaces)].compactMap { $0 }.joined(separator: ", "))
