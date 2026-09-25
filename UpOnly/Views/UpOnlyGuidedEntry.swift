@@ -7,7 +7,7 @@ struct UpOnlyGuidedEntry: View {
     var mode: ImportMode
     @Binding var row: ImportDraftRow
     var back: () -> Void
-    var saved: () -> Void
+    var saved: (UpOnlySavedSummary) -> Void
     @State private var step = 0
     @State private var search = ""
     @State private var newAccount = false
@@ -26,6 +26,10 @@ struct UpOnlyGuidedEntry: View {
     /// Today's price of what's being entered, fetched when it's chosen: per coin, per gram of metal, or dollars per
     /// unit of an account's currency. Keyed by what it prices, so a changed choice never shows another's value.
     @State private var livePrice: (key: String, price: Decimal)?
+    /// The chosen day's closing price, when a past date is picked: what fills in an empty cost.
+    @State private var closePrice: (key: String, price: Decimal)?
+    /// The cost was filled in from that close rather than typed, so review says so.
+    @State private var costFromClose = false
     @FocusState private var searchFocused: Bool
     @FocusState private var amountFocused: Bool
     private var accounts: [Account] { session.document?.accounts ?? [] }
@@ -74,6 +78,7 @@ struct UpOnlyGuidedEntry: View {
         .disabled(working || session.isBusy)
         .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: step)
         .onChange(of: row.content) { _, _ in unchanged = false; error = nil }
+        .onChange(of: step) { _, next in if next == 1, costFromClose { row.holding.paid = ""; costFromClose = false } }
         .onChange(of: step) { _, _ in unchanged = false }
         // Esc is Back when this form is the Add page (in Manage, Manage's own Back handles it).
         .onChange(of: session.backRequests) { if session.addingInMenu, !session.managementInMenu, !working { goBack() } }
@@ -92,6 +97,7 @@ struct UpOnlyGuidedEntry: View {
             #if UPONLY_FIXTURE
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_STEP"] == "choose" { step = 0 }
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_STEP"] == "account" { step = 0; newAccount = true; row.bank.account = ImportAccount() }
+            if let day = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_DATE"] { if mode == .bankBalances { row.bank.date = day } else { row.holding.date = day } }
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_STEP"] == "review" { Task { await evaluate() } }
             #endif
         }
@@ -219,8 +225,9 @@ struct UpOnlyGuidedEntry: View {
                 UpOnlyFormRow(label: "Date", divided: mode == .metals) { UpOnlyDateButton(date: mode == .bankBalances ? date : holdingDate) }
                 if mode != .bankBalances {
                     // What it cost, if you like, so the app can show the gain since.
-                    UpOnlyFormRow(label: "Cost", note: "optional", divided: true) {
-                        UpOnlyValueField("0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                    // Left empty with a past date, the cost is that day's close times the amount, shown here until typed over.
+                    UpOnlyFormRow(label: "Cost", note: estimatedCost == nil ? "optional" : "at " + closeDay + " close", divided: true) {
+                        UpOnlyValueField(estimatedCost.map { readBack($0, fraction: 2...2) } ?? "0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
                             .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 110).accessibilityLabel("Amount paid")
                         TextField("USD", text: $row.holding.paidCurrency).textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.secondary)
                             .frame(width: 32).accessibilityLabel("Currency paid")
@@ -244,9 +251,13 @@ struct UpOnlyGuidedEntry: View {
                     if row.holding.portfolioID == nil { ownerRow($row.holding.ownerBusinessID) }
                 }
             }
-            primary("Review") { Task { await evaluate() } }.disabled(quantity.wrappedValue.isEmpty || working)
+            primary("Review") {
+                fillCostFromClose()
+                Task { await evaluate() }
+            }.disabled(quantity.wrappedValue.isEmpty || working)
         }.task { amountFocused = true }
             .task(id: priceKey) { await fetchLivePrice() }
+            .task(id: closeKey) { await fetchClosePrice() }
     }
     /// The logo, the amount large with its unit after it, and what it's worth now (or, before anything is typed, what
     /// to enter). Review shows the same, read back as the app understood it.
@@ -303,6 +314,44 @@ struct UpOnlyGuidedEntry: View {
     /// A market price at a useful precision: cents from a dollar up, four significant digits below (PEPE's $0.00001234).
     static func priceText(_ price: Decimal) -> String {
         price >= 1 ? UpOnlyFormat.exactMoney(price) : "$" + price.formatted(.number.precision(.significantDigits(1...4)).locale(Locale(identifier: "en_US")))
+    }
+    // MARK: Cost from the day's close
+
+    /// The asset and day a close is wanted for: a holding dated before today whose cost is left empty.
+    private var closeKey: String? {
+        guard mode != .bankBalances, !UTCDay.isSameDay(holdingDate.wrappedValue, Date()) else { return nil }
+        return priceKey + "@" + ImportDateFormat.today(holdingDate.wrappedValue)
+    }
+    /// "Mar 2", or "Mar 2, 2025" from another year: short enough to sit beside "Cost".
+    private var closeDay: String {
+        let day = holdingDate.wrappedValue
+        return UTCDay.calendar.component(.year, from: day) == UTCDay.calendar.component(.year, from: Date()) ? UpOnlyFormat.utcDay(day) : UpOnlyFormat.utcDate(day)
+    }
+    /// What the amount cost at that day's close, while the cost is empty.
+    private var estimatedCost: Decimal? {
+        guard row.holding.paid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let key = closeKey, let close = closePrice, close.key == key,
+              let amount = entered, amount > 0 else { return nil }
+        let units = mode == .metals ? (try? MetalWeightUnit.resolve(row.holding.unit).grams(amount)) : amount
+        guard let units, let cost = try? MoneyInput.multiply(units, close.price, allowingRounding: true) else { return nil }
+        var raw = cost, rounded = Decimal()
+        NSDecimalRound(&rounded, &raw, 2, .plain)
+        return rounded
+    }
+    private func fetchClosePrice() async {
+        guard let key = closeKey, closePrice?.key != key, let settings = session.document?.settings,
+              mode == .metals ? (settings.automaticMetals || session.isFixture) : (settings.automaticPrices || session.isFixture) else { return }
+        let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
+        guard !asset.isEmpty else { return }
+        let price = await PublicPrices.closingPrice(assetID: asset, symbol: coin?.symbol, day: holdingDate.wrappedValue, today: unitPrice, key: settings.coinGeckoKey)
+        if let price, !Task.isCancelled, key == closeKey { closePrice = (key, price) }
+    }
+    /// Pressing Review with the cost still empty records the estimate, in dollars, as what was paid.
+    private func fillCostFromClose() {
+        guard let cost = estimatedCost else { costFromClose = false; return }
+        let text = NSDecimalNumber(decimal: cost).stringValue
+        row.holding.paid = numberFormat == .comma ? text.replacingOccurrences(of: ".", with: ",") : text
+        row.holding.paidCurrency = "USD"
+        costFromClose = true
     }
     /// What `livePrice` is for right now: the coin, the metal, or the account's currency.
     private var priceKey: String {
@@ -375,7 +424,7 @@ struct UpOnlyGuidedEntry: View {
                 } else {
                     UpOnlyFormRow(label: "Portfolio") { formValue(row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil) }
                     UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
-                    UpOnlyFormRow(label: "Cost", divided: true) {
+                    UpOnlyFormRow(label: "Cost", note: costFromClose ? "at " + closeDay + " close" : nil, divided: true) {
                         formValue(paid.isEmpty ? "Not recorded" : paidValue + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty, isPrivate: !paid.isEmpty)
                     }
                 }
@@ -479,6 +528,27 @@ struct UpOnlyGuidedEntry: View {
         else if result.added == 0 { unchanged = true }
         else { amountFocused = false; step = 2 }
     }
+    /// The confirmation's contents: the amount as saved, what it's worth, and the page it now shows on.
+    private var savedSummary: UpOnlySavedSummary {
+        let document = session.document
+        let amount = entered.map { readBack($0, fraction: (mode == .bankBalances ? 2 : 0)...18) } ?? quantity.wrappedValue
+        let worth = (mode == .bankBalances && row.bank.account.currency.uppercased() == "USD" ? nil : approxUSD).map { "≈ " + UpOnlyFormat.exactMoney($0) }
+        if mode == .bankBalances {
+            let name = row.bank.account.name
+            let account = document?.accounts.first { $0.id == row.bank.account.existingID } ?? document?.accounts.first { $0.name == name && $0.isActive }
+            let owner = account.flatMap { account in document.flatMap { AssetOwnership.businessID(for: account, in: $0) } }
+            let page = owner.flatMap { id in document?.businessAccounting?.first { $0.id == id }?.name } ?? "Bank balances"
+            return UpOnlySavedSummary(title: "Balance saved", amount: amount, unit: unitText, detail: [worth, name].compactMap { $0 }.joined(separator: " · "),
+                                      badge: .bank(name), destination: ("Open " + page, .bankGroup(owner ?? "personal")))
+        }
+        let portfolio = document?.portfolios.first { $0.id == row.holding.portfolioID }
+            ?? document?.portfolios.first { $0.name == row.holding.portfolioName && $0.kind == mode.kind && !$0.isArchived }
+        return UpOnlySavedSummary(title: "Holding saved", amount: amount, unit: unitText,
+                                  detail: [worth, portfolio?.name ?? row.holding.portfolioName].compactMap { $0 }.joined(separator: " · "),
+                                  badge: .asset(mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "",
+                                                assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil),
+                                  destination: portfolio.map { ("Open " + $0.name, .portfolio($0.id)) })
+    }
     private func save() async {
         guard let batch = session.importDraft, review?.hasErrors == false else { return }
         working = true; error = nil
@@ -489,7 +559,7 @@ struct UpOnlyGuidedEntry: View {
                 // A record dated after the month on screen would otherwise look like it vanished.
                 let recorded = mode == .bankBalances ? date.wrappedValue : holdingDate.wrappedValue
                 if let model = session.monthModel, model.period == .monthly, recorded > model.selectedInterval().end { model.select(.current()) }
-                saved()
+                saved(savedSummary)
             }
         } catch { if token == session.sessionToken { self.error = error.localizedDescription; working = false } }
     }

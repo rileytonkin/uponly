@@ -42,28 +42,24 @@ struct UpOnlyDateCalendar: View {
 struct UpOnlyEntryFlow: View {
     @Environment(UpOnlySession.self) private var session
     var compact: Bool
-    @State private var saved: String?
+    @State private var saved: UpOnlySavedSummary?
     @State private var addingEntry = false
     var body: some View {
         Group {
             if let saved {
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.circle.fill").font(.system(size: 46, weight: .light)).foregroundStyle(UpOnlyTint.cashFlow)
-                    Text(saved).font(UpOnlyType.title)
-                    primary("Done") { session.addingInMenu = false; session.managementInMenu = false }
-                    Button("Add another") { self.saved = nil }.buttonStyle(.bordered).font(UpOnlyType.body).foregroundStyle(.secondary)
-                }.padding(.vertical, 18)
+                savedPage(saved)
             } else if addingEntry {
                 UpOnlyEditSheet(editor: .entry,
                                 onCancel: { addingEntry = false },
-                                onSave: { addingEntry = false; saved = "Transaction saved" })
+                                onSave: { addingEntry = false },
+                                onSaved: { summary in addingEntry = false; saved = summary })
                     .onAppear { session.entryEditorInMenu = true }
                     .onDisappear { session.entryEditorInMenu = false }
             } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count <= 1, batch.sources.allSatisfy({ $0.grid.isEmpty }) {
                 if let row = batch.rows.first {
                     UpOnlyGuidedEntry(mode: batch.mode, row: Binding(get: { session.importDraft?.rows.first ?? row }, set: { session.importDraft?.rows = [$0] }),
                                       back: { session.discardImport() },
-                                      saved: { if compact { saved = batch.mode == .bankBalances ? "Balance saved" : "Holding saved" } })
+                                      saved: { summary in if compact { saved = summary } })
                         .id(batch.id)
                 } else { ProgressView().controlSize(.small).task { seed(batch.mode) } }
             } else if let batch = session.importDraft, batch.mode != .statements, batch.rows.count > 1, batch.sources.allSatisfy(\.isManual) {
@@ -112,6 +108,43 @@ struct UpOnlyEntryFlow: View {
                 guard compact, session.addingInMenu, !session.managementInMenu, session.importDraft == nil else { return }
                 if addingEntry { addingEntry = false } else { session.addingInMenu = false }
             }
+    }
+    /// After saving: what was saved, large, under its logo with a check; where it went, one click away; then Done.
+    /// Centred in the page, which keeps the dashboard's height.
+    private func savedPage(_ summary: UpOnlySavedSummary) -> some View {
+        VStack(spacing: 20) {
+            Spacer(minLength: 0)
+            VStack(spacing: 12) {
+                summary.badge.view(size: 56)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 22)).symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, UpOnlyTint.gain)
+                            .background(Circle().fill(Color(nsColor: .windowBackgroundColor)).padding(-2)).offset(x: 7, y: 7)
+                    }
+                Text(summary.title).font(UpOnlyType.body.weight(.semibold)).foregroundStyle(UpOnlyTint.gain).padding(.top, 6)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    UpOnlyPrivateText(summary.amount).font(UpOnlyAmountEntry.font(summary.amount.count)).lineLimit(1).minimumScaleFactor(0.6)
+                    Text(summary.unit).font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary).fixedSize()
+                }
+                if let detail = summary.detail {
+                    UpOnlyPrivateText(detail).font(UpOnlyType.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+            }.frame(maxWidth: .infinity)
+            ManageCard {
+                if let destination = summary.destination {
+                    ManageRow(title: destination.title, caption: "See it on the dashboard", chevron: true, action: {
+                        session.showDashboard(destination.selection)
+                        session.addingInMenu = false; session.managementInMenu = false
+                    }) { summary.badge.view(size: 28) } menu: { EmptyView() }
+                }
+                ManageRow(title: "Add another", caption: "A balance, holding or transaction", divided: summary.destination != nil, chevron: true,
+                          action: { saved = nil }) {
+                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                } menu: { EmptyView() }
+            }
+            Spacer(minLength: 0)
+            primary("Done") { session.addingInMenu = false; session.managementInMenu = false }.keyboardShortcut(.defaultAction)
+        }.frame(minHeight: max(0, (session.dashboardHeight ?? 0) - 2 * UpOnlyLayout.inset))
     }
     // A statement goes straight to the file picker; the summary and review follow.
     private func importStatement() {
@@ -215,6 +248,28 @@ struct UpOnlyCurrencyRows: View {
             } menu: { EmptyView() }
         }
     }
+}
+/// What the Add page's confirmation shows after a save: the amount and unit, what it's worth or what it was for, its
+/// logo, and the dashboard page it now shows on.
+struct UpOnlySavedSummary {
+    enum Badge {
+        case asset(ImportMode, symbol: String, assetID: String?)
+        case bank(String)
+        case symbol(String, Color)
+        @ViewBuilder func view(size: CGFloat) -> some View {
+            switch self {
+            case .asset(let mode, let symbol, let assetID): UpOnlyEntryBadge(mode: mode, symbol: symbol, assetID: assetID, image: nil, size: size)
+            case .bank(let name): UpOnlyBankBadge(name: name, size: size)
+            case .symbol(let symbol, let tint): UpOnlySymbolBadge(symbol: symbol, tint: tint, size: size)
+            }
+        }
+    }
+    var title: String
+    var amount: String
+    var unit: String
+    var detail: String?
+    var badge: Badge
+    var destination: (title: String, selection: UpOnlySession.DashboardSelection)?
 }
 /// A form row's value that opens a choice: the value and a small chevron, as a date or a menu.
 struct UpOnlyFormValue: View {
