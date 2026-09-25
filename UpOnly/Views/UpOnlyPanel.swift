@@ -173,9 +173,16 @@ struct UpOnlyUnlockedPanel: View {
         switch session.dashboardSelection {
         case .all: "All assets"
         case .cashFlow: "Income & spending"
-        case .portfolio(let id): session.document?.portfolio(id: id)?.name ?? "Portfolio"
+        case .portfolio(let id): portfolioTitle(id)
         case .bankGroup(let id): id == "personal" ? "Bank balances" : companyName(id)
         }
+    }
+    /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").
+    func portfolioTitle(_ id: UUID) -> String {
+        guard let document = session.document, let portfolio = document.portfolio(id: id) else { return "Portfolio" }
+        let clash = document.portfolios.contains { !$0.isArchived && $0.id != id && $0.kind == portfolio.kind && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
+        guard clash else { return portfolio.name }
+        return portfolio.name + " · " + (portfolio.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }.map(companyName) ?? "Personal")
     }
     /// A company's accounting name, else the name of the bank profile its accounts come from.
     func companyName(_ id: String) -> String {

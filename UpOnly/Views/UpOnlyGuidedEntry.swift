@@ -288,8 +288,8 @@ struct UpOnlyGuidedEntry: View {
             if portfolios.isEmpty {
                 formField(mode == .metals ? "Home safe" : "Ledger or Coinbase", text: $row.holding.portfolioName).accessibilityLabel("Portfolio name")
             } else {
-                UpOnlyFormMenu(value: row.holding.portfolioID == nil ? "New portfolio" : row.holding.portfolioName, label: "Portfolio") {
-                    ForEach(portfolios) { portfolio in Button(portfolio.name) { row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name } }
+                UpOnlyFormMenu(value: row.holding.portfolioID == nil ? "New portfolio" : chosenPortfolioLabel, label: "Portfolio") {
+                    ForEach(portfolios) { portfolio in Button(portfolioLabel(portfolio)) { row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name } }
                     Divider()
                     Button("New portfolio") { row.holding.portfolioID = nil; row.holding.portfolioName = "" }
                 }
@@ -312,7 +312,7 @@ struct UpOnlyGuidedEntry: View {
     private var portfolioList: some View {
         ManageCard {
             ForEach(Array(portfolios.enumerated()), id: \.element.id) { index, portfolio in
-                ManageRow(title: portfolio.name, caption: portfolioCaption(portfolio), divided: index > 0, chevron: true, action: {
+                ManageRow(title: portfolioLabel(portfolio), caption: portfolioCaption(portfolio), divided: index > 0, chevron: true, action: {
                     row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name; choosingPortfolio = false; step = 1
                 }) { portfolioBadge } menu: { EmptyView() }
             }
@@ -327,8 +327,20 @@ struct UpOnlyGuidedEntry: View {
     /// "Northwind · 3 holdings": whose it is, when a company's, and what's in it.
     private func portfolioCaption(_ portfolio: Portfolio) -> String {
         let count = session.document?.holdings.filter { $0.portfolioID == portfolio.id && $0.archivedAt == nil }.count ?? 0
-        let owner = portfolio.ownerBusinessID.flatMap { id in session.document?.businessAccounting?.first { $0.id == id }?.name }
-        return [owner, count == 1 ? "1 holding" : "\(count) holdings"].compactMap { $0 }.joined(separator: " · ")
+        return [ownerName(portfolio), count == 1 ? "1 holding" : "\(count) holdings"].joined(separator: " · ")
+    }
+    /// Whose a portfolio is: a company's name, or Personal.
+    private func ownerName(_ portfolio: Portfolio) -> String {
+        portfolio.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }.flatMap { id in session.document?.businessAccounting?.first { $0.id == id }?.name } ?? "Personal"
+    }
+    /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").
+    private func portfolioLabel(_ portfolio: Portfolio) -> String {
+        let clash = portfolios.contains { $0.id != portfolio.id && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
+        return clash ? portfolio.name + " · " + ownerName(portfolio) : portfolio.name
+    }
+    /// The chosen portfolio as the form and review name it; a new one by the name typed.
+    private var chosenPortfolioLabel: String {
+        portfolios.first { $0.id == row.holding.portfolioID }.map(portfolioLabel) ?? row.holding.portfolioName
     }
 
     // MARK: Several buys
@@ -427,7 +439,7 @@ struct UpOnlyGuidedEntry: View {
                         formValue(readBack(parsed(line.quantity) ?? 0, fraction: 0...18) + " " + unitText + (buyCost(line).map { " · " + UpOnlyFormat.exactMoney($0) } ?? ""), isPrivate: true)
                     }
                 }
-                UpOnlyFormRow(label: "Portfolio", divided: true) { formValue(row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil) }
+                UpOnlyFormRow(label: "Portfolio", divided: true) { formValue(chosenPortfolioLabel, badge: row.holding.portfolioID == nil ? "New" : nil) }
             }
             ManageCard {
                 VStack(alignment: .leading, spacing: 10) {
@@ -457,9 +469,9 @@ struct UpOnlyGuidedEntry: View {
             guard token == session.sessionToken else { return }
             let portfolio = session.document?.portfolios.first { $0.id == row.holding.portfolioID } ?? session.document?.portfolios.first { $0.name == row.holding.portfolioName && $0.kind == mode.kind && !$0.isArchived }
             saved(UpOnlySavedSummary(title: items.count == 1 ? "Buy saved" : "\(items.count) buys saved", amount: readBack(total, fraction: 0...18), unit: unitText,
-                                     detail: [cost.map { "cost " + UpOnlyFormat.exactMoney($0) }, portfolio?.name].compactMap { $0 }.joined(separator: " · "),
+                                     detail: [cost.map { "cost " + UpOnlyFormat.exactMoney($0) }, portfolio.map(portfolioLabel)].compactMap { $0 }.joined(separator: " · "),
                                      badge: .asset(mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "", assetID: mode == .holdings ? row.holding.resolvedCoinID : nil),
-                                     destination: portfolio.map { ("Open " + $0.name, .portfolio($0.id)) }))
+                                     destination: portfolio.map { ("Open " + portfolioLabel($0), .portfolio($0.id)) }))
         } catch { if token == session.sessionToken { self.error = (error as? ImportFailure)?.text ?? error.localizedDescription; working = false } }
     }
     /// The logo, the amount large with its unit after it, and what it's worth now (or, before anything is typed, what
@@ -644,7 +656,7 @@ struct UpOnlyGuidedEntry: View {
                     UpOnlyFormRow(label: "Account") { formValue(row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil) }
                     UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
                 } else {
-                    UpOnlyFormRow(label: "Portfolio") { formValue(row.holding.portfolioName, badge: row.holding.portfolioID == nil ? "New" : nil) }
+                    UpOnlyFormRow(label: "Portfolio") { formValue(chosenPortfolioLabel, badge: row.holding.portfolioID == nil ? "New" : nil) }
                     UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
                     UpOnlyFormRow(label: "Cost", note: costFromClose ? closeDay + " price" : nil, divided: true) {
                         formValue(paid.isEmpty ? "Not recorded" : paidValue + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty, isPrivate: !paid.isEmpty)
@@ -682,10 +694,10 @@ struct UpOnlyGuidedEntry: View {
         guard case .ready(let text) = state, let arrow = text.range(of: " → ") else { return state.displayText(privacy: session.privacyMode) }
         let previous = String(text[..<arrow.lowerBound])
         let name = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.name ?? "metal") : coin?.name ?? "holding"
-        if session.privacyMode { return previous == "New" ? "Adds a new " + name + " holding to " + row.holding.portfolioName + "." : "Replaces the current " + name + " total in " + row.holding.portfolioName + "." }
+        if session.privacyMode { return previous == "New" ? "Adds a new " + name + " holding to " + chosenPortfolioLabel + "." : "Replaces the current " + name + " total in " + chosenPortfolioLabel + "." }
         // Metal totals are kept in grams, whatever unit was typed.
         let total = Decimal(string: previous).map { mode == .metals ? readBack($0, fraction: 0...4) + " g" : readBack($0, fraction: 0...18) } ?? previous
-        return previous == "New" ? "Adds a new " + name + " holding to " + row.holding.portfolioName + "." : "Replaces the current " + name + " total of " + total + " in " + row.holding.portfolioName + "."
+        return previous == "New" ? "Adds a new " + name + " holding to " + chosenPortfolioLabel + "." : "Replaces the current " + name + " total of " + total + " in " + chosenPortfolioLabel + "."
     }
     // Say out loud what a past date or a cost without an increase will do before it is saved.
     private var holdingNotes: [String] {
@@ -781,10 +793,10 @@ struct UpOnlyGuidedEntry: View {
         let portfolio = document?.portfolios.first { $0.id == row.holding.portfolioID }
             ?? document?.portfolios.first { $0.name == row.holding.portfolioName && $0.kind == mode.kind && !$0.isArchived }
         return UpOnlySavedSummary(title: "Holding saved", amount: amount, unit: unitText,
-                                  detail: [worth, portfolio?.name ?? row.holding.portfolioName].compactMap { $0 }.joined(separator: " · "),
+                                  detail: [worth, portfolio.map(portfolioLabel) ?? row.holding.portfolioName].compactMap { $0 }.joined(separator: " · "),
                                   badge: .asset(mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "",
                                                 assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil),
-                                  destination: portfolio.map { ("Open " + $0.name, .portfolio($0.id)) })
+                                  destination: portfolio.map { ("Open " + portfolioLabel($0), .portfolio($0.id)) })
     }
     private func save() async {
         guard let batch = session.importDraft, review?.hasErrors == false else { return }
