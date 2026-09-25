@@ -688,30 +688,39 @@ extension PublicPrices {
     }
 
     /// Binance's pair against USDT for a ticker, or nil when it can't be one.
-    /// A past day's closing price in dollars, per coin or per gram of gold, for filling in what a purchase cost.
-    /// Coins: Binance's daily close for the coin's pair (checked, since a ticker can belong to two coins), else
-    /// CoinGecko's prices for that day within the past year. Gold: Binance's PAXG. Nil when none is published.
-    static func closingPrice(assetID: String, symbol: String?, day: Date, today: Decimal?, key: String, now: Date = Date()) async -> Decimal? {
+    /// A past day's typical price in dollars, per coin or per gram of gold, for filling in what a buy cost when its
+    /// time isn't known: the day's volume-weighted average on Binance (what was actually paid on average), else the
+    /// average of CoinGecko's prices through that day (within the past year). Gold: Binance's PAXG. Nil when none.
+    static func dayPrice(assetID: String, symbol: String?, day: Date, today: Decimal?, key: String, now: Date = Date()) async -> Decimal? {
         let start = UTCDay.start(of: day), end = start.addingTimeInterval(86400)
         guard end <= now else { return nil }
-        func binanceClose(_ pair: String) async -> Decimal? {
-            guard let data = try? await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1")]) else { return nil }
-            return (try? decodeKlines(data, asset: CanonicalAssetID(rawValue: pair), start: start, end: end, fetchedAt: now))?.last?.priceUSD.value
+        func binanceAverage(_ pair: String) async -> Decimal? {
+            guard let data = try? await request(host: "api.binance.com", path: "/api/v3/klines", query: [URLQueryItem(name: "symbol", value: pair), URLQueryItem(name: "interval", value: "1d"), URLQueryItem(name: "startTime", value: String(Int64(start.timeIntervalSince1970 * 1000))), URLQueryItem(name: "endTime", value: String(Int64(end.timeIntervalSince1970 * 1000) - 1)), URLQueryItem(name: "limit", value: "1")]),
+                  let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]], let row = rows.first, row.count >= 8 else { return nil }
+            func number(_ index: Int) -> Decimal? { (row[index] as? String).flatMap { Decimal(string: $0, locale: Locale(identifier: "en_US_POSIX")) } }
+            // Quote volume over base volume is the day's average price; a day without trades falls back to its close.
+            if let volume = number(5), volume > 0, let quoteVolume = number(7), quoteVolume > 0 { return quoteVolume / volume }
+            return number(4).flatMap { $0 > 0 ? $0 : nil }
         }
         if let metal = PreciousMetal.asset(CanonicalAssetID(rawValue: assetID)) {
-            guard metal == .gold, let ounce = await binanceClose("PAXGUSDT") else { return nil }
+            guard metal == .gold, let ounce = await binanceAverage("PAXGUSDT") else { return nil }
             return try? PriceHistory.pricePerGram(ounce)
         }
         // Binance first: its pair, checked against today's price, or trusted as one of CoinGecko's top coins' tickers.
         if let symbol, let pair = binancePair(symbol) {
             var checks = knownSymbols[assetID] == symbol.lowercased()
             if let today { checks = await binanceMatches(pair: pair, reference: today, now: now) }
-            if checks, let close = await binanceClose(pair) { return close }
+            if checks, let average = await binanceAverage(pair) { return average }
         }
         if now.timeIntervalSince(start) < 364 * 86400,
            let data = try? await request(host: "api.coingecko.com", path: "/api/v3/coins/" + assetID + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(end.timeIntervalSince1970)))], key: key),
-           let price = (try? PriceHistory.decodeCrypto(data, request: PriceHistoryRequest(source: .crypto, key: "asset:" + assetID, identifier: assetID, start: start, end: end), fetchedAt: now))?.last?.priceUSD.value {
-            return price
+           let history = try? JSONDecoder().decode(PriceHistory.CryptoHistory.self, from: data) {
+            let prices = history.prices.compactMap { pair -> Decimal? in
+                guard pair.count == 2, let millis = pair[0], let price = pair[1], price > 0 else { return nil }
+                let time = Date(timeIntervalSince1970: NSDecimalNumber(decimal: millis).doubleValue / 1000)
+                return time >= start && time < end ? price : nil
+            }
+            if !prices.isEmpty { return prices.reduce(0, +) / Decimal(prices.count) }
         }
         return nil
     }
