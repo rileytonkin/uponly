@@ -13,30 +13,32 @@ final class UpOnlySession {
     enum State { case newVault, locked, unlocked, recovery }
     enum RestoreOutcome { case restored, needsConfirmation, cancelled, failed }
     private(set) var state: State = .locked
-    private(set) var document: VaultDocument?
+    /// Everything that belongs to the unlocked vault (`UnlockedSession`). Lock retires it and puts a fresh one in its
+    /// place, so nothing from one unlock reaches the next. What is stored on `UpOnlySession` itself outlives a lock.
+    /// The properties below that read `unlocked.…` keep the names the views and the rest of this file use.
+    private(set) var unlocked: UnlockedSession
+    private(set) var document: VaultDocument? { get { unlocked.document } set { unlocked.document = newValue } }
     /// Counts document replacements, so work derived from the document can be reused until it changes.
-    @ObservationIgnored private(set) var documentRevision = 0
+    private(set) var documentRevision: Int { get { unlocked.documentRevision } set { unlocked.documentRevision = newValue } }
     /// The 24-hour charts' hourly valuations, by page, document revision and hour: each is two dozen valuations.
-    @ObservationIgnored var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] = [:]
+    var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] { get { unlocked.hourlyCache } set { unlocked.hourlyCache = newValue } }
     /// The document's price, rate and balance index, and dated and latest exchange rates, worked out once per change
     /// and shared by every page, the switcher and each row rather than rebuilt on every redraw.
-    @ObservationIgnored private var estimatesCache: (revision: Int, value: ChartEstimates)?
-    @ObservationIgnored private var rateCache: (revision: Int, monthly: [String: Decimal?], latest: [String: Decimal?]) = (-1, [:], [:])
     func chartEstimates() -> ChartEstimates? {
         guard let document else { return nil }
-        if let cache = estimatesCache, cache.revision == documentRevision { return cache.value }
+        if let cache = unlocked.estimatesCache, cache.revision == documentRevision { return cache.value }
         let value = ChartEstimates(document: document)
-        estimatesCache = (documentRevision, value)
+        unlocked.estimatesCache = (documentRevision, value)
         return value
     }
     /// The rate a month's transactions in `currency` are valued at (`MonthlyLedger.rate`), remembered per change.
     func monthRate(_ currency: String, _ month: MonthKey) -> Decimal? {
         guard let document else { return nil }
-        if rateCache.revision != documentRevision { rateCache = (documentRevision, [:], [:]) }
+        if unlocked.rateCache.revision != documentRevision { unlocked.rateCache = (documentRevision, [:], [:]) }
         let key = currency + "|" + month.description
-        if let hit = rateCache.monthly[key] { return hit }
+        if let hit = unlocked.rateCache.monthly[key] { return hit }
         let rate = MonthlyLedger.rate(currency: currency, month: month, document: document)
-        rateCache.monthly[key] = rate
+        unlocked.rateCache.monthly[key] = rate
         return rate
     }
     /// The latest saved dollars per unit of `currency` (1 for USD), remembered per change.
@@ -44,50 +46,50 @@ final class UpOnlySession {
         guard let document else { return nil }
         let code = currency.uppercased()
         if code == "USD" { return 1 }
-        if rateCache.revision != documentRevision { rateCache = (documentRevision, [:], [:]) }
-        if let hit = rateCache.latest[code] { return hit }
+        if unlocked.rateCache.revision != documentRevision { unlocked.rateCache = (documentRevision, [:], [:]) }
+        if let hit = unlocked.rateCache.latest[code] { return hit }
         let rate = document.fx.filter { $0.sourceCurrency == code && $0.targetCurrency == "USD" }.max { $0.providerTime < $1.providerTime }?.rate.value
-        rateCache.latest[code] = rate
+        unlocked.rateCache.latest[code] = rate
         return rate
     }
     /// The dashboard's chart range, holdings order and company chart: kept here so a trip to Manage or Add, or a
-    /// relock, comes back to them.
+    /// relock, comes back to them. They're how you like the dashboard, not vault data, so they outlive a lock.
     var worthRange: WorthRange = .year
     var holdingSortIndex = 0
     var companyChartProfit = false
     /// Add was opened to update one thing from a dashboard page (a holding, a bank's balance): backing out of it
     /// returns there rather than to the Add chooser.
-    var addOpenedForUpdate = false
+    var addOpenedForUpdate: Bool { get { unlocked.addOpenedForUpdate } set { unlocked.addOpenedForUpdate = newValue } }
     /// Intraday prices for the 24-hour, 7-day and 30-day charts, by "range|asset", fetched while one of those
     /// ranges is showing. Kept in memory only; the vault keeps its own hourly and daily prices.
-    private(set) var intraday: [String: ChartEstimates.Series] = [:]
-    @ObservationIgnored private var intradayFetchedAt: [String: Date] = [:]
-    private(set) var monthModel: PopoverModel?
+    private(set) var intraday: [String: ChartEstimates.Series] { get { unlocked.intraday } set { unlocked.intraday = newValue } }
+    private var intradayFetchedAt: [String: Date] { get { unlocked.intradayFetchedAt } set { unlocked.intradayFetchedAt = newValue } }
+    private(set) var monthModel: PopoverModel? { get { unlocked.monthModel } set { unlocked.monthModel = newValue } }
     /// True while unlocking, creating, restoring or saving a change the user made; forms disable while it's set.
     private(set) var isBusy = false
-    /// One vault write at a time. Writers wait their turn instead of failing; a waiting user edit goes before background work.
-    @ObservationIgnored private var writerActive = false
-    @ObservationIgnored private var userWriters: [UUID] = []
-    @ObservationIgnored private var configuringBackground = false
-    @ObservationIgnored private var exportingBackup = false
+    private var configuringBackground: Bool { get { unlocked.configuringBackground } set { unlocked.configuringBackground = newValue } }
+    private var exportingBackup: Bool { get { unlocked.exportingBackup } set { unlocked.exportingBackup = newValue } }
     /// A backup chosen to replace the vault, kept while the user confirms. Lock clears it.
-    @ObservationIgnored private var pendingRestore: (package: BackupPackage, recovery: RecoveryCode)?
-    @ObservationIgnored private var reconfigureBackground = false
+    private var pendingRestore: (package: BackupPackage, recovery: RecoveryCode)? { get { unlocked.pendingRestore } set { unlocked.pendingRestore = newValue } }
+    private var reconfigureBackground: Bool { get { unlocked.reconfigureBackground } set { unlocked.reconfigureBackground = newValue } }
+    /// Changes at every lock, with `unlocked`: work that started before a lock checks it before touching what it left.
     private(set) var sessionToken = UUID()
+    /// A note on whatever is showing, the lock screen included, so it lives here; lock clears it.
     var message: String?
-    private(set) var fxIssues: [String: String] = [:]
+    private(set) var fxIssues: [String: String] { get { unlocked.fxIssues } set { unlocked.fxIssues = newValue } }
     /// Last manual or scheduled update's problem per price source ("crypto", "metals", "fx"), cleared on success.
-    private(set) var sourceIssues: [String: String] = [:]
+    private(set) var sourceIssues: [String: String] { get { unlocked.sourceIssues } set { unlocked.sourceIssues = newValue } }
     /// What the dashboard shows, chosen with the switcher: everything, one bank group ("personal" or a company's
     /// id), one portfolio, or cash flow. Kept here so a trip to Manage or Add returns to the same page.
     enum DashboardSelection: Equatable { case all, bankGroup(String), portfolio(UUID), cashFlow }
-    var dashboardSelection: DashboardSelection = .all
+    var dashboardSelection: DashboardSelection { get { unlocked.dashboardSelection } set { unlocked.dashboardSelection = newValue } }
     /// The switcher sheet over the dashboard. Esc closes it before the menu, and closing the menu closes it.
-    var showingSwitcher = false
-    /// The All assets page's height. Every other dashboard page opens at the same size and scrolls within it.
+    var showingSwitcher: Bool { get { unlocked.showingSwitcher } set { unlocked.showingSwitcher = newValue } }
+    /// The All assets page's height. Every other dashboard page opens at the same size and scrolls within it. It's
+    /// layout, not data, so it outlives a lock and the next unlock opens straight at it.
     var dashboardHeight: CGFloat?
     /// Income & spending's account choice, put back after a bank or company page borrowed it.
-    var cashFlowScope: PerformanceScope?
+    var cashFlowScope: PerformanceScope? { get { unlocked.cashFlowScope } set { unlocked.cashFlowScope = newValue } }
     /// Your own picture, from your personal Wise profile, for what's about you (your bank balances, Personal).
     var personalImage: Data? {
         guard let document else { return nil }
@@ -100,11 +102,11 @@ final class UpOnlySession {
     }
     /// An import table's options, chosen from the page header's … menu and carried out by the table.
     enum ImportRequest: Equatable { case paste, chooseFiles, template, discard }
-    var importRequest: ImportRequest?
+    var importRequest: ImportRequest? { get { unlocked.importRequest } set { unlocked.importRequest = newValue } }
     /// Esc asks the page showing to go back; each page that can go back watches this.
-    private(set) var backRequests = 0
+    private(set) var backRequests: Int { get { unlocked.backRequests } set { unlocked.backRequests = newValue } }
     /// Income & spending has a Personal or company page open (it has its own Back).
-    var dashboardDetailOpen = false
+    var dashboardDetailOpen: Bool { get { unlocked.dashboardDetailOpen } set { unlocked.dashboardDetailOpen = newValue } }
     /// Esc steps back before it closes anything: the switcher, then a page inside Manage or Add or Income & spending,
     /// then a page opened from another page's row. False when there's nowhere to go back to, so the menu closes.
     func handleEscape() -> Bool {
@@ -115,7 +117,7 @@ final class UpOnlySession {
     }
     /// Pages the current one was opened from (a home row, a company's portfolio), most recent last: the dashboard's
     /// back box and Esc return through them. Choosing from the switcher starts afresh.
-    private(set) var dashboardTrail: [DashboardSelection] = []
+    private(set) var dashboardTrail: [DashboardSelection] { get { unlocked.dashboardTrail } set { unlocked.dashboardTrail = newValue } }
     enum DashboardMove { case jump, drill, back }
     /// Shows a dashboard page. A bank group's page reads its company's accounting, so Income & spending's account
     /// choice is put aside there and given back afterwards.
@@ -146,11 +148,12 @@ final class UpOnlySession {
         get { dashboardSelection == .cashFlow ? 0 : 1 }
         set { if newValue == 0 { dashboardSelection = .cashFlow } else if dashboardSelection == .cashFlow { dashboardSelection = .all } }
     }
-    var addingInMenu = false { didSet { if !addingInMenu { addOpenedForUpdate = false } } }
-    var managementInMenu = false
-    var managementSection = "Accounts"
-    var entryMonthForManagement = ""
-    var requestedRateCurrency: String?
+    /// Add is showing. Leaving it forgets `addOpenedForUpdate` (`UnlockedSession.addingInMenu`'s `didSet`).
+    var addingInMenu: Bool { get { unlocked.addingInMenu } set { unlocked.addingInMenu = newValue } }
+    var managementInMenu: Bool { get { unlocked.managementInMenu } set { unlocked.managementInMenu = newValue } }
+    var managementSection: String { get { unlocked.managementSection } set { unlocked.managementSection = newValue } }
+    var entryMonthForManagement: String { get { unlocked.entryMonthForManagement } set { unlocked.entryMonthForManagement = newValue } }
+    var requestedRateCurrency: String? { get { unlocked.requestedRateCurrency } set { unlocked.requestedRateCurrency = newValue } }
     private var vault: VaultStore
     @ObservationIgnored private var liveAuthenticator: LiveAuthenticator?
     private(set) var authenticationContext: LAContext?
@@ -158,68 +161,75 @@ final class UpOnlySession {
     private(set) var authenticationFailed = false
     /// Unlock found only the recovery file an unfinished setup left (`VaultLayout.holdsOnlyWrapper`): the lock screen offers Start over.
     private(set) var canStartOver = false
-    @ObservationIgnored private(set) var unlockTiming: UnlockTiming?
+    private(set) var unlockTiming: UnlockTiming? { get { unlocked.unlockTiming } set { unlocked.unlockTiming = newValue } }
+    /// Read from the vault's saved setting, so it's as you left it at the next unlock.
     var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
     /// Privacy mode's stand-in factor: amounts show scaled by it, so they look real but say nothing. Nil when figures
     /// show as they are. Worked out once per document.
     var standInFactor: Decimal? {
         guard privacyMode, let document else { return nil }
-        if let cached = standInCache, cached.revision == documentRevision { return cached.factor }
+        if let cached = unlocked.standInCache, cached.revision == documentRevision { return cached.factor }
         let factor = UpOnlyStandIn.factor(total: AssetOwnership.personalValue(at: Date(), scope: .allTracked, document: document).total, vaultID: document.vaultID)
-        standInCache = (documentRevision, factor)
+        unlocked.standInCache = (documentRevision, factor)
         return factor
     }
-    @ObservationIgnored private var standInCache: (revision: Int, factor: Decimal)?
     /// Hiding values takes effect at once, even while another save finishes; the saved setting follows.
-    private var privacyOverride: Bool?
-    @ObservationIgnored private var privacyAttempt = UUID()
-    var importDraft: ImportBatchDraft?
-    var importMode: ImportMode = .statements
-    var importTableMode = false
-    private(set) var importReturnSection = "Add your info"
+    private var privacyOverride: Bool? { get { unlocked.privacyOverride } set { unlocked.privacyOverride = newValue } }
+    private var privacyAttempt: UUID { get { unlocked.privacyAttempt } set { unlocked.privacyAttempt = newValue } }
+    /// Edited in place (a statement's rows, one at a time), so it's modified where it's stored rather than copied.
+    var importDraft: ImportBatchDraft? {
+        get { unlocked.importDraft }
+        set { unlocked.importDraft = newValue }
+        _modify { yield &unlocked.importDraft }
+    }
+    var importMode: ImportMode { get { unlocked.importMode } set { unlocked.importMode = newValue } }
+    var importTableMode: Bool { get { unlocked.importTableMode } set { unlocked.importTableMode = newValue } }
+    private(set) var importReturnSection: String { get { unlocked.importReturnSection } set { unlocked.importReturnSection = newValue } }
     // An import started from the home + button returns to the overview when it ends.
-    var importReturnsHome = false
+    var importReturnsHome: Bool { get { unlocked.importReturnsHome } set { unlocked.importReturnsHome = newValue } }
     // The single-entry form shows its own Back; the Manage header steps aside.
-    var entryEditorInMenu = false
-    var importMessage: String?
+    var entryEditorInMenu: Bool { get { unlocked.entryEditorInMenu } set { unlocked.entryEditorInMenu = newValue } }
+    var importMessage: String? { get { unlocked.importMessage } set { unlocked.importMessage = newValue } }
     /// "Add account" opens the guided form on its new-account step; the form clears this once it has read it.
-    var importStartsNewAccount = false
-    private(set) var importLoading = false
-    private(set) var importRevision = UUID()
-    @ObservationIgnored private var importTask: Task<ImportBatchDraft, Error>?
-    @ObservationIgnored private var preparedMutation: Task<VaultDocument, Error>?
-    private var refreshTask: Task<Void, Never>?
+    var importStartsNewAccount: Bool { get { unlocked.importStartsNewAccount } set { unlocked.importStartsNewAccount = newValue } }
+    private(set) var importLoading: Bool { get { unlocked.importLoading } set { unlocked.importLoading = newValue } }
+    private(set) var importRevision: UUID { get { unlocked.importRevision } set { unlocked.importRevision = newValue } }
+    private var importTask: Task<ImportBatchDraft, Error>? { get { unlocked.importTask } set { unlocked.importTask = newValue } }
+    private var preparedMutation: Task<VaultDocument, Error>? { get { unlocked.preparedMutation } set { unlocked.preparedMutation = newValue } }
+    private var refreshTask: Task<Void, Never>? { get { unlocked.refreshTask } set { unlocked.refreshTask = newValue } }
     @ObservationIgnored private var backgroundTask: Task<Void, Never>?
-    @ObservationIgnored private var requestWatcher: Task<Void, Never>?
-    @ObservationIgnored private var historyRebuildTask: Task<Void, Never>?
+    private var requestWatcher: Task<Void, Never>? { get { unlocked.requestWatcher } set { unlocked.requestWatcher = newValue } }
+    private var historyRebuildTask: Task<Void, Never>? { get { unlocked.historyRebuildTask } set { unlocked.historyRebuildTask = newValue } }
     /// True while past days are being recomputed in the background.
-    private(set) var historyRebuilding = false
-    @ObservationIgnored private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
+    private(set) var historyRebuilding: Bool { get { unlocked.historyRebuilding } set { unlocked.historyRebuilding = newValue } }
+    private var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>? { get { unlocked.backgroundCacheRequest } set { unlocked.backgroundCacheRequest = newValue } }
+    /// The background sources' last problems. They're fetched while locked too, so these outlive a lock.
     private(set) var backgroundIssues: [String] = []
-    private var priceRequest: Task<PriceUpdate, Error>?
+    private var priceRequest: Task<PriceUpdate, Error>? { get { unlocked.priceRequest } set { unlocked.priceRequest = newValue } }
     /// True while `priceRequest` is a scheduled catch-up, which a manual refresh may pre-empt.
-    private var priceRequestIsAutomatic = false
+    private var priceRequestIsAutomatic: Bool { get { unlocked.priceRequestIsAutomatic } set { unlocked.priceRequestIsAutomatic = newValue } }
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
     @ObservationIgnored private var networkAvailable = true
-    private var catalogRequest: Task<[CatalogCoin], Error>?
-    private var sourceRevision = UUID()
-    private(set) var catalog: [CatalogCoin] = []
-    private(set) var refreshing = false
-    var sourceMessage: String?
-    private(set) var setupProgressMessage: String?
-    @ObservationIgnored private var pendingSetupProgress: SetupProgress?
-    @ObservationIgnored private var setupProgressTask: Task<Void, Never>?
+    private var catalogRequest: Task<[CatalogCoin], Error>? { get { unlocked.catalogRequest } set { unlocked.catalogRequest = newValue } }
+    private var sourceRevision: UUID { get { unlocked.sourceRevision } set { unlocked.sourceRevision = newValue } }
+    private(set) var catalog: [CatalogCoin] { get { unlocked.catalog } set { unlocked.catalog = newValue } }
+    private(set) var refreshing: Bool { get { unlocked.refreshing } set { unlocked.refreshing = newValue } }
+    var sourceMessage: String? { get { unlocked.sourceMessage } set { unlocked.sourceMessage = newValue } }
+    private(set) var setupProgressMessage: String? { get { unlocked.setupProgressMessage } set { unlocked.setupProgressMessage = newValue } }
+    private var pendingSetupProgress: SetupProgress? { get { unlocked.pendingSetupProgress } set { unlocked.pendingSetupProgress = newValue } }
+    private var setupProgressTask: Task<Void, Never>? { get { unlocked.setupProgressTask } set { unlocked.setupProgressTask = newValue } }
     let layout: VaultLayout
     let isFixture: Bool
     #if UPONLY_PERSONAL
-    private(set) var accountingRefreshing = false
-    private(set) var accountingError: String?
-    @ObservationIgnored private var accountingRequest: Task<AccountingFetch, Error>?
+    private(set) var accountingRefreshing: Bool { get { unlocked.accountingRefreshing } set { unlocked.accountingRefreshing = newValue } }
+    private(set) var accountingError: String? { get { unlocked.accountingError } set { unlocked.accountingError = newValue } }
+    private var accountingRequest: Task<AccountingFetch, Error>? { get { unlocked.accountingRequest } set { unlocked.accountingRequest = newValue } }
+    /// The Wise profiles set up on this Mac, read from its connection file rather than the vault, so they outlive a lock.
     private(set) var wiseProfiles: [WiseConfiguredProfile] = []
-    private(set) var wiseRefreshing = false
-    var wiseMessage: String?
-    private(set) var wiseError: String?
-    @ObservationIgnored private var wiseRequest: Task<WiseSnapshot, Error>?
+    private(set) var wiseRefreshing: Bool { get { unlocked.wiseRefreshing } set { unlocked.wiseRefreshing = newValue } }
+    var wiseMessage: String? { get { unlocked.wiseMessage } set { unlocked.wiseMessage = newValue } }
+    private(set) var wiseError: String? { get { unlocked.wiseError } set { unlocked.wiseError = newValue } }
+    private var wiseRequest: Task<WiseSnapshot, Error>? { get { unlocked.wiseRequest } set { unlocked.wiseRequest = newValue } }
     #endif
     @ObservationIgnored private var lastActivity = Date()
     @ObservationIgnored private var financeSurfaces = 0
@@ -227,7 +237,7 @@ final class UpOnlySession {
     @ObservationIgnored private var activeFilePanel: NSSavePanel?
     var filePickerIsOpen: Bool { pickerDepth > 0 }
     /// True while the statement drop zone is on screen, so a drag from Finder does not dismiss the menu.
-    var dropZoneVisible = false
+    var dropZoneVisible: Bool { get { unlocked.dropZoneVisible } set { unlocked.dropZoneVisible = newValue } }
     var menuStaysOpen: Bool { filePickerIsOpen || (state == .unlocked && dropZoneVisible) }
     func focusFilePicker() {
         NSApp.activate(ignoringOtherApps: true)
@@ -262,6 +272,7 @@ final class UpOnlySession {
     #endif
 
     init() {
+        unlocked = UnlockedSession()
         #if UPONLY_FIXTURE
         isFixture = true
         #else
@@ -294,7 +305,6 @@ final class UpOnlySession {
             monitor.start(queue: DispatchQueue(label: "org.uponly.network"))
             networkMonitor = monitor
             startBackgroundRefresh()
-            startRequestWatcher()
         }
         #if UPONLY_FIXTURE
         if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IDLE_LOCK"] == "1" { installLockObservers() }
@@ -326,7 +336,7 @@ final class UpOnlySession {
 
     #if UPONLY_FIXTURE
     init(testing vault: VaultStore, layout: VaultLayout) {
-        self.vault = vault; self.layout = layout; self.isFixture = true; self.state = .newVault
+        self.unlocked = UnlockedSession(); self.vault = vault; self.layout = layout; self.isFixture = true; self.state = .newVault
     }
     #endif
 
@@ -480,44 +490,20 @@ final class UpOnlySession {
 
     func lock() { endSession(lockingVault: true) }
 
-    /// Clears the session's work and view state. A restore whose vault already opened the backup passes false,
-    /// keeping that new vault session and the authentication it was saved with.
+    /// Ends the unlocked session. Everything about the open vault goes with `unlocked`: its work is stopped, writers
+    /// still waiting are turned away, and a fresh one takes its place, so nothing typed, drafted, cached or chosen
+    /// reaches the next unlock. A restore whose vault already opened the backup passes false, keeping that new vault
+    /// session and the authentication it was saved with.
     private func endSession(lockingVault: Bool) {
         activeFilePanel?.cancel(nil)
-        pendingRestore = nil
-        unlockTiming = nil
         authenticationContext?.invalidate(); authenticationContext = nil
         passwordUnlockRequested = false
         authenticationFailed = false
-        setupProgressTask?.cancel(); setupProgressTask = nil; pendingSetupProgress = nil; setupProgressMessage = nil
-        preparedMutation?.cancel(); preparedMutation = nil
-        #if UPONLY_PERSONAL
-        accountingRequest?.cancel(); accountingRequest = nil; accountingRefreshing = false; accountingError = nil
-        wiseRequest?.cancel(); wiseRequest = nil; wiseRefreshing = false; wiseMessage = nil; wiseError = nil
-        #endif
-        refreshTask?.cancel(); refreshTask = nil
-        backgroundCacheRequest?.cancel(); backgroundCacheRequest = nil
-        priceRequest?.cancel(); priceRequest = nil
-        catalogRequest?.cancel(); catalogRequest = nil
-        sourceRevision = UUID()
-        cancelImport(); importDraft = nil; importMessage = nil; importStartsNewAccount = false; catalog = []; sourceMessage = nil; refreshing = false
-        addingInMenu = false
-        managementInMenu = false
-        importReturnsHome = false
-        entryEditorInMenu = false
-        entryMonthForManagement = ""
-        requestedRateCurrency = nil
-        fxIssues = [:]
+        unlocked.retire(); unlocked = UnlockedSession()
         if lockingVault { vault.lock() }
         sessionToken = UUID()
-        document = nil; documentRevision += 1; hourlyCache = [:]; intraday = [:]; intradayFetchedAt = [:]; intradayReady = []
-        monthModel = nil
-        dashboardSelection = .all
-        // The dashboard's height stays: it's layout, not data, and the next unlock opens straight at it.
-        showingSwitcher = false; cashFlowScope = nil; dashboardTrail = []; dashboardDetailOpen = false
-        message = nil
-        isBusy = false; writerActive = false; userWriters = []; configuringBackground = false; reconfigureBackground = false
-        sourceIssues = [:]
+        // The lock screen's own state: no note from the unlocked app, and nothing in progress.
+        message = nil; isBusy = false
         state = layout.holdsVault(vault.io) ? .locked : .newVault
     }
 
@@ -537,15 +523,13 @@ final class UpOnlySession {
             dashboardSelection = .all; dashboardTrail = []
         }
         state = .unlocked
-        if freshUnlock { recordActivity(); scheduleRefresh() }
+        if freshUnlock { recordActivity(); scheduleRefresh(); startRequestWatcher() }
         else if !isFixture { Task { await Task.yield(); await self.configureBackground() } }
     }
 
-    /// Waits until no other write is running, then claims the writer. Background work also waits for queued user edits.
-    /// User edits go in the order they were made, so two quick toggles save in that order.
     /// Ranges whose intraday prices have all been fetched at least once: until then their chart stays on saved
     /// prices, so it changes once when they arrive rather than coin by coin.
-    private(set) var intradayReady: Set<String> = []
+    private(set) var intradayReady: Set<String> { get { unlocked.intradayReady } set { unlocked.intradayReady = newValue } }
     /// Fetches intraday prices for every coin (and gold) held, for the given short ranges, all at once, and publishes
     /// them together. Each is reused for a few minutes over 24 hours and longer over the other ranges; a failure leaves
     /// that coin on saved prices.
@@ -620,25 +604,23 @@ final class UpOnlySession {
             return document.accounts.contains { document.isBankTracked($0.id, at: date) && (AssetOwnership.businessID(for: $0, in: document) ?? "personal") == id }
         }
     }
-    private func acquireWriter(token: UUID, background: Bool) async throws {
-        let ticket = UUID()
-        if !background { userWriters.append(ticket) }
-        defer { if !background, token == sessionToken { userWriters.removeAll { $0 == ticket } } }
-        let deadline = Date().addingTimeInterval(background ? 600 : 60)
-        while writerActive || (background ? !userWriters.isEmpty : userWriters.first != ticket) {
-            guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
-            guard Date() < deadline else { throw VaultError.barrierHeld }
-            try await Task.sleep(for: .milliseconds(25))
-        }
+    /// Waits until no other write is running, then claims the writer. Background work also waits for queued user edits.
+    /// User edits go in the order they were made, so two quick toggles save in that order. Nothing polls: the writer
+    /// is handed on when the one before finishes (`WriterQueue`). Returns this unlock's queue, which the caller releases
+    /// even after a lock, so a write that outlives one can never free the next unlock's writer.
+    private func acquireWriter(token: UUID, background: Bool) async throws -> WriterQueue {
         guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
-        writerActive = true
+        let writers = unlocked.writers
+        try await writers.acquire(background: background)
+        guard token == sessionToken, state == .unlocked else { writers.release(); throw VaultError.locked }
+        return writers
     }
     func mutate(_ edit: (inout VaultDocument) throws -> Void) async throws {
         guard state == .unlocked else { throw VaultError.locked }
         let token = sessionToken
-        try await acquireWriter(token: token, background: false)
+        let writers = try await acquireWriter(token: token, background: false)
         isBusy = true
-        defer { if token == sessionToken { isBusy = false; writerActive = false } }
+        defer { writers.release(); if token == sessionToken { isBusy = false } }
         let current = try await vault.currentSession()
         guard token == sessionToken else { throw VaultError.locked }
         var next = current.document
@@ -646,8 +628,22 @@ final class UpOnlySession {
         try await persist(next, replacing: current, token: token)
     }
 
+    /// Saves `proposed` in place of `current`. The main actor only hands it over and publishes the result: what every
+    /// save adds (`prepareSave`) is worked out on a background thread, and `VaultStore`, an actor, encodes, seals, writes
+    /// and flushes it. The new document shows once it's saved; a lock at any step refuses the save.
     private func persist(_ proposed: VaultDocument, replacing current: VaultSession, token: UUID) async throws {
         guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+        let (next, rebuilt) = await Task.detached(priority: .userInitiated) { UpOnlySession.prepareSave(proposed, replacing: current) }.value
+        guard token == sessionToken, state == .unlocked else { throw VaultError.locked }
+        try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
+        guard token == sessionToken else { throw VaultError.locked }
+        publish(next)
+        if rebuilt { scheduleHistoryRebuild() }
+    }
+    /// What every save adds to the proposed document: reviewed months whose figures changed reopen, backdated changes
+    /// queue their past days for rebuilding, today's value is sampled for each scope, and the generation moves on. It
+    /// reads only its arguments, so it runs off the main actor; `rebuilt` says whether past days were queued.
+    nonisolated private static func prepareSave(_ proposed: VaultDocument, replacing current: VaultSession) -> (document: VaultDocument, rebuilt: Bool) {
         var next = proposed
         // A confirmed month reopens only when its figures change: a row added, removed, re-amounted or re-typed.
         // Learning a row's day, a relabel from a sync, or a new empty account is not a reason to ask again.
@@ -683,10 +679,7 @@ final class UpOnlySession {
             NetWorthCalculator.recordSample(NetWorthCalculator.value(at: now, scope: scope, document: next, now: now), in: &next, day: today)
         }
         next.generation = current.document.generation + 1
-        try await vault.commit(next, expectedGeneration: current.document.generation, sessionID: current.sessionID)
-        guard token == sessionToken else { throw VaultError.locked }
-        publish(next)
-        if rebuilt { scheduleHistoryRebuild() }
+        return (next, rebuilt)
     }
     /// Recomputes stored daily values in 45-day chunks, newest first, each saved on its own so the interface stays
     /// responsive and the chart fills in progressively. Progress lives in the vault, so a relaunch resumes.
@@ -694,10 +687,12 @@ final class UpOnlySession {
     func scheduleHistoryRebuild() {
         guard historyRebuildTask == nil, document?.pendingHistoryRebuild != nil else { return }
         historyRebuilding = true
+        // The rebuild belongs to this unlock: it stops at a lock, and when it ends it clears only this unlock's record of it.
+        let token = sessionToken, thisUnlock = unlocked
         historyRebuildTask = Task { [weak self] in
             await self?.refreshPrices()
             var failed = false
-            while let self, self.state == .unlocked, self.document?.pendingHistoryRebuild != nil {
+            while let self, self.sessionToken == token, self.state == .unlocked, self.document?.pendingHistoryRebuild != nil {
                 do {
                     // The chunk is worked out from the document being saved, so a backdated save that landed while this
                     // waited for its turn widens the range instead of being overwritten.
@@ -716,15 +711,15 @@ final class UpOnlySession {
                     failed = !(error is CancellationError)
                     break
                 }
-                // Give a waiting edit its turn between chunks.
+                // A waiting edit is handed the writer before the next chunk can take it; the pause lets the chart draw.
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            guard let self else { return }
+            guard let self, self.sessionToken == token else { return }
             if self.state == .unlocked { await self.refreshPrices() }
-            self.historyRebuildTask = nil; self.historyRebuilding = false
+            thisUnlock.historyRebuildTask = nil; thisUnlock.historyRebuilding = false
             // A backdated save during the last chunk queued more work; pick it up now rather than in 15 minutes.
             // After a failed save (full disk, size limit) the 15-minute loop retries instead of spinning here.
-            if !failed, self.state == .unlocked, self.document?.pendingHistoryRebuild != nil { self.scheduleHistoryRebuild() }
+            if !failed, self.sessionToken == token, self.state == .unlocked, self.document?.pendingHistoryRebuild != nil { self.scheduleHistoryRebuild() }
         }
     }
     /// Re-runs balance reconstruction for every account so tracking and derived series match the current rules.
@@ -747,9 +742,9 @@ final class UpOnlySession {
     private func mutatePrepared(background: Bool = true, _ prepare: @escaping @Sendable (VaultDocument) throws -> VaultDocument) async throws {
         guard state == .unlocked else { throw VaultError.locked }
         let token = sessionToken
-        try await acquireWriter(token: token, background: background)
+        let writers = try await acquireWriter(token: token, background: background)
         if !background { isBusy = true }
-        defer { if token == sessionToken { if !background { isBusy = false }; writerActive = false; preparedMutation = nil } }
+        defer { writers.release(); if token == sessionToken { if !background { isBusy = false }; preparedMutation = nil } }
         let current = try await vault.currentSession()
         guard token == sessionToken else { throw VaultError.locked }
         let task = Task.detached(priority: .userInitiated) {
@@ -1023,7 +1018,9 @@ final class UpOnlySession {
         panel.nameFieldStringValue = "Up Only Backup " + ImportDateFormat.today() + ".uponlybackup"
         panel.canCreateDirectories = true
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
-        exportingBackup = true; defer { exportingBackup = false }
+        // This unlock's export: finishing after a lock mustn't free the next unlock's.
+        let thisUnlock = unlocked
+        thisUnlock.exportingBackup = true; defer { thisUnlock.exportingBackup = false }
         do {
             let package = try await BackupCoordinator.makePackage(store: vault, producers: [])
             guard token == sessionToken else { throw VaultError.locked }
@@ -1044,9 +1041,9 @@ final class UpOnlySession {
         let token = sessionToken
         message = nil
         do {
-            try await acquireWriter(token: token, background: false)
+            let writers = try await acquireWriter(token: token, background: false)
             isBusy = true
-            defer { if token == sessionToken { isBusy = false; writerActive = false } }
+            defer { writers.release(); if token == sessionToken { isBusy = false } }
             let current = try await vault.currentSession()
             guard token == sessionToken else { throw VaultError.locked }
             try await vault.rotateRecovery(code, sessionID: current.sessionID)
@@ -1405,7 +1402,8 @@ extension UpOnlySession {
                 try? await BackgroundRefreshSchedule.shared.finish(vaultID: document.vaultID, root: Config.supportDirectory, failed: false)
             }
             backgroundIssues.removeAll { $0 == "Bank balances" }
-            wiseMessage = "Wise updated " + Date().formatted(date: .omitted, time: .shortened)
+            // Not after a lock during the schedule update: the note would land in the next unlock.
+            if token == sessionToken { wiseMessage = "Wise updated " + Date().formatted(date: .omitted, time: .shortened) }
         } catch {
             if token == sessionToken, !Task.isCancelled, !(error is CancellationError) {
                 wiseError = (error as? ImportFailure)?.text ?? "Wise could not refresh. Your saved records are unchanged."
@@ -1453,9 +1451,10 @@ extension UpOnlySession {
     func scheduleRefresh() {
         guard !isFixture else { return }
         refreshTask?.cancel()
+        let token = sessionToken
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, self.state == .unlocked else { return }
+                guard let self, self.sessionToken == token, self.state == .unlocked else { return }
                 await self.configureBackground()
                 await self.applyBackgroundCache()
                 #if UPONLY_PERSONAL
@@ -1769,7 +1768,8 @@ extension UpOnlySession {
                 // this authentication and Touch ID stays wired.
                 try await vault.authenticator.evaluate()
                 guard token == sessionToken else { return .cancelled }
-                try await acquireWriter(token: token, background: false)
+                // Held until the vault is replaced; success retires this unlock's writer with the rest of it.
+                let writers = try await acquireWriter(token: token, background: false)
                 let aside = layout.replacedRoot(at: Date(), io: vault.io)
                 do {
                     opened = try await vault.replace(with: package, recovery: recovery, aside: aside)
@@ -1777,7 +1777,7 @@ extension UpOnlySession {
                     guard token == sessionToken else { return .failed }
                     // A backup refused before anything moved leaves the vault open; otherwise the original is back, locked,
                     // with unlock ready as after Lock now.
-                    if await vault.isUnlocked { writerActive = false } else { lockAndAuthenticate() }
+                    if await vault.isUnlocked { writers.release() } else { lockAndAuthenticate() }
                     message = vault.io.fileExists(at: aside)
                         ? "Restore failed. Your vault is in the folder “\(aside.lastPathComponent)” beside where it was."
                         : Self.restoreFailure(replacing: true)
@@ -1877,16 +1877,21 @@ private final class UpOnlyFixtureWindow: NSWindow {
 
 extension UpOnlySession {
     /// A `refresh.request` file in the support folder asks an unlocked app to repair balance history and refresh
-    /// prices and rates now. It lets a script trigger the same work as the Sources refresh button.
+    /// prices and rates now. It lets a script trigger the same work as the Sources refresh button. Looked for every
+    /// few seconds only while unlocked: it starts with each unlock and stops at the lock, so a locked app isn't woken
+    /// for it, and a request left while locked is picked up after the next unlock.
     private func startRequestWatcher() {
+        guard !isFixture else { return }
         requestWatcher?.cancel()
+        let token = sessionToken
         requestWatcher = Task { [weak self] in
             let refresh = Config.supportDirectory.appendingPathComponent("refresh.request")
             // `rebuild.request` recomputes every stored day from the earliest asset or balance, in the background.
             let rebuild = Config.supportDirectory.appendingPathComponent("rebuild.request")
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
-                guard let self, self.state == .unlocked, !self.isBusy else { continue }
+                guard let self, self.sessionToken == token else { return }
+                guard self.state == .unlocked, !self.isBusy else { continue }
                 if FileManager.default.fileExists(atPath: rebuild.path) {
                     try? FileManager.default.removeItem(at: rebuild)
                     await self.rebuildAllHistory()
@@ -2002,5 +2007,152 @@ extension UpOnlySession {
             catch { failed = true }
         }
         if failed, token == sessionToken { backgroundIssues = Array(Set(backgroundIssues + ["Cached updates"])) }
+    }
+}
+
+/// Everything that belongs to one unlocked vault: the document and what's worked out from it, navigation within the
+/// unlocked app, drafts and editors, imports, what the sources said, and the work in flight for all of it.
+/// `UpOnlySession` holds one in `unlocked` and forwards these under their old names. Lock retires it and puts a fresh
+/// one in its place, so nothing here reaches the next unlock, and a field added here needs no code to clear it. What
+/// must outlive a lock (the vault, lock timing, background refresh, layout choices) stays on `UpOnlySession`.
+@MainActor @Observable
+final class UnlockedSession {
+    // The open vault and what's worked out from it, remembered per change (`documentRevision`).
+    fileprivate(set) var document: VaultDocument?
+    @ObservationIgnored fileprivate(set) var documentRevision = 0
+    @ObservationIgnored var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] = [:]
+    @ObservationIgnored fileprivate var estimatesCache: (revision: Int, value: ChartEstimates)?
+    @ObservationIgnored fileprivate var rateCache: (revision: Int, monthly: [String: Decimal?], latest: [String: Decimal?]) = (-1, [:], [:])
+    @ObservationIgnored fileprivate var standInCache: (revision: Int, factor: Decimal)?
+    fileprivate(set) var monthModel: PopoverModel?
+    fileprivate(set) var intraday: [String: ChartEstimates.Series] = [:]
+    @ObservationIgnored fileprivate var intradayFetchedAt: [String: Date] = [:]
+    fileprivate(set) var intradayReady: Set<String> = []
+    fileprivate var privacyOverride: Bool?
+    @ObservationIgnored fileprivate var privacyAttempt = UUID()
+    @ObservationIgnored fileprivate(set) var unlockTiming: UnlockTiming?
+    // Where you are in the unlocked app: the page, the switcher, Manage and Add, and what they were opened for.
+    var dashboardSelection: UpOnlySession.DashboardSelection = .all
+    fileprivate(set) var dashboardTrail: [UpOnlySession.DashboardSelection] = []
+    var showingSwitcher = false
+    var cashFlowScope: PerformanceScope?
+    var dashboardDetailOpen = false
+    fileprivate(set) var backRequests = 0
+    var addingInMenu = false { didSet { if !addingInMenu { addOpenedForUpdate = false } } }
+    var addOpenedForUpdate = false
+    var managementInMenu = false
+    var managementSection = "Accounts"
+    var entryMonthForManagement = ""
+    var requestedRateCurrency: String?
+    var dropZoneVisible = false
+    // Drafts and editors: imports, and a backup being restored or exported.
+    var importDraft: ImportBatchDraft?
+    var importMode: ImportMode = .statements
+    var importTableMode = false
+    var importRequest: UpOnlySession.ImportRequest?
+    fileprivate(set) var importReturnSection = "Add your info"
+    var importReturnsHome = false
+    var entryEditorInMenu = false
+    var importMessage: String?
+    var importStartsNewAccount = false
+    fileprivate(set) var importLoading = false
+    fileprivate(set) var importRevision = UUID()
+    @ObservationIgnored fileprivate var importTask: Task<ImportBatchDraft, Error>?
+    @ObservationIgnored fileprivate var pendingRestore: (package: BackupPackage, recovery: RecoveryCode)?
+    @ObservationIgnored fileprivate var exportingBackup = false
+    // Saving: this unlock's writer, and saves and setup choices on their way.
+    let writers = WriterQueue()
+    @ObservationIgnored fileprivate var preparedMutation: Task<VaultDocument, Error>?
+    fileprivate(set) var historyRebuilding = false
+    @ObservationIgnored fileprivate var historyRebuildTask: Task<Void, Never>?
+    fileprivate(set) var setupProgressMessage: String?
+    @ObservationIgnored fileprivate var pendingSetupProgress: SetupProgress?
+    @ObservationIgnored fileprivate var setupProgressTask: Task<Void, Never>?
+    // This vault's prices, rates and sources: the requests, and what they found and said.
+    fileprivate var refreshTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate var requestWatcher: Task<Void, Never>?
+    @ObservationIgnored fileprivate var backgroundCacheRequest: Task<(packets: [BackgroundPacket], issues: [String]), Never>?
+    @ObservationIgnored fileprivate var configuringBackground = false
+    @ObservationIgnored fileprivate var reconfigureBackground = false
+    fileprivate var priceRequest: Task<PriceUpdate, Error>?
+    fileprivate var priceRequestIsAutomatic = false
+    fileprivate var catalogRequest: Task<[CatalogCoin], Error>?
+    fileprivate var sourceRevision = UUID()
+    fileprivate(set) var catalog: [CatalogCoin] = []
+    fileprivate(set) var refreshing = false
+    var sourceMessage: String?
+    fileprivate(set) var fxIssues: [String: String] = [:]
+    fileprivate(set) var sourceIssues: [String: String] = [:]
+    #if UPONLY_PERSONAL
+    fileprivate(set) var accountingRefreshing = false
+    fileprivate(set) var accountingError: String?
+    @ObservationIgnored fileprivate var accountingRequest: Task<AccountingFetch, Error>?
+    fileprivate(set) var wiseRefreshing = false
+    var wiseMessage: String?
+    fileprivate(set) var wiseError: String?
+    @ObservationIgnored fileprivate var wiseRequest: Task<WiseSnapshot, Error>?
+    #endif
+
+    /// Lock calls this before replacing it: the work this unlock started stops and writers still waiting are turned
+    /// away. Nothing needs clearing, since the app never reads this object again.
+    func retire() {
+        writers.close()
+        importTask?.cancel(); preparedMutation?.cancel(); historyRebuildTask?.cancel(); setupProgressTask?.cancel()
+        refreshTask?.cancel(); requestWatcher?.cancel(); backgroundCacheRequest?.cancel(); priceRequest?.cancel(); catalogRequest?.cancel()
+        #if UPONLY_PERSONAL
+        accountingRequest?.cancel(); wiseRequest?.cancel()
+        #endif
+    }
+}
+
+/// The vault writer: one save at a time, handed from each writer to the next rather than polled for. User edits go in
+/// the order they were made and ahead of background work, which then follows in turn. A waiter gives up after its
+/// deadline (`barrierHeld`: a minute for an edit, ten for background work) or when its task is cancelled. Closing the
+/// queue, as lock does, turns every waiter away (`locked`) and hands nothing on.
+@MainActor final class WriterQueue {
+    private struct Waiter { var id: UUID; var background: Bool; var continuation: CheckedContinuation<Void, Error>; var deadline: Task<Void, Never> }
+    private var held = false, closed = false
+    private var waiting: [Waiter] = []
+
+    /// Returns once the caller holds the writer. It's never free while anyone waits, so a free writer is taken at once.
+    func acquire(background: Bool) async throws {
+        guard !closed else { throw VaultError.locked }
+        if !held { held = true; return }
+        try Task.checkCancellation()
+        let id = UUID(), limit: Duration = background ? .seconds(600) : .seconds(60)
+        // One sleep per waiter, cancelled as soon as it's handed the writer. The waiter joins the line below in this
+        // same turn of the main actor, so the deadline always finds it.
+        let deadline = Task { [weak self] in
+            do { try await Task.sleep(for: limit) } catch { return }
+            self?.leave(id, VaultError.barrierHeld)
+        }
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                self.waiting.append(Waiter(id: id, background: background, continuation: continuation, deadline: deadline))
+            }
+        }, onCancel: {
+            Task { @MainActor [weak self] in self?.leave(id, CancellationError()) }
+        })
+    }
+    /// Hands the writer to the next waiter, a user edit before background work, or leaves it free.
+    func release() {
+        guard held, !closed else { return }
+        guard let index = waiting.firstIndex(where: { !$0.background }) ?? waiting.indices.first else { held = false; return }
+        let next = waiting.remove(at: index)
+        next.deadline.cancel()
+        next.continuation.resume()
+    }
+    /// Lock: every waiter is turned away, and a writer still running releases to nobody.
+    func close() {
+        closed = true; held = false
+        let turnedAway = waiting; waiting = []
+        for waiter in turnedAway { waiter.deadline.cancel(); waiter.continuation.resume(throwing: VaultError.locked) }
+    }
+    /// A waiter that timed out or was cancelled leaves the line. One already handed the writer keeps it.
+    private func leave(_ id: UUID, _ error: Error) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiting.remove(at: index)
+        waiter.deadline.cancel()
+        waiter.continuation.resume(throwing: error)
     }
 }

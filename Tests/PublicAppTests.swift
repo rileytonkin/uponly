@@ -1667,7 +1667,108 @@ struct WiseInputTests {
         let reopened = try await vault.unlock()
         #expect(reopened.document.accounts.isEmpty && reopened.document.bankBalances.isEmpty)
     }
+    @Test("Lock replaces everything that belonged to the unlocked vault: drafts, editors, navigation and remembered values start afresh")
+    func lockStartsAfresh() async throws {
+        let (session, _, vault) = harness()
+        await session.create(recovery: .random())
+        let before = session.unlocked
+        // What lock once had to clear field by field: a half-made draft and its editors, a page and its trail, a
+        // request, a note, and values remembered for the document.
+        session.startImport(.holdings); session.importTableMode = true; session.importRequest = .paste; session.importMessage = "Half done"
+        session.addingInMenu = true; session.addOpenedForUpdate = true; session.managementInMenu = true; session.entryEditorInMenu = true
+        #expect(session.handleEscape())
+        #expect(session.backRequests == 1)
+        session.showDashboard(.cashFlow); session.showDashboard(.all, .drill); session.showingSwitcher = true; session.dashboardDetailOpen = true
+        session.dropZoneVisible = true; session.sourceMessage = "Updated"; session.hourlyCache["probe"] = []
+        #expect(session.chartEstimates() != nil && session.latestRate("EUR") == nil && session.dashboardTrail == [.cashFlow])
+        // How you like the dashboard is about this Mac, not the vault, so it stays.
+        session.worthRange = .month; session.holdingSortIndex = 2; session.dashboardHeight = 480
+        session.lock()
+        #expect(session.unlocked !== before && session.document == nil && session.importDraft == nil && session.chartEstimates() == nil)
+        // The vault gains a EUR rate while locked, so a remembered "no EUR rate" would show if the cache survived.
+        let opened = try await vault.unlock()
+        var changed = opened.document
+        changed.fx.append(FXObservation(sourceCurrency: "EUR", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: "1.25")!), providerTime: Date(), fetchedAt: Date(), provider: "Synthetic"))
+        changed.generation += 1
+        try await vault.commit(changed, expectedGeneration: opened.document.generation, sessionID: opened.sessionID)
+        vault.lock()
+        await session.unlock()
+        #expect(session.state == .unlocked && session.latestRate("EUR") == Decimal(string: "1.25"))
+        #expect(session.importDraft == nil && session.importMode == .statements && !session.importTableMode && session.importRequest == nil && session.importMessage == nil)
+        #expect(!session.addingInMenu && !session.addOpenedForUpdate && !session.managementInMenu && !session.entryEditorInMenu && session.backRequests == 0)
+        #expect(session.dashboardSelection == .all && session.dashboardTrail.isEmpty && !session.showingSwitcher && !session.dashboardDetailOpen)
+        #expect(!session.dropZoneVisible && session.sourceMessage == nil && session.hourlyCache.isEmpty)
+        #expect(session.worthRange == .month && session.holdingSortIndex == 2 && session.dashboardHeight == 480)
+    }
+    @Test("Quick saves wait their turn: each lands in the order made, one generation apart, with a background update among them")
+    func savesWaitTheirTurn() async throws {
+        let (session, _, vault) = harness()
+        await session.create(recovery: .random())
+        let start = try #require(session.document?.generation)
+        let quote = QuoteObservation(assetID: PreciousMetal.gold.assetID, priceUSD: PreciseDecimal(100), providerTime: Date(), fetchedAt: Date(), provider: "Synthetic")
+        let names = (0..<8).map { "Account \($0)" }
+        // Started together, as quick taps are: none is refused, and each waits for the one before it.
+        let background = Task { var update = PriceUpdate(); update.quotes = [quote]; try await session.commitPriceUpdate(update) }
+        let edits = names.map { name in Task { try await session.mutate { $0.accounts.append(Account(name: name, currency: "USD")) } } }
+        for edit in edits { try await edit.value }
+        try await background.value
+        #expect(session.document?.accounts.map(\.name) == names && session.document?.generation == start + 9 && !session.isBusy)
+        let saved = try await vault.currentSession().document
+        #expect(saved.accounts.map(\.name) == names && saved.generation == start + 9 && saved.quotes.contains { $0.provider == "Synthetic" })
+        // And they're what the next unlock reads from disk.
+        session.lock(); await session.unlock()
+        #expect(session.document?.accounts.map(\.name) == names && session.document?.generation == start + 9)
+    }
+    @Test("A lock during a save refuses it and the saves waiting their turn; nothing is published and the next unlock reads the last save")
+    func lockDuringSave() async throws {
+        let (session, io, _) = harness()
+        await session.create(recovery: .random())
+        try await session.mutate { $0.accounts.append(Account(name: "Kept", currency: "USD")) }
+        let kept = try #require(session.document?.generation)
+        // The vault actor stops partway through writing the next save until the lock has happened.
+        let writing = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        io.onWrite = { writing.signal(); proceed.wait() }
+        let saving = Task { try await session.mutate { $0.accounts.append(Account(name: "Lost", currency: "USD")) } }
+        await withCheckedContinuation { (reached: CheckedContinuation<Void, Never>) in DispatchQueue.global().async { writing.wait(); reached.resume() } }
+        let queued = Task { try await session.mutate { $0.accounts.append(Account(name: "Also lost", currency: "USD")) } }
+        for _ in 0..<5 { await Task.yield() }
+        session.lock()
+        io.onWrite = nil
+        proceed.signal()
+        await #expect(throws: VaultError.locked) { try await saving.value }
+        await #expect(throws: VaultError.locked) { try await queued.value }
+        #expect(session.state == .locked && session.document == nil && !session.isBusy)
+        await session.unlock()
+        #expect(session.document?.accounts.map(\.name) == ["Kept"] && session.document?.generation == kept)
+    }
+    @Test("The writer is handed on, not polled for: user edits in order and ahead of background work; cancelling or locking turns a waiter away")
+    func writerHandover() async throws {
+        let writers = WriterQueue(), log = TurnLog()
+        try await writers.acquire(background: true)
+        let background = Task { try await writers.acquire(background: true); log.turns.append("background"); writers.release() }
+        let first = Task { try await writers.acquire(background: false); log.turns.append("first"); writers.release() }
+        let second = Task { try await writers.acquire(background: false); log.turns.append("second"); writers.release() }
+        for _ in 0..<5 { await Task.yield() }
+        #expect(log.turns.isEmpty)
+        writers.release()
+        try await background.value; try await first.value; try await second.value
+        #expect(log.turns == ["first", "second", "background"])
+        // A cancelled waiter leaves the line, as a restarted refresh's does.
+        try await writers.acquire(background: true)
+        let cancelled = Task { try await writers.acquire(background: true) }
+        for _ in 0..<5 { await Task.yield() }
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        // A lock turns away whoever is waiting, and nothing is handed on afterwards.
+        let waiting = Task { try await writers.acquire(background: false) }
+        for _ in 0..<5 { await Task.yield() }
+        writers.close()
+        await #expect(throws: VaultError.locked) { try await waiting.value }
+        await #expect(throws: VaultError.locked) { try await writers.acquire(background: true) }
+    }
 }
+/// Who held the writer, in turn.
+@MainActor private final class TurnLog { var turns: [String] = [] }
 #endif
 
 struct MetalHistoryTests {
