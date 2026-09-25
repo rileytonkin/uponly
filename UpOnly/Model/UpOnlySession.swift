@@ -496,6 +496,7 @@ final class UpOnlySession {
         passwordUnlockRequested = false
         authenticationFailed = false
         unlocked.retire(); unlocked = UnlockedSession()
+        inactivityTimer?.invalidate(); inactivityTimer = nil
         if lockingVault { vault.lock() }
         sessionToken = UUID()
         // The lock screen's own state: no note from the unlocked app, and nothing in progress.
@@ -517,7 +518,7 @@ final class UpOnlySession {
             dashboardSelection = .all; dashboardTrail = []
         }
         state = .unlocked
-        if freshUnlock { recordActivity(); scheduleRefresh(); startRequestWatcher() }
+        if freshUnlock { recordActivity(); startInactivityTimer(); scheduleRefresh(); startRequestWatcher() }
         else if !isFixture { Task { await Task.yield(); await self.configureBackground() } }
     }
 
@@ -1079,6 +1080,12 @@ final class UpOnlySession {
             self?.handleActivity()
             return event
         }
+    }
+
+    /// The idle lock's once-a-second check, which only an unlocked vault needs: it starts with each unlock and stops at
+    /// the lock, so a locked app isn't woken for it.
+    private func startInactivityTimer() {
+        inactivityTimer?.invalidate()
         inactivityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.checkInactivity()
@@ -1312,11 +1319,22 @@ final class UpOnlySession {
                 if let raw = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_MODE"], let mode = ImportMode(rawValue: raw) {
                     discardImport(); startImport(mode)
                 } else if importDraft == nil { startImport(.statements) }
+                // The duplicate preview reads the file into the first account twice, as if it were chosen before picking
+                // the files, so the second read finds the rows the first saved.
+                let duplicate = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_DUPLICATE"] == "1"
+                func chooseFirstAccount() {
+                    guard duplicate, let account = document?.accounts.first, let index = importDraft?.sources.firstIndex(where: { $0.grid.isEmpty }) else { return }
+                    importDraft?.sources[index].account = ImportAccount(existingID: account.id, name: account.name, currency: account.currency)
+                }
+                chooseFirstAccount()
                 await readImportFiles(file.split(separator: ";").map { URL(fileURLWithPath: String($0)) })
-                if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_IMPORT_DUPLICATE"] == "1", let batch = importDraft {
-                    try await commitImportBatch(batch)
-                    startImport(.statements)
-                    await readImportFiles([URL(fileURLWithPath: file)])
+                if duplicate, let batch = importDraft {
+                    // A file whose own rows repeat can't be saved as it is; it stays open showing those rows instead.
+                    do {
+                        try await commitImportBatch(batch)
+                        startImport(.statements); chooseFirstAccount()
+                        await readImportFiles([URL(fileURLWithPath: file)])
+                    } catch { print("UPONLY_PREVIEW_IMPORT_ERROR=" + error.localizedDescription); fflush(stdout) }
                 }
                 managementInMenu = true; managementSection = "Add your info"
             }
@@ -1801,7 +1819,11 @@ extension UpOnlySession {
             try await auth.evaluate()
             guard token == sessionToken else { throw VaultError.locked }
             try await vault.releaseEmptyDestination()
-            _ = try BackupCoordinator.restore(package: package, recovery: recovery, keys: keys, layout: layout, io: DiskFileIO(), authenticator: auth)
+            // Writing and flushing up to a few hundred megabytes stays off the main thread, like reading the backup.
+            let layout = layout
+            _ = try await Task.detached(priority: .userInitiated) {
+                try BackupCoordinator.restore(package: package, recovery: recovery, keys: keys, layout: layout, io: DiskFileIO(), authenticator: auth)
+            }.value
             vault = VaultStore(layout: layout, io: DiskFileIO(), keys: keys, authenticator: auth)
             opened = try await vault.unlock()
             guard token == sessionToken else { return .failed }
@@ -1855,6 +1877,28 @@ private final class UpOnlyFixtureWindow: NSWindow {
         } else if command["action"] as? String == "controls" {
             response["success"] = true
             response["controls"] = fields.enumerated().map { index, view in ["index": index, "type": String(describing: type(of: view)), "placeholder": (view as? NSTextField)?.placeholderString ?? ""] as [String: Any] }
+        } else if command["action"] as? String == "keys", let index = command["index"] as? Int, fields.indices.contains(index), let text = command["text"] as? String {
+            // Key by key into the focused field, as typing does, so completions and suggestions react. The events go to
+            // this window only; nothing reaches the rest of the Mac.
+            makeFirstResponder(fields[index])
+            for character in text {
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: windowNumber,
+                                                       context: nil, characters: String(character), charactersIgnoringModifiers: String(character), isARepeat: false, keyCode: 0) else { continue }
+                    sendEvent(event)
+                }
+            }
+            response["success"] = true
+        } else if command["action"] as? String == "windows" {
+            // Every window the preview has open, e.g. a suggestions list, each saved as audit-N.png.
+            response["success"] = true
+            response["windows"] = NSApp.windows.filter(\.isVisible).enumerated().map { index, window -> [String: Any] in
+                if let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    try? bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("audit-\(index).png"))
+                }
+                return ["index": index, "type": String(describing: type(of: window)), "frame": NSStringFromRect(window.frame), "level": window.level.rawValue]
+            }
         } else if command["action"] as? String == "type", let index = command["index"] as? Int, fields.indices.contains(index), let text = command["text"] as? String {
             if let field = fields[index] as? NSTextField {
                 field.stringValue = text
