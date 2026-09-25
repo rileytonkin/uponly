@@ -907,6 +907,56 @@ final class UpOnlySession {
         Task { await refreshPrices() }
     }
 
+    /// Several buys of one coin or metal, each on its own day with what it cost: each adds its amount to what was
+    /// held that day, and to every total saved after it, with a purchase record for its cost. The portfolio is the
+    /// chosen one, or a new one by that name.
+    struct Buy: Sendable { var quantity: Decimal; var date: Date; var cost: Decimal? }
+    func commitBuys(portfolioID: UUID?, portfolioName: String, owner: String?, assetID: String, assetName: String, kind: TrackedKind, buys: [Buy]) async throws {
+        let sorted = buys.filter { $0.quantity > 0 }.sorted { $0.date < $1.date }
+        guard let first = sorted.first else { throw ImportFailure("Enter an amount for at least one buy.") }
+        var newName: String?
+        if portfolioID == nil {
+            do { newName = try Self.name(portfolioName) } catch { throw ImportFailure("Name the new portfolio.") }
+        }
+        try await mutatePrepared(background: false) { document in
+            var next = document
+            var portfolio = portfolioID.flatMap { next.portfolio(id: $0)?.id }
+            if portfolio == nil, let newName {
+                let ownerID = owner.flatMap { $0.isEmpty ? nil : $0 }
+                guard !next.portfolios.contains(where: { !$0.isArchived && ($0.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }) == ownerID && $0.name.caseInsensitiveCompare(newName) == .orderedSame }) else {
+                    throw ImportFailure("A portfolio with this name already exists here. Choose it instead.")
+                }
+                let created = Portfolio(name: newName, createdAt: first.date, kind: kind, ownerBusinessID: ownerID)
+                next.portfolios.append(created); portfolio = created.id
+            }
+            guard let portfolio else { throw VaultError.unknownPortfolio }
+            let asset = CanonicalAssetID(rawValue: assetID)
+            let existing = document.holdings.first { $0.portfolioID == portfolio && $0.assetID == asset && $0.archivedAt == nil }
+            // Totals saved after the first buy rise by the buys before them; what was held on each buy's day, plus
+            // every buy so far, is the new total that day.
+            if let existing {
+                for index in next.quantities.indices where next.quantities[index].holdingID == existing.id && next.quantities[index].effectiveAt > first.date {
+                    let bought = sorted.filter { $0.date <= next.quantities[index].effectiveAt }.reduce(Decimal(0)) { $0 + $1.quantity }
+                    next.quantities[index].quantity = PreciseDecimal(next.quantities[index].quantity.value + bought)
+                }
+            }
+            var cumulative = Decimal(0)
+            for buy in sorted {
+                cumulative += buy.quantity
+                let before = existing.flatMap { document.effectiveQuantity(holdingID: $0.id, at: buy.date) } ?? 0
+                next = try HoldingMutations.addHolding(portfolioID: portfolio, assetID: asset, assetName: assetName, quantity: before + cumulative, at: buy.date, document: next)
+                if let cost = buy.cost, cost > 0, let holding = next.holdings.first(where: { $0.portfolioID == portfolio && $0.assetID == asset && $0.archivedAt == nil }) {
+                    next.purchases = (next.purchases ?? []) + [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(buy.quantity), paid: PreciseDecimal(cost), currency: "USD", at: buy.date)]
+                }
+            }
+            next.track(kind)
+            return next
+        }
+        importDraft = nil
+        finishHomeImport(saved: kind == .metals ? .metals : .holdings)
+        Task { await refreshPrices() }
+    }
+
     func exportBackup() async {
         guard state == .unlocked, !filePickerIsOpen, !exportingBackup else { focusFilePicker(); return }
         let token = sessionToken

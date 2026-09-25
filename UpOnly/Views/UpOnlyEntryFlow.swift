@@ -156,9 +156,10 @@ struct UpOnlyEntryFlow: View {
     private func seed(_ mode: ImportMode) {
         guard var batch = session.importDraft, batch.rows.isEmpty, let source = batch.sources.first else { return }
         let portfolios = session.document?.portfolios.filter { !$0.isArchived && $0.kind == mode.kind } ?? []
-        // The first portfolio rather than a new one; the form's Portfolio row changes it.
-        let portfolio = portfolios.first
-        let content: ImportRowContent = mode == .bankBalances ? .bankBalance(BankBalanceInput()) : .holding(HoldingInput(portfolioID: portfolio?.id, portfolioName: portfolio?.name ?? (mode == .metals ? "My metals" : "My crypto")))
+        // The only portfolio when there's one; with several, the form asks which after the coin or metal is chosen.
+        let portfolio = portfolios.count == 1 ? portfolios.first : nil
+        let content: ImportRowContent = mode == .bankBalances ? .bankBalance(BankBalanceInput())
+            : .holding(HoldingInput(portfolioID: portfolio?.id, portfolioName: portfolio?.name ?? (portfolios.isEmpty ? (mode == .metals ? "My metals" : "My crypto") : "")))
         batch.rows = [ImportDraftRow(sourceID: source.id, line: 1, content: content)]
         session.importDraft = batch
     }
