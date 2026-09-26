@@ -1,0 +1,9 @@
+# Every change needs the owner's review once branch protection requires it.
+* @rileytonkin
+
+# Build, signing, automation and agent instructions: never merge without the owner.
+/.claude/ @rileytonkin
+/.github/ @rileytonkin
+/AGENTS.md @rileytonkin
+/UpOnly.xcodeproj/ @rileytonkin
+/UpOnly/*.entitlements @rileytonkin
