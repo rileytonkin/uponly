@@ -42,5 +42,6 @@ Keep everything in the background: never take the owner's cursor or focus. The a
 The owner archives a workspace once its work looks finished, so anything still needed after merge must be visible first.
 
 - Do the safe follow-ups yourself: confirm the merge landed on `main`, check CI, delete the branch, update docs, and install the build as above.
+- CI runs on the workhorse mini (self-hosted runner `workhorse-uponly`, label `uponly`; `scripts/mini_ci_runner_add.sh` sets it up), not on GitHub's hosted runners. Checks that sit queued mean that runner is down: tell the owner rather than moving jobs to hosted runners. Never add secrets, `pull_request_target`, `workflow_run` or `workflow_dispatch` to the workflow: the repository is public.
 - Ask before anything risky or public: releases, production changes, secrets or config changes, and messages to other people.
 - End the final message with a **Loose ends** section: short dot points listing only what still needs the owner (a failed install, manual QA, TODOs left, follow-up PRs, anything unverified). If nothing remains, write "Loose ends: None — safe to archive."
