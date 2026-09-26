@@ -37,15 +37,34 @@ extension UpOnlyUnlockedPanel {
                 }
                 if let focusTotal {
                     UpOnlyAmount(value: focusTotal, cents: true)
-                    // The change over the range, beside your share of a part-owned company.
-                    let yourShare = partOwner && companyFocus == .all ? share.map { share -> HeadlineStat in
-                        let shown = session.privacyMode ? session.standInFactor.map { UpOnlyFormat.exactMoney(share * $0) } ?? "••••" : UpOnlyFormat.exactMoney(share)
-                        return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary, spoken: shown)
-                    } : nil
                     // A portfolio in focus moves with its market, so it keeps its percentage; cash doesn't.
                     let market = if case .portfolio = companyFocus { true } else { false }
-                    let stats = [change.map { changeStat($0, percent: market) }, yourShare].compactMap { $0 }
-                    if !stats.isEmpty { headlineStats(stats).padding(.top, 4) }
+                    let assets = change.map { changeStat($0, percent: market) }
+                    if let book, companyID != nil {
+                        // Part owners: the whole company above, your share of it on one quiet line.
+                        if partOwner, companyFocus == .all, let share {
+                            UpOnlyPrivateText("Your share" + (ownership.map { " · " + $0.label } ?? "") + " · " + UpOnlyFormat.exactMoney(share))
+                                .font(UpOnlyType.caption).foregroundStyle(.secondary)
+                        }
+                        // The two figures are also what the chart shows: choosing one switches it.
+                        let totals = rangeTotals(book)
+                        let profit = partOwner ? totals.share : totals.profit
+                        HStack(spacing: 8) {
+                            metricTile(title: "Assets", value: assets?.value ?? "—", detail: assets?.detail, tint: assets?.tint ?? .secondary,
+                                       caption: worthRange.spokenTitle, selected: !showProfit) { companyChart = .balance }
+                            metricTile(title: partOwner ? "Your profit" : "Profit", value: profit.map { UpOnlyFormat.movement($0, fraction: nil, cents: true) } ?? "—", private: true,
+                                       tint: profit.map(UpOnlyTint.signed) ?? .secondary, caption: worthRange.spokenTitle + (totals.missing > 0 ? " · \(totals.missing) month\(totals.missing == 1 ? "" : "s") missing" : ""),
+                                       selected: showProfit) { companyChart = .profit }
+                        }.padding(.top, 8)
+                    } else {
+                        // The change over the range, beside your share of a part-owned company.
+                        let yourShare = partOwner && companyFocus == .all ? share.map { share -> HeadlineStat in
+                            let shown = session.privacyMode ? session.standInFactor.map { UpOnlyFormat.exactMoney(share * $0) } ?? "••••" : UpOnlyFormat.exactMoney(share)
+                            return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary, spoken: shown)
+                        } : nil
+                        let stats = [assets, yourShare].compactMap { $0 }
+                        if !stats.isEmpty { headlineStats(stats).padding(.top, 4) }
+                    }
                 } else if allParts.isEmpty {
                     Text("Balance needed").font(UpOnlyType.title)
                     Text("Add a balance to value this account.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -55,21 +74,13 @@ extension UpOnlyUnlockedPanel {
             if hasAssetChart || companyID != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     rangeControl
-                    // What the chart shows, as two quiet tabs that label it. A bank is focused from its row below and
-                    // a holding opens its portfolio, so the chart needs no other switch.
-                    if companyID != nil { chartTabs.padding(.top, 2) }
                     if showProfit {
-                        // The accounting figures belong with their chart, not above the assets.
                         if let book {
                             let totals = rangeTotals(book)
-                            HStack(alignment: .top, spacing: 12) {
-                                companyFigure("Net revenue", totals.revenue)
-                                companyFigure("Expenses", totals.expenses.map { -$0 })
-                                companyFigure(partOwner ? "Your profit" : "Profit / loss", partOwner ? totals.share : totals.profit, signed: true)
-                            }.padding(.top, 4)
                             UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow, plotHeight: chartPlotHeight)
-                            // Which months the figures cover, when some are missing.
-                            if let caption = totals.caption { Text(caption).font(UpOnlyType.caption).foregroundStyle(.secondary) }
+                            // What the profit is made of, when the sheet says.
+                            let parts = [totals.revenue.map { "Net revenue " + UpOnlyFormat.exactMoney($0) }, totals.expenses.map { "expenses " + UpOnlyFormat.exactMoney($0) }].compactMap { $0 }
+                            if !parts.isEmpty { UpOnlyPrivateText(parts.joined(separator: " − ")).font(UpOnlyType.caption).foregroundStyle(.secondary) }
                         } else { Text("Accounting unavailable for this period").font(UpOnlyType.body).foregroundStyle(.secondary) }
                     } else if hasAssetChart {
                         UpOnlyChart(points: series, tint: trendTint(series), plotHeight: chartPlotHeight, bridgesGaps: true)
@@ -108,17 +119,26 @@ extension UpOnlyUnlockedPanel {
             }
         }
     }
-    /// "Assets   Profit / loss": the chosen one in the primary colour, the other quiet.
-    var chartTabs: some View {
-        HStack(spacing: 16) {
-            ForEach([(CompanyChart.balance, "Assets"), (CompanyChart.profit, "Profit / loss")], id: \.1) { chart, title in
-                let chosen = companyChart == chart
-                Button { companyChart = chart } label: {
-                    Text(title).font(UpOnlyType.body.weight(chosen ? .semibold : .regular)).foregroundStyle(chosen ? Color.primary : Color.secondary)
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityAddTraits(chosen ? .isSelected : [])
-            }
-        }.accessibilityElement(children: .contain).accessibilityLabel("Company chart")
+    /// A figure that is also a choice of chart: its name, its change over the range and the range. The chosen one is
+    /// raised on a light card; the other stays flat.
+    func metricTile(title: String, value: String, detail: String? = nil, private isPrivate: Bool = false, tint: Color, caption: String,
+                    selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(selected ? .primary : .secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Group { if isPrivate { UpOnlyPrivateText(value) } else { Text(value) } }
+                        .font(UpOnlyType.body.weight(.semibold).monospacedDigit())
+                        // Dots stay neutral; a red "••••" would still say it's a loss.
+                        .foregroundStyle(session.privacyMode && session.standInFactor == nil ? Color.primary : tint)
+                    if let detail { Text(detail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                }.lineLimit(1).minimumScaleFactor(0.8)
+                Text(caption).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8)
+                .background(selected ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(selected ? 0.1 : 0.06)))
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : []).help("Show " + title.lowercased() + " on the chart")
     }
     func companyBankRow(_ bank: BankBalanceGroup, document: VaultDocument?) -> AssetRow {
         let ids = Set(bank.components.map(\.id))
