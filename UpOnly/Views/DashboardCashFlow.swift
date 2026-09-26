@@ -114,10 +114,10 @@ extension UpOnlyUnlockedPanel {
     }
     /// Revenue, expenses, profit and your share summed over the months in the selected range, with a caption saying
     /// which months that covers.
-    func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String?) {
+    func rangeTotals(_ book: BusinessBook) -> (revenue: Decimal?, expenses: Decimal?, profit: Decimal?, share: Decimal?, caption: String?, missing: Int) {
         let months = rangeMonths(book)
         let rows = months.compactMap { key in book.months.first { $0.month == key.description } }
-        guard !rows.isEmpty else { return (nil, nil, nil, nil, "No accounting" + worthRange.within + ".") }
+        guard !rows.isEmpty else { return (nil, nil, nil, nil, "No accounting" + worthRange.within + ".", months.count) }
         let profit = rows.reduce(Decimal(0)) { $0 + $1.profitUSD }
         let revenue = rows.allSatisfy { $0.revenueUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.revenueUSD ?? 0) } : nil
         let expenses = rows.allSatisfy { $0.expensesUSD != nil } ? rows.reduce(Decimal(0)) { $0 + ($1.expensesUSD ?? 0) } : nil
@@ -127,7 +127,7 @@ extension UpOnlyUnlockedPanel {
         }
         // Only a gap needs saying: the chart shows the months, and marks the open one.
         let missing = months.count - rows.count
-        return (revenue, expenses, profit, share, missing > 0 ? "\(missing) month\(missing == 1 ? "" : "s") not reported" : nil)
+        return (revenue, expenses, profit, share, missing > 0 ? "\(missing) month\(missing == 1 ? "" : "s") not reported" : nil, missing)
     }
     /// The whole months the net worth range covers, ending with the current one. All reaches back to the company's
     /// first reported accounting month (at most ten years).
