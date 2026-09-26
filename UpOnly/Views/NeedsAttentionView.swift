@@ -110,7 +110,7 @@ struct UpOnlyDataAttention: View {
                     }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28) }
                     UpOnlyRow(title: "Add a transaction", chevron: true, action: {
                         session.entryMonthForManagement = month.description; addEntry()
-                    }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
+                    }) { UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28) }
                 }
                 if case .exchangeRates(let currencies)? = state.unavailable {
                     note("A dated " + currencies.joined(separator: ", ") + " exchange rate is also needed.")

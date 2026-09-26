@@ -204,7 +204,7 @@ extension UpOnlyUnlockedPanel {
                 ManageCard {
                     if latest.isEmpty {
                         UpOnlyRow(title: "Add a transaction", caption: "Or import a bank statement", chevron: true, action: { session.addingInMenu = true }) {
-                            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                            UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
                         }
                     } else {
                         let byMonth = Dictionary(grouping: latest, by: \.month)

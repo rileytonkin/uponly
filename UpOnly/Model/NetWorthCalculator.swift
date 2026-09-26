@@ -872,7 +872,7 @@ nonisolated struct BankBalanceGroup: Identifiable {
     var businessID: String?
     var components: [ValuationComponent]
     var total: Decimal? { AssetOwnership.sum(components) }
-    /// One row per company, plus a single "Bank balances" row holding every personal account.
+    /// One row per company, plus a single "Personal cash" row holding every personal account.
     static func groups(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
         let accounts = Dictionary(document.accounts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return Dictionary(grouping: components.filter { $0.kind == .bank }) { component in
@@ -880,7 +880,7 @@ nonisolated struct BankBalanceGroup: Identifiable {
         }.map { id, values in
             let sorted = values.sorted { $0.id.uuidString < $1.id.uuidString }
             let account = sorted.first.flatMap { accounts[$0.id] }
-            if id == "personal" { return BankBalanceGroup(id: id, name: "Bank balances", image: nil, businessID: nil, components: sorted) }
+            if id == "personal" { return BankBalanceGroup(id: id, name: "Personal cash", image: nil, businessID: nil, components: sorted) }
             return BankBalanceGroup(id: id, name: account.map(AssetOwnership.profileName) ?? "Bank account",
                                     image: account?.profileImage, businessID: id, components: sorted)
         }.sorted {

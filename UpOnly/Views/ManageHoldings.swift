@@ -61,7 +61,7 @@ extension UpOnlyManagement {
             ManageCard {
                 if holdings.isEmpty {
                     UpOnlyRow(title: addTitle, caption: "Nothing in this portfolio yet", action: { session.startImport(mode, portfolioID: portfolio.id) }) {
-                        UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                        UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
                     }
                 }
                 ForEach(Array(holdings.enumerated()), id: \.element.id) { index, holding in

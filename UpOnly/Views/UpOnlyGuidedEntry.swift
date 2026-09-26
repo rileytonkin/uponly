@@ -200,7 +200,7 @@ struct UpOnlyGuidedEntry: View {
             }
         }
     }
-    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
+    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28) }
     /// A new account: its bank's logo appears as the name is typed; the currency and owner are choices below it.
     private var newAccountForm: some View {
         VStack(spacing: 16) {
@@ -780,7 +780,7 @@ struct UpOnlyGuidedEntry: View {
             let name = row.bank.account.name
             let account = document?.accounts.first { $0.id == row.bank.account.existingID } ?? document?.accounts.first { $0.name == name && $0.isActive }
             let owner = account.flatMap { account in document.flatMap { AssetOwnership.businessID(for: account, in: $0) } }
-            let page = owner.flatMap { id in document?.businessAccounting?.first { $0.id == id }?.name } ?? "Bank balances"
+            let page = owner.flatMap { id in document?.businessAccounting?.first { $0.id == id }?.name } ?? "Personal cash"
             return UpOnlySavedSummary(title: "Balance saved", amount: amount, unit: unitText, detail: [worth, name].compactMap { $0 }.joined(separator: " · "),
                                       badge: .bank(name), destination: ("Open " + page, .bankGroup(owner ?? "personal")))
         }
