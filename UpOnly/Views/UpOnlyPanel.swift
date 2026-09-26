@@ -324,18 +324,16 @@ struct UpOnlyUnlockedPanel: View {
             }.frame(minHeight: 32)
         }
     }
+    /// The page's name is the switcher: a quiet chevron after it opens every page, and turns over while it's open.
     var switcherTitle: some View {
         Button { showingSwitcher.toggle() } label: {
-            HStack(spacing: 8) {
-                Image(systemName: showingSwitcher ? "xmark" : "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary).frame(width: 26, height: 26)
-                    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 // Whose a same-named portfolio is goes beside its name, smaller, so the name itself keeps the room.
                 let title: (name: String, owner: String?) = if case .portfolio(let id) = session.dashboardSelection { portfolioTitleParts(id) } else { (selectionTitle, nil) }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
-                    if let owner = title.owner { Text(owner).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
-                }
+                Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                if let owner = title.owner { Text(owner).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
+                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")

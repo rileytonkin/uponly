@@ -1899,6 +1899,17 @@ private final class UpOnlyFixtureWindow: NSWindow {
                 }
             }
             response["success"] = true
+        } else if command["action"] as? String == "scroll", let y = command["y"] as? Double {
+            // Scrolls the page's first scroll view, to see what passes under a pinned header.
+            func scrollView(in view: NSView) -> NSScrollView? {
+                if let scroll = view as? NSScrollView { return scroll }
+                for child in view.subviews { if let found = scrollView(in: child) { return found } }
+                return nil
+            }
+            if let scroll = scrollView(in: contentView) {
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+                response["success"] = true
+            }
         } else if command["action"] as? String == "windows" {
             // Every window the preview has open, e.g. a suggestions list, each saved as audit-N.png.
             response["success"] = true

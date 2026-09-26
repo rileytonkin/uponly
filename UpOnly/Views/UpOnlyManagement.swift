@@ -8,24 +8,37 @@ struct UpOnlyMenuScroll<Content: View>: View {
     var maxHeight: CGFloat? = nil
     @ViewBuilder var content: () -> Content
     @Environment(\.upOnlyScrollHeight) private var pageHeight
+    /// The page's header, when it has one: pinned over the top of the scroll as a bar, so rows pass beneath it under
+    /// the system's soft blur rather than being cut off at a hard line.
+    @Environment(\.upOnlyScrollHeader) private var header
+    @State private var headerHeight: CGFloat = 0
     var body: some View {
         let maxHeight = self.maxHeight ?? pageHeight
         ScrollView {
-            content().frame(maxWidth: .infinity, alignment: .leading)
+            // A scroll inside this one keeps its own edge; the header belongs to the page's outer scroll.
+            content().environment(\.upOnlyScrollHeader, nil).frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                     if height.isFinite && height > 0 { contentHeight = ceil(height) }
                 }
         }.scrollBounceBehavior(.basedOnSize)
-            // The system's soft fade where content scrolls under the page's header, not a hard line.
             .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .frame(height: min(contentHeight, maxHeight))
+            .safeAreaBar(edge: .top, spacing: 0) {
+                if let header {
+                    header.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        if height.isFinite && height > 0 { headerHeight = ceil(height) }
+                    }
+                }
+            }
+            .frame(height: min(contentHeight, maxHeight) + (header == nil ? 0 : headerHeight))
     }
 }
 
 extension EnvironmentValues {
     /// How tall a page's scrolling area may grow: set by the menu so Manage pages match the dashboard's height.
     @Entry var upOnlyScrollHeight: CGFloat = 540
+    /// A page header for the page's scroll to pin as its top bar; nil for pages whose header scrolls with them.
+    @Entry var upOnlyScrollHeader: AnyView? = nil
 }
 
 enum UpOnlyEditor: Identifiable {
@@ -100,13 +113,15 @@ struct UpOnlyManagement: View {
     var body: some View {
         let review = attention
         let month = review.flatMap { selectedMonth($0.months) }
+        let header: AnyView? = hasGuidedHeader ? nil : AnyView(
+            UpOnlyPageHeader(title: editor?.title ?? pageTitle(month), backLabel: backLabel, backTitle: backTitle, back: back,
+                             subtitle: editor == nil && month != nil ? "Is this month complete?" : nil,
+                             trailing: editor == nil ? monthMenu(review?.months ?? [], current: month) ?? sectionActions : nil)
+                .padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 12))
+        // A page that scrolls pins the header over its scroll; a confirmation, which doesn't, shows it above.
+        let confirming = archive != nil || entryToRemove != nil || confirmingRestore || (session.managementSection == "Add your info" && discardingImport)
         VStack(spacing: 0) {
-            if !hasGuidedHeader {
-                UpOnlyPageHeader(title: editor?.title ?? pageTitle(month), backLabel: backLabel, backTitle: backTitle, back: back,
-                                 subtitle: editor == nil && month != nil ? "Is this month complete?" : nil,
-                                 trailing: editor == nil ? monthMenu(review?.months ?? [], current: month) ?? sectionActions : nil)
-                    .padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 12)
-            }
+            if confirming, let header { header }
             if let portfolio = archive {
                 UpOnlyConfirmation(title: "Archive " + portfolio.name + "?", detail: "It leaves net worth and this page, and its history is kept. You can restore it from Archived at the bottom of the page.", confirmTitle: "Archive portfolio",
                     confirm: { Task { await session.perform { doc in doc = try HoldingMutations.archivePortfolio(id: portfolio.id, at: Date(), document: doc) } }; archive = nil }, cancel: { archive = nil }).padding(UpOnlyLayout.inset)
@@ -156,6 +171,7 @@ struct UpOnlyManagement: View {
                 }
             }
         }
+        .environment(\.upOnlyScrollHeader, confirming ? nil : header)
         .buttonStyle(.bordered).buttonBorderShape(.capsule)
         .onAppear {
             // Reopening the menu shows this page again without recreating it; keep where it came from and the import's baseline.
