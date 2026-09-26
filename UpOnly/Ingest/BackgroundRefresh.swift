@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -17,6 +18,10 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
     var coinGeckoKey: String
     var wiseEnabled: Bool = false
     var accountingEnabled: Bool = false
+    /// 32 random bytes that name the sealed and schedule files and seal the schedules (`BackgroundFiles`), so the folder
+    /// doesn't show which sources are on. Nil in a configuration an earlier build saved: nothing is fetched or read under
+    /// it until the next unlock adds one.
+    var fileKey: Data? = nil
     static var service: String { (Bundle.main.bundleIdentifier ?? "org.uponly") + ".background" }
     /// Read only from the data-protection Keychain. Earlier builds kept it in the login keychain, where any process
     /// running as you could have put one, so an item there is never read, only deleted: the next unlock saves the
@@ -35,6 +40,43 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
     }
     func save(to keychain: KeychainItemStore = KeychainItem.backgroundSources) throws {
         try keychain.save(JSONEncoder().encode(self))
+    }
+    /// This configuration's files in `root`, or nil when it has no file key.
+    func files(root: URL) -> BackgroundFiles? { fileKey.map { BackgroundFiles(root: root, key: $0) } }
+    /// The saved configuration's files, only when it's `vaultID`'s and has a file key. None saved yet, or none readable
+    /// now, is nil: what they hold is only a cache and a timer, so the unlocked app goes without them.
+    static func files(for vaultID: UUID, root: URL, keychain: KeychainItemStore = KeychainItem.backgroundSources) -> BackgroundFiles? {
+        guard let saved = try? load(from: keychain), saved.vaultID == vaultID else { return nil }
+        return saved.files(root: root)
+    }
+}
+/// The background files' names, and the key their schedule records are sealed with, from the configuration's file key.
+/// A name is a keyed hash of its kind and source, `Background-<first 16 bytes of HMAC-SHA256(key, "sealed:crypto"), hex>.sealed`,
+/// so listing the folder shows how many sources are on but not which, and no two file keys give the same names. A
+/// schedule record (vault ID, attempt time, failures) is AES-GCM sealed under a key derived from the file key and bound
+/// to its source, so the file shows neither the vault nor when the source was tried. Earlier builds named the files by
+/// source (`Background-banks.sealed`); `BackgroundRefresh.deleteFiles` removes those when a file key is first saved.
+nonisolated struct BackgroundFiles: Sendable {
+    let root: URL
+    let key: Data
+    /// A new file key: 32 random bytes.
+    static func newKey() -> Data { VaultCrypto.keyData(VaultCrypto.randomKey()) }
+    private func url(_ kind: String, _ source: String) -> URL {
+        let code = HMAC<SHA256>.authenticationCode(for: Data((kind + ":" + source).utf8), using: SymmetricKey(data: key))
+        return root.appendingPathComponent("Background-" + Data(code).prefix(16).map { String(format: "%02x", $0) }.joined() + "." + kind)
+    }
+    func sealed(_ source: String) -> URL { url("sealed", source) }
+    func schedule(_ source: String) -> URL { url("schedule", source) }
+    private var scheduleKey: SymmetricKey {
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: key), info: Data("Up Only background schedule".utf8), outputByteCount: 32)
+    }
+    /// Nonce, ciphertext and tag, with `schedule:<source>` authenticated, so a record can't pass for another source's.
+    func sealSchedule(_ record: Data, source: String) throws -> Data {
+        guard let combined = try AES.GCM.seal(record, using: scheduleKey, authenticating: Data(("schedule:" + source).utf8)).combined else { throw VaultError.corrupt }
+        return combined
+    }
+    func openSchedule(_ data: Data, source: String) throws -> Data {
+        try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: scheduleKey, authenticating: Data(("schedule:" + source).utf8))
     }
 }
 /// A Keychain item the app keeps in the data-protection Keychain, and the login keychain's item of the same service and
@@ -129,7 +171,8 @@ extension VaultLayout {
 }
 // In an extension, so the memberwise initializer stays.
 extension BackgroundConfiguration {
-    /// Switches added later are read as off when missing, so a saved configuration from an earlier build still loads.
+    /// Switches added later are read as off when missing, and a missing file key as none, so a saved configuration from
+    /// an earlier build still loads.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         vaultID = try c.decode(UUID.self, forKey: .vaultID)
@@ -145,6 +188,7 @@ extension BackgroundConfiguration {
         coinGeckoKey = try c.decode(String.self, forKey: .coinGeckoKey)
         wiseEnabled = try c.decodeIfPresent(Bool.self, forKey: .wiseEnabled) ?? false
         accountingEnabled = try c.decodeIfPresent(Bool.self, forKey: .accountingEnabled) ?? false
+        fileKey = try c.decodeIfPresent(Data.self, forKey: .fileKey)
     }
 }
 #if UPONLY_PERSONAL
@@ -168,40 +212,41 @@ actor BackgroundRefreshSchedule {
         /// Consecutive failures; each doubles the retry delay.
         var failures: Int?
     }
-    nonisolated static func path(_ root: URL, source: String) -> URL { root.appendingPathComponent("Background-" + source + ".schedule") }
-    private func record(vaultID: UUID, root: URL, source: String) -> Record? {
-        // A record is a few dozen bytes; anything bigger, or not a plain file, is no record.
-        guard let data = try? BoundedFile.read(Self.path(root, source: source), limit: 4096),
-              var record = try? VaultJSON.decode(Record.self, from: data), record.vaultID == vaultID else { return nil }
-        // The file is plain text: an edited count mustn't overflow the back-off arithmetic and crash the app.
+    private func record(vaultID: UUID, files: BackgroundFiles, source: String) -> Record? {
+        // A record is a few dozen bytes, sealed (`BackgroundFiles`); anything bigger, not a plain file, or that doesn't
+        // open under this file key and source is no record: the worst that does is an early attempt.
+        guard let data = try? BoundedFile.read(files.schedule(source), limit: 4096), let opened = try? files.openSchedule(data, source: source),
+              var record = try? VaultJSON.decode(Record.self, from: opened), record.vaultID == vaultID else { return nil }
+        // Its key sits in the Keychain configuration, readable without the vault: an edited count still mustn't
+        // overflow the back-off arithmetic and crash the app.
         record.failures = record.failures.map { min(max($0, 0), 64) }
         return record
     }
-    func claim(vaultID: UUID, root: URL, source: String = "banks", now: Date = Date()) throws -> Bool {
+    func claim(vaultID: UUID, files: BackgroundFiles, source: String = "banks", now: Date = Date()) throws -> Bool {
         try Task.checkCancellation()
-        let last = record(vaultID: vaultID, root: root, source: source)
+        let last = record(vaultID: vaultID, files: files, source: source)
         if let last, now >= last.attemptedAt {
             // A failure is retried after a twelfth of the interval (five minutes for hourly sources), doubling up to the interval.
             let interval = Self.interval(for: source)
             let wait = last.failed ? min(interval, interval / 12 * Double(1 << min(max((last.failures ?? 1) - 1, 0), 12))) : interval
             if now.timeIntervalSince(last.attemptedAt) < wait { return false }
         }
-        try write(Record(vaultID: vaultID, attemptedAt: now, failed: false, failures: last?.failures), root: root, source: source)
+        try write(Record(vaultID: vaultID, attemptedAt: now, failed: false, failures: last?.failures), files: files, source: source)
         return true
     }
-    func finish(vaultID: UUID, root: URL, failed: Bool, source: String = "banks", now: Date = Date()) throws {
-        let failures = failed ? (record(vaultID: vaultID, root: root, source: source)?.failures ?? 0) + 1 : nil
-        try write(Record(vaultID: vaultID, attemptedAt: now, failed: failed, failures: failures), root: root, source: source)
+    func finish(vaultID: UUID, files: BackgroundFiles, failed: Bool, source: String = "banks", now: Date = Date()) throws {
+        let failures = failed ? (record(vaultID: vaultID, files: files, source: source)?.failures ?? 0) + 1 : nil
+        try write(Record(vaultID: vaultID, attemptedAt: now, failed: failed, failures: failures), files: files, source: source)
     }
-    private func write(_ record: Record, root: URL, source: String) throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try DiskFileIO().write(VaultJSON.encode(record), to: Self.path(root, source: source), sync: false)
+    private func write(_ record: Record, files: BackgroundFiles, source: String) throws {
+        try FileManager.default.createDirectory(at: files.root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try DiskFileIO().write(files.sealSchedule(VaultJSON.encode(record), source: source), to: files.schedule(source), sync: false)
     }
-    func failed(vaultID: UUID, root: URL, source: String = "banks") -> Bool { record(vaultID: vaultID, root: root, source: source)?.failed == true }
+    func failed(vaultID: UUID, files: BackgroundFiles, source: String = "banks") -> Bool { record(vaultID: vaultID, files: files, source: source)?.failed == true }
     /// Forgets the last attempt so a changed key, a newly enabled source or an attempt cut short by going offline is tried straight away.
-    func reset(vaultID: UUID, root: URL, sources: [String]) {
-        for source in sources where record(vaultID: vaultID, root: root, source: source) != nil {
-            try? FileManager.default.removeItem(at: Self.path(root, source: source))
+    func reset(vaultID: UUID, files: BackgroundFiles, sources: [String]) {
+        for source in sources where record(vaultID: vaultID, files: files, source: source) != nil {
+            try? FileManager.default.removeItem(at: files.schedule(source))
         }
     }
 }
@@ -241,23 +286,27 @@ nonisolated struct BackgroundEnvelope: Codable, Sendable {
 nonisolated enum BackgroundRefresh {
     static let interval: TimeInterval = 15 * 60
     static let sources = ["crypto", "fx", "metals", "banks", "accounting"]
-    static func path(_ source: String, root: URL) -> URL { root.appendingPathComponent("Background-" + source + ".sealed") }
+    /// Saved under the configuration's opaque name (`BackgroundFiles`); one with no file key saves nothing.
     static func save(_ packet: BackgroundPacket, configuration: BackgroundConfiguration, root: URL) throws {
         try Task.checkCancellation()
+        guard let files = configuration.files(root: root) else { throw VaultError.unavailable }
         let bytes = try VaultJSON.encode(BackgroundEnvelope.seal(packet, configuration: configuration))
         guard bytes.count <= 8 * 1024 * 1024 else { throw VaultError.oversizedInbox }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try DiskFileIO().write(bytes, to: path(packet.source, root: root), sync: false)
+        try DiskFileIO().write(bytes, to: files.sealed(packet.source), sync: false)
     }
     // File IO, signature verification, decryption and decoding must never run
     // on the UI executor while the newly unlocked menu is trying to appear.
-    static func cachedPackets(document: VaultDocument, root: URL) -> (packets: [BackgroundPacket], issues: [String]) {
+    /// The packets under `files`' names (the saved configuration's: `BackgroundConfiguration.files(for:root:)`). With no
+    /// file key nothing is read: they're only a cache, and the next refresh fetches them again.
+    static func cachedPackets(document: VaultDocument, files: BackgroundFiles?) -> (packets: [BackgroundPacket], issues: [String]) {
+        guard let files else { return ([], []) }
         var packets: [BackgroundPacket] = [], issues: [String] = []
         for source in sources {
             if Task.isCancelled { return ([], []) }
             do {
                 // Within the size a packet is saved at, and only a plain file: never through a link or from a pipe.
-                let envelope = try VaultJSON.decode(BackgroundEnvelope.self, from: BoundedFile.read(path(source, root: root), limit: 8 * 1024 * 1024))
+                let envelope = try VaultJSON.decode(BackgroundEnvelope.self, from: BoundedFile.read(files.sealed(source), limit: 8 * 1024 * 1024))
                 let packet = try envelope.open(document: document)
                 guard packet.source == source else { throw VaultError.corrupt }
                 if packet.fetchedAt > (document.backgroundAppliedAt?[source] ?? .distantPast) { packets.append(packet) }
@@ -273,13 +322,23 @@ nonisolated enum BackgroundRefresh {
     @discardableResult static func forget(unless vaultID: UUID?, root: URL, keychain: KeychainItemStore = KeychainItem.backgroundSources) -> Bool {
         if let vaultID, (try? BackgroundConfiguration.load(from: keychain))?.vaultID == vaultID { return false }
         try? keychain.delete()
-        deleteSealed(root: root)
-        for source in sources + ["history"] { try? FileManager.default.removeItem(at: BackgroundRefreshSchedule.path(root, source: source)) }
+        deleteFiles(root: root)
         return true
     }
-    /// Deletes every source's sealed packet: after a new signing key or vault they could never be opened.
-    static func deleteSealed(root: URL) {
-        for source in sources { try? FileManager.default.removeItem(at: path(source, root: root)) }
+    /// Deletes every sealed packet: after a new signing key or vault they could never be opened. Found by listing the
+    /// folder, so none is missed whatever key named it, and no configuration is needed.
+    static func deleteSealed(root: URL) { delete(root: root, suffix: ".sealed") }
+    /// Deletes every sealed packet and schedule record, under any file key or none: after a new file key they'd never be
+    /// found again, yet would still count as sources on. It's also how the source-named files earlier builds left
+    /// (`Background-crypto.sealed`, `Background-history.schedule`) go, the first time a file key is saved; losing them
+    /// only means each source is fetched again straight away.
+    static func deleteFiles(root: URL) {
+        delete(root: root, suffix: ".sealed"); delete(root: root, suffix: ".schedule")
+    }
+    private static func delete(root: URL, suffix: String) {
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [] where name.hasPrefix("Background-") && name.hasSuffix(suffix) {
+            try? FileManager.default.removeItem(at: root.appendingPathComponent(name))
+        }
     }
     /// Claims the source's slot, fetches and seals its packet, and records the outcome. Returns false if the
     /// source is failing. Going offline or being cancelled isn't a failed attempt: the slot is freed for the reconnect.
@@ -287,25 +346,29 @@ nonisolated enum BackgroundRefresh {
     static func scheduled(_ source: String, configuration: BackgroundConfiguration, root: URL, schedule: BackgroundRefreshSchedule = .shared,
                           incomplete: (BackgroundPacket) -> Bool = { _ in false }, fetch: () async throws -> BackgroundPacket) async -> Bool {
         let vaultID = configuration.vaultID
+        guard let files = configuration.files(root: root) else { return false }
         do {
-            guard try await schedule.claim(vaultID: vaultID, root: root, source: source) else {
-                return await !schedule.failed(vaultID: vaultID, root: root, source: source)
+            guard try await schedule.claim(vaultID: vaultID, files: files, source: source) else {
+                return await !schedule.failed(vaultID: vaultID, files: files, source: source)
             }
         } catch { return false }
         do {
             let packet = try await fetch()
             try save(packet, configuration: configuration, root: root)
             let failed = incomplete(packet)
-            try await schedule.finish(vaultID: vaultID, root: root, failed: failed, source: source)
+            try await schedule.finish(vaultID: vaultID, files: files, failed: failed, source: source)
             return !failed
         } catch {
-            if PublicPrices.isOffline(error) { await schedule.reset(vaultID: vaultID, root: root, sources: [source]) }
-            else { try? await schedule.finish(vaultID: vaultID, root: root, failed: true, source: source) }
+            if PublicPrices.isOffline(error) { await schedule.reset(vaultID: vaultID, files: files, sources: [source]) }
+            else { try? await schedule.finish(vaultID: vaultID, files: files, failed: true, source: source) }
             return false
         }
     }
     /// Separate envelopes preserve each source's last success if another fails.
     static func fetch(configuration: BackgroundConfiguration, root: URL) async -> [String] {
+        // Saved by an earlier build, with no file key: nothing is fetched until the next unlock adds one, so no file is
+        // named after its source again.
+        guard configuration.fileKey != nil else { return [] }
         var errors: [String] = []
         if configuration.pricesEnabled && !configuration.crypto.isEmpty {
             let ok = await scheduled("crypto", configuration: configuration, root: root) {

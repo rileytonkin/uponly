@@ -2441,40 +2441,40 @@ struct BackgroundRefreshTests {
     func independentSourceCadences() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000)
+        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), files = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
         let schedule = BackgroundRefreshSchedule()
-        #expect(try await schedule.claim(vaultID: vault, root: root, now: now))
+        #expect(try await schedule.claim(vaultID: vault, files: files, now: now))
         for source in ["crypto", "metals"] {
-            #expect(try await schedule.claim(vaultID: vault, root: root, source: source, now: now))
-            #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, root: root, source: source, now: now.addingTimeInterval(3599)))
-            #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, root: root, source: source, now: now.addingTimeInterval(3600)))
+            #expect(try await schedule.claim(vaultID: vault, files: files, source: source, now: now))
+            #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, files: files, source: source, now: now.addingTimeInterval(3599)))
+            #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, files: files, source: source, now: now.addingTimeInterval(3600)))
         }
-        #expect(try await !schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(3600)))
-        #expect(try await schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(43200)))
+        #expect(try await !schedule.claim(vaultID: vault, files: files, now: now.addingTimeInterval(3600)))
+        #expect(try await schedule.claim(vaultID: vault, files: files, now: now.addingTimeInterval(43200)))
     }
     @Test("Automatic bank attempts survive relaunch and become due after twelve hours")
     func bankCadence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000)
-        #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now))
-        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now.addingTimeInterval(60)))
-        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now.addingTimeInterval(43199)))
-        #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, root: root, now: now.addingTimeInterval(43200)))
-        #expect(try await BackgroundRefreshSchedule().claim(vaultID: UUID(), root: root, now: now.addingTimeInterval(43201)))
+        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), files = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
+        #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, files: files, now: now))
+        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, files: files, now: now.addingTimeInterval(60)))
+        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vault, files: files, now: now.addingTimeInterval(43199)))
+        #expect(try await BackgroundRefreshSchedule().claim(vaultID: vault, files: files, now: now.addingTimeInterval(43200)))
+        #expect(try await BackgroundRefreshSchedule().claim(vaultID: UUID(), files: files, now: now.addingTimeInterval(43201)))
     }
     @Test("Failed bank attempts stay visible without causing repeated automatic requests")
     func failedBankCadence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule()
-        try await schedule.finish(vaultID: vault, root: root, failed: true, now: now)
-        #expect(await BackgroundRefreshSchedule().failed(vaultID: vault, root: root))
-        #expect(try await !schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(900)))
-        try await schedule.finish(vaultID: vault, root: root, failed: false, now: now.addingTimeInterval(1000))
-        #expect(await !schedule.failed(vaultID: vault, root: root))
-        #expect(try await !schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(43200)))
-        #expect(try await schedule.claim(vaultID: vault, root: root, now: now.addingTimeInterval(-60)))
+        let vault = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule(), files = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
+        try await schedule.finish(vaultID: vault, files: files, failed: true, now: now)
+        #expect(await BackgroundRefreshSchedule().failed(vaultID: vault, files: files))
+        #expect(try await !schedule.claim(vaultID: vault, files: files, now: now.addingTimeInterval(900)))
+        try await schedule.finish(vaultID: vault, files: files, failed: false, now: now.addingTimeInterval(1000))
+        #expect(await !schedule.failed(vaultID: vault, files: files))
+        #expect(try await !schedule.claim(vaultID: vault, files: files, now: now.addingTimeInterval(43200)))
+        #expect(try await schedule.claim(vaultID: vault, files: files, now: now.addingTimeInterval(-60)))
     }
     #if UPONLY_PERSONAL
     @Test("Encrypted bank prefetch retains transactions and accepts older balance-only packets")
@@ -2497,7 +2497,7 @@ struct BackgroundRefreshTests {
         let inbox = VaultCrypto.makeInboxKeyPair(), signing = VaultCrypto.makeSigningKeyPair()
         var doc = VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
         doc.backgroundSignerPublicKey = signing.publicX963
-        return (doc, BackgroundConfiguration(vaultID: doc.vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: [], currencies: [], metals: [], pricesEnabled: true, fxEnabled: true, metalsEnabled: true, coinGeckoKey: ""))
+        return (doc, BackgroundConfiguration(vaultID: doc.vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: [], currencies: [], metals: [], pricesEnabled: true, fxEnabled: true, metalsEnabled: true, coinGeckoKey: "", fileKey: BackgroundFiles.newKey()))
     }
     @Test("Background packets can be sealed with only the public inbox key and require the unlocked vault to decrypt")
     func encryptedPrefetch() throws {
@@ -2524,6 +2524,7 @@ struct BackgroundRefreshTests {
         var (doc, config) = pair()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("uponly-cache-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
+        let files = try #require(config.files(root: root))
         // Replay comparison uses the same millisecond precision as persisted dates.
         let now = try VaultJSON.decode(Date.self, from: VaultJSON.encode(Date()))
         try BackgroundRefresh.save(BackgroundPacket(source: "fx", fetchedAt: now, prices: PriceUpdate()), configuration: config, root: root)
@@ -2531,14 +2532,14 @@ struct BackgroundRefreshTests {
         doc.backgroundAppliedAt = ["crypto": now]
         var bad = try BackgroundEnvelope.seal(BackgroundPacket(source: "metals", fetchedAt: now, prices: PriceUpdate()), configuration: config)
         bad.signature[bad.signature.startIndex] ^= 1
-        try VaultJSON.encode(bad).write(to: BackgroundRefresh.path("metals", root: root))
+        try VaultJSON.encode(bad).write(to: files.sealed("metals"))
         let snapshot = doc
-        let result = await Task.detached { BackgroundRefresh.cachedPackets(document: snapshot, root: root) }.value
+        let result = await Task.detached { BackgroundRefresh.cachedPackets(document: snapshot, files: files) }.value
         #expect(result.packets.map(\.source) == ["fx"])
         #expect(result.issues == ["Metals cached data"])
         let cancelled = Task.detached {
             try? await Task.sleep(for: .milliseconds(30))
-            return BackgroundRefresh.cachedPackets(document: snapshot, root: root)
+            return BackgroundRefresh.cachedPackets(document: snapshot, files: files)
         }
         cancelled.cancel()
         let stopped = await cancelled.value
@@ -2549,12 +2550,13 @@ struct BackgroundRefreshTests {
         let (doc, config) = pair()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("uponly-cache-load-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
+        let files = config.files(root: root)
         for source in BackgroundRefresh.sources {
             try BackgroundRefresh.save(BackgroundPacket(source: source, fetchedAt: Date(), prices: PriceUpdate(messages: [String(repeating: "Synthetic cache content ", count: 25000)])), configuration: config, root: root)
         }
         let start = ContinuousClock.now
         // This is the previous main-executor path, measured with synthetic data.
-        let baseline = BackgroundRefresh.cachedPackets(document: doc, root: root)
+        let baseline = BackgroundRefresh.cachedPackets(document: doc, files: files)
         let before = start.duration(to: .now)
         #expect(baseline.packets.count == 5)
         var beats = 0
@@ -2563,7 +2565,7 @@ struct BackgroundRefreshTests {
         }
         let request = Task.detached(priority: .utility) {
             let onMainThread = Thread.isMainThread
-            let result = BackgroundRefresh.cachedPackets(document: doc, root: root)
+            let result = BackgroundRefresh.cachedPackets(document: doc, files: files)
             return (onMainThread, result.packets.count)
         }
         let after = await request.value
@@ -2611,13 +2613,113 @@ struct BackgroundRefreshTests {
     }
 }
 
+/// The support folder shows only how many background sources are on: sealed and schedule files are named by a keyed
+/// hash, schedules are sealed, and the source-named files earlier builds left are removed.
+@Suite("Background file names and schedules")
+struct BackgroundFileTests {
+    private func temporaryRoot() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("uponly-files-" + UUID().uuidString) }
+    private func configuration(vaultID: UUID = UUID(), fileKey: Data? = BackgroundFiles.newKey()) -> BackgroundConfiguration {
+        let inbox = VaultCrypto.makeInboxKeyPair(), signing = VaultCrypto.makeSigningKeyPair()
+        return BackgroundConfiguration(vaultID: vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR"], metals: [.gold], pricesEnabled: true, fxEnabled: true, metalsEnabled: true, coinGeckoKey: "", wiseEnabled: true, accountingEnabled: true, fileKey: fileKey)
+    }
+    private let kinds = BackgroundRefresh.sources + ["history"]
+    @Test("File names don't name the source, are the same each time for a key, and differ for another key")
+    func opaqueNames() {
+        let root = temporaryRoot(), key = BackgroundFiles.newKey()
+        let files = BackgroundFiles(root: root, key: key), other = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
+        let urls = kinds.flatMap { [files.sealed($0), files.schedule($0)] }
+        #expect(Set(urls).count == urls.count && urls.allSatisfy { $0.path == root.path + "/" + $0.lastPathComponent })
+        for name in urls.map(\.lastPathComponent) {
+            let hash = name.dropFirst("Background-".count).prefix { $0 != "." }
+            #expect(name.hasPrefix("Background-") && (name.hasSuffix(".sealed") || name.hasSuffix(".schedule")))
+            #expect(hash.count == 32 && hash.allSatisfy(\.isHexDigit))
+            #expect(!kinds.contains { name.lowercased().contains($0) })
+        }
+        #expect(BackgroundFiles(root: root, key: key).sealed("banks") == files.sealed("banks"))
+        #expect(kinds.allSatisfy { other.sealed($0) != files.sealed($0) && other.schedule($0) != files.schedule($0) })
+        #expect(files.sealed("banks").lastPathComponent.dropLast(".sealed".count) != files.schedule("banks").lastPathComponent.dropLast(".schedule".count))
+    }
+    @Test("A schedule record is sealed: its file holds neither the vault ID nor the source, and it opens only under its key and source")
+    func sealedSchedules() async throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let vaultID = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule()
+        let files = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
+        try await schedule.finish(vaultID: vaultID, files: files, failed: true, source: "banks", now: now)
+        let bytes = try Data(contentsOf: files.schedule("banks"))
+        for plain in [vaultID.uuidString, vaultID.uuidString.lowercased(), "banks", "vaultID", "failed", "attemptedAt"] {
+            #expect(bytes.range(of: Data(plain.utf8)) == nil)
+        }
+        // Round trip: the record reads back, through a new schedule as after a relaunch.
+        let opened = try files.openSchedule(bytes, source: "banks")
+        #expect(String(decoding: opened, as: UTF8.self).contains(vaultID.uuidString))
+        #expect(await BackgroundRefreshSchedule().failed(vaultID: vaultID, files: files, source: "banks"))
+        #expect(try await !BackgroundRefreshSchedule().claim(vaultID: vaultID, files: files, source: "banks", now: now.addingTimeInterval(60)))
+        // Another key, or another source's file, opens nothing: no record, so that slot is free.
+        #expect(throws: (any Error).self) { try BackgroundFiles(root: root, key: BackgroundFiles.newKey()).openSchedule(bytes, source: "banks") }
+        #expect(throws: (any Error).self) { try files.openSchedule(bytes, source: "crypto") }
+        try bytes.write(to: files.schedule("crypto"))
+        #expect(await !schedule.failed(vaultID: vaultID, files: files, source: "crypto"))
+        #expect(try await schedule.claim(vaultID: vaultID, files: files, source: "crypto", now: now.addingTimeInterval(60)))
+    }
+    @Test("A sealed packet saves under its opaque name and reads back at unlock")
+    func sealedPacketRoundTrip() throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let inbox = VaultCrypto.makeInboxKeyPair()
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
+        var config = configuration(vaultID: doc.vaultID); config.inboxPublicKey = inbox.publicX963
+        doc.backgroundSignerPublicKey = config.signingPublicKey
+        let files = try #require(config.files(root: root))
+        try BackgroundRefresh.save(BackgroundPacket(source: "metals", fetchedAt: Date(), prices: PriceUpdate()), configuration: config, root: root)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == [files.sealed("metals").lastPathComponent])
+        #expect(BackgroundRefresh.cachedPackets(document: doc, files: files).packets.map(\.source) == ["metals"])
+        // Under another key the same folder holds nothing to read.
+        #expect(BackgroundRefresh.cachedPackets(document: doc, files: BackgroundFiles(root: root, key: BackgroundFiles.newKey())).packets.isEmpty)
+    }
+    @Test("A configuration saved before file keys still loads, with none: nothing is read, fetched or written under it")
+    func configurationWithoutFileKey() async throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let config = configuration()
+        #expect(try JSONDecoder().decode(BackgroundConfiguration.self, from: JSONEncoder().encode(config)) == config)
+        var object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(config)) as? [String: Any])
+        object.removeValue(forKey: "fileKey")
+        var old = try JSONDecoder().decode(BackgroundConfiguration.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(old.fileKey == nil && old.files(root: root) == nil)
+        // Saved in the Keychain, it gives the unlocked app no files; with a key, only for its own vault.
+        let keychain = MemoryBackgroundStore()
+        try old.save(to: keychain)
+        #expect(BackgroundConfiguration.files(for: old.vaultID, root: root, keychain: keychain) == nil)
+        #expect(BackgroundRefresh.cachedPackets(document: VaultDocument.empty(inboxPrivateKeyX963: Data(), inboxPublicKeyX963: Data()), files: nil).packets.isEmpty)
+        #expect(await BackgroundRefresh.fetch(configuration: old, root: root).isEmpty)
+        #expect(throws: (any Error).self) { try BackgroundRefresh.save(BackgroundPacket(source: "fx", fetchedAt: Date()), configuration: old, root: root) }
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        old.fileKey = config.fileKey
+        #expect(old == config)
+        try old.save(to: keychain)
+        #expect(BackgroundConfiguration.files(for: old.vaultID, root: root, keychain: keychain)?.sealed("fx") == config.files(root: root)?.sealed("fx"))
+        #expect(BackgroundConfiguration.files(for: UUID(), root: root, keychain: keychain) == nil)
+    }
+    @Test("The source-named files earlier builds left, and files under an earlier key, are removed; nothing else is")
+    func legacyFilesRemoved() throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let legacy = BackgroundRefresh.sources.flatMap { ["Background-\($0).sealed", "Background-\($0).schedule"] } + ["Background-history.schedule"]
+        let earlier = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
+        let background = legacy.map { root.appendingPathComponent($0) } + [earlier.sealed("fx"), earlier.schedule("history")]
+        let kept = ["diagnostics.txt", "refresh.request", "Background notes.txt"].map { root.appendingPathComponent($0) }
+        for url in background + kept { try Data("x".utf8).write(to: url) }
+        BackgroundRefresh.deleteFiles(root: root)
+        #expect(!background.contains { FileManager.default.fileExists(atPath: $0.path) })
+        #expect(kept.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+    }
+}
+
 /// Networking stays opt-in: nothing is asked during setup or of a source that's off, the background configuration
 /// fetches only for the vault on disk, credentials leave the login keychain, and what's sealed is checked again as applied.
 struct NetworkOptInTests {
     private func temporaryRoot() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("uponly-network-" + UUID().uuidString) }
     private func configuration(vaultID: UUID) -> BackgroundConfiguration {
         let inbox = VaultCrypto.makeInboxKeyPair(), signing = VaultCrypto.makeSigningKeyPair()
-        return BackgroundConfiguration(vaultID: vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR"], metals: [], pricesEnabled: true, fxEnabled: true, metalsEnabled: false, coinGeckoKey: "")
+        return BackgroundConfiguration(vaultID: vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR"], metals: [], pricesEnabled: true, fxEnabled: true, metalsEnabled: false, coinGeckoKey: "", fileKey: BackgroundFiles.newKey())
     }
     private func empty() -> VaultDocument {
         let inbox = VaultCrypto.makeInboxKeyPair()
@@ -2673,10 +2775,11 @@ struct NetworkOptInTests {
     @Test("Start over, a new vault or another vault's restore deletes the configuration and what it left; the same vault keeps them")
     func forgetOtherVaults() throws {
         let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
-        let vaultID = UUID(), keychain = MemoryBackgroundStore()
-        try configuration(vaultID: vaultID).save(to: keychain)
+        let vaultID = UUID(), keychain = MemoryBackgroundStore(), config = configuration(vaultID: vaultID), files = try #require(config.files(root: root))
+        try config.save(to: keychain)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let left = [BackgroundRefresh.path("crypto", root: root), BackgroundRefreshSchedule.path(root, source: "crypto"), BackgroundRefreshSchedule.path(root, source: "history")]
+        // Named under its file key, and one an earlier build named by source: both go.
+        let left = [files.sealed("crypto"), files.schedule("crypto"), files.schedule("history"), root.appendingPathComponent("Background-banks.sealed")]
         for url in left { try Data("x".utf8).write(to: url) }
         #expect(!BackgroundRefresh.forget(unless: vaultID, root: root, keychain: keychain))
         #expect(keychain.current != nil && left.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
@@ -2739,22 +2842,22 @@ struct NetworkOptInTests {
     func boundedCacheReads() async throws {
         let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let vaultID = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule()
-        #expect(try await schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now))
-        #expect(try await !schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now.addingTimeInterval(60)))
+        var doc = empty(); let config = configuration(vaultID: doc.vaultID), files = try #require(config.files(root: root))
+        let vaultID = doc.vaultID, now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule()
+        #expect(try await schedule.claim(vaultID: vaultID, files: files, source: "crypto", now: now))
+        #expect(try await !schedule.claim(vaultID: vaultID, files: files, source: "crypto", now: now.addingTimeInterval(60)))
         // Padded past 4 KiB, the record is no record, so the slot is free.
-        let record = BackgroundRefreshSchedule.path(root, source: "crypto")
+        let record = files.schedule("crypto")
         var padded = try Data(contentsOf: record); padded.append(Data(repeating: 0x20, count: 5000))
         try padded.write(to: record)
-        #expect(try await schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now.addingTimeInterval(120)))
+        #expect(try await schedule.claim(vaultID: vaultID, files: files, source: "crypto", now: now.addingTimeInterval(120)))
         // A cache file that's a link, or too big, is reported and never read.
-        var doc = empty(); let config = configuration(vaultID: doc.vaultID)
         doc.backgroundSignerPublicKey = config.signingPublicKey
-        let elsewhere = root.appendingPathComponent("elsewhere")
+        let elsewhere = root.appendingPathComponent("elsewhere"), away = try #require(config.files(root: elsewhere))
         try BackgroundRefresh.save(BackgroundPacket(source: "fx", fetchedAt: Date(), prices: PriceUpdate()), configuration: config, root: elsewhere)
-        try FileManager.default.createSymbolicLink(at: BackgroundRefresh.path("fx", root: root), withDestinationURL: BackgroundRefresh.path("fx", root: elsewhere))
-        try Data(repeating: 0x20, count: 8 * 1024 * 1024 + 1).write(to: BackgroundRefresh.path("crypto", root: root))
-        let result = BackgroundRefresh.cachedPackets(document: doc, root: root)
+        try FileManager.default.createSymbolicLink(at: files.sealed("fx"), withDestinationURL: away.sealed("fx"))
+        try Data(repeating: 0x20, count: 8 * 1024 * 1024 + 1).write(to: files.sealed("crypto"))
+        let result = BackgroundRefresh.cachedPackets(document: doc, files: files)
         #expect(result.packets.isEmpty && Set(result.issues) == ["Fx cached data", "Crypto cached data"])
     }
     @Test("Accounting refreshes hourly, and a company left out counts as a failed attempt")
@@ -2766,8 +2869,9 @@ struct NetworkOptInTests {
         let ok = await BackgroundRefresh.scheduled("accounting", configuration: config, root: root, schedule: schedule, incomplete: { $0.books?.contains { $0.fetchedAt == .distantPast } == true }) {
             BackgroundPacket(source: "accounting", fetchedAt: Date(), books: [missing])
         }
-        #expect(!ok && FileManager.default.fileExists(atPath: BackgroundRefresh.path("accounting", root: root).path))
-        #expect(await schedule.failed(vaultID: config.vaultID, root: root, source: "accounting"))
+        let files = try #require(config.files(root: root))
+        #expect(!ok && FileManager.default.fileExists(atPath: files.sealed("accounting").path))
+        #expect(await schedule.failed(vaultID: config.vaultID, files: files, source: "accounting"))
     }
     @Test("History is asked for only while a coin or metal was held, never after it was sold, nor for an invalid coin ID")
     func historyOnlyWhileHeld() throws {
