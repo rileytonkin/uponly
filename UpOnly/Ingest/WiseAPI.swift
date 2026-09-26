@@ -182,7 +182,8 @@ nonisolated enum WiseAPI {
                 let dayText = ImportDateFormat.today(UTCDay.today(now: date)), monthText = String(dayText.prefix(7))
                 guard let month = MonthKey(monthText) else { throw ImportFailure("A Wise transaction month is invalid.") }
                 let ownTransfer = activity.type == "INTERBALANCE" || activity.resource.map { (sharedTransfers[$0.id]?.count ?? 0) > 1 } == true
-                let label = plain(activity.title ?? activity.description ?? "Wise transaction")
+                // Cleaned like an imported statement's: no control characters or marks that reorder how it reads.
+                let label = ImportBatchProcessor.cleanLabel(plain(activity.title ?? activity.description ?? "Wise transaction"))
                 guard label.count <= 500, !activity.id.isEmpty else { throw ImportFailure("A Wise activity has invalid details.") }
                 let existing = next.entries.firstIndex { $0.source == .wise && $0.sourceRef == reference }
                 let refund = income && ["REFUND", "CASHBACK"].contains { activity.type.contains($0) }

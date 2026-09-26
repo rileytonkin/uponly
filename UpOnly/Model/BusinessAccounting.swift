@@ -371,8 +371,8 @@ nonisolated enum OwnerPayments {
     static let privateCounterparties: [String: [String]] = {
         #if UPONLY_PERSONAL
         let url = Config.supportDirectory.appendingPathComponent("payment-counterparties.json")
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 16384,
-              let data = try? Data(contentsOf: url), let names = try? JSONDecoder().decode([String: [String]].self, from: data),
+        // A plain file of at most 16 KiB, read without following a link, like every other file in the support folder.
+        guard let data = try? BoundedFile.read(url, limit: 16384), let names = try? JSONDecoder().decode([String: [String]].self, from: data),
               names.count <= 10, names.values.allSatisfy({ $0.count <= 20 && $0.allSatisfy { !$0.isEmpty && $0.count <= 100 } }) else { return [:] }
         return names
         #else
