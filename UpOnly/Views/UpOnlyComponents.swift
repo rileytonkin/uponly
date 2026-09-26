@@ -272,7 +272,7 @@ struct UpOnlyPrivacyButton: View {
                     .contentTransition(.symbolEffect(.replace)).animation(.snappy, value: session.privacyMode)
                     .frame(width: glass ? 32 : 16, height: glass ? 32 : 16).contentShape(Circle())
             }
-        }.foregroundStyle(session.privacyMode ? Color.accentColor : inMenu ? Color.primary : Color.secondary)
+        }.foregroundStyle(session.privacyMode ? UpOnlyTint.brand : inMenu ? Color.primary : Color.secondary)
             .accessibilityLabel(session.privacyMode ? "Show values" : "Hide values")
             .accessibilityValue(session.privacyMode ? "Privacy mode on" : "Privacy mode off")
             .accessibilityIdentifier("PrivacyMode")
@@ -447,7 +447,7 @@ struct UpOnlyPillMenu: ViewModifier {
             .glassEffect(.regular, in: .capsule)
     }
 }
-/// A flat list row: a soft highlight under the pointer, darker while pressed, lightly tinted while selected.
+/// A flat list row: a soft highlight under the pointer, darker while pressed, lightly shaded while selected.
 struct UpOnlyRowButtonStyle: ButtonStyle {
     var selected = false
     func makeBody(configuration: Configuration) -> some View { Row(configuration: configuration, selected: selected) }
@@ -460,7 +460,7 @@ struct UpOnlyRowButtonStyle: ButtonStyle {
             configuration.label.background {
                 // Inset inside the card: clear of its edges and of the lines between rows.
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? UpOnlyTint.brand.opacity(0.14) : hovering && isEnabled ? Color.primary.opacity(0.05) : .clear)
+                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? Color.primary.opacity(0.08) : hovering && isEnabled ? Color.primary.opacity(0.05) : .clear)
                     .padding(.horizontal, -7).padding(.vertical, 3)
             }.onHover { hovering = $0 }
         }
@@ -480,7 +480,7 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
     /// A second amount under the value, such as a foreign balance under its dollar value. Hidden in privacy mode.
     var valueDetail: String? = nil
     var chevron = false
-    /// Lightly tinted: the page showing, or the account a company page is focused on.
+    /// Lightly shaded: the page showing, or the account a company page is focused on.
     var selected = false
     /// Right-click options, such as updating a balance.
     var options: [(title: String, action: () -> Void)] = []
@@ -652,7 +652,7 @@ nonisolated enum DashboardChart {
             case .week: return parts.weekday == 2 ? UpOnlyFormat.utcDay(day) : nil
             case .month:
                 let starts = previous.map { $0.month != parts.month || $0.year != parts.year } ?? (parts.day == 1)
-                return starts ? (parts.month == 1 ? UpOnlyFormat.year(day) : UpOnlyFormat.monthName(day)) : nil
+                return starts ? UpOnlyFormat.monthName(day) : nil
             case .year:
                 let starts = previous.map { $0.year != parts.year } ?? (parts.month == 1 && parts.day == 1)
                 return starts ? UpOnlyFormat.year(day) : nil

@@ -102,7 +102,7 @@ struct UpOnlyBackdrop: View {
     var body: some View {
         ZStack {
             Self.base
-            EllipticalGradient(colors: [UpOnlyTint.brand.opacity(0.32), UpOnlyTint.brand.opacity(0.1), .clear],
+            EllipticalGradient(colors: [UpOnlyTint.brand.opacity(0.22), UpOnlyTint.brand.opacity(0.07), .clear],
                                center: UnitPoint(x: 0.5, y: -0.08), startRadiusFraction: 0, endRadiusFraction: 0.62)
                 .frame(height: 300).frame(maxHeight: .infinity, alignment: .top)
         }.ignoresSafeArea().allowsHitTesting(false)
@@ -264,7 +264,7 @@ struct UpOnlySetup: View {
                     Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(UpOnlyType.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
-                Toggle("Automatic prices and exchange rates", isOn: $automatic).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                Toggle("Automatic prices and exchange rates", isOn: $automatic).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(UpOnlyTint.brand)
                     .accessibilityIdentifier("AutomaticSources")
             }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
             Text("Prices and rates come from Binance, CoinGecko, Gold API and Frankfurter. They see coin tickers and currency codes, never your amounts.")
@@ -387,7 +387,7 @@ struct UpOnlySourceRow: View {
                     }
                 }
                 Spacer(minLength: 8)
-                Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                Toggle(title, isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(UpOnlyTint.brand)
             }.padding(.vertical, 9).contentShape(Rectangle()).help(problem ?? interval)
                 .accessibilityElement(children: .combine)
         }

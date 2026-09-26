@@ -429,7 +429,7 @@ struct UpOnlyImportView: View {
     /// The list's own last row for adding another account, coin or metal.
     private func addRowItem(_ batch: ImportBatchDraft) -> some View {
         UpOnlyRow(title: addRowTitle(batch.mode), caption: batch.mode == .bankBalances ? "Another account and its balance" : batch.mode == .metals ? "Another metal and its weight" : "Another coin and its quantity", action: busy ? nil : { addRow() }) {
-            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: batch.mode == .bankBalances ? 28 : 24)
+            UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: batch.mode == .bankBalances ? 28 : 24)
         }
     }
     private func addRowTitle(_ mode: ImportMode) -> String {
@@ -550,7 +550,7 @@ struct UpOnlyImportView: View {
         if mode == .statements, source.hasSignedAmount, all || source.positiveIsOutflow || !ImportParser.signsKnown(source.grid) && !source.hasNegativeAmount {
             UpOnlyFormRow(label: "Positive amounts are money out") {
                 Toggle("Positive amounts are money out", isOn: Binding(get: { source.positiveIsOutflow }, set: { value in updateSource(source) { $0.positiveIsOutflow = value } }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(UpOnlyTint.brand)
             }.help("Card exports often list purchases as positive amounts and payments as negative.")
         }
     }

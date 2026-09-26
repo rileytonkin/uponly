@@ -122,7 +122,7 @@ extension UpOnlyUnlockedPanel {
                     }
                 }
                 UpOnlyRow(title: lots.isEmpty ? "Add what you paid" : "Add a purchase", caption: lots.isEmpty ? "See the gain or loss on each buy" : nil, chevron: true, action: { openHoldingEditor(.purchases(holding.id)) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
                 }
             }
         }

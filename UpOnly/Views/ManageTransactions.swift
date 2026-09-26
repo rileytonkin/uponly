@@ -136,7 +136,7 @@ extension UpOnlyManagement {
             Toggle(isOn: Binding(get: { always }, set: { TransactionEdits.setTransferCounterparty(entry.label, enabled: $0, in: session) })) {
                 Text(always ? "Payments to “\(entry.label)” are always transfers" : "Always treat “\(entry.label)” as a transfer")
                     .font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true)
-            }.toggleStyle(.switch).controlSize(.small).accessibilityLabel("Always treat " + entry.label + " as a transfer")
+            }.toggleStyle(.switch).controlSize(.small).tint(UpOnlyTint.brand).accessibilityLabel("Always treat " + entry.label + " as a transfer")
             Text("Use this for money moved to your own company or another account you own. Imports and syncs apply it automatically.")
                 .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }

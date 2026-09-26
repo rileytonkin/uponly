@@ -32,7 +32,7 @@ struct UpOnlyDateCalendar: View {
             DatePicker("Observation date", selection: $date, in: ...UTCDay.today(), displayedComponents: .date)
                 .datePickerStyle(.graphical).labelsHidden().environment(\.timeZone, UTCDay.timeZone).focusEffectDisabled()
             HStack {
-                Button("Today") { date = UTCDay.today() }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                Button("Today") { date = UTCDay.today() }.buttonStyle(.plain).foregroundStyle(UpOnlyTint.brand)
                 Spacer()
                 Button("Done", action: done).buttonStyle(.upOnlyPrimary).keyboardShortcut(.defaultAction)
             }.font(.system(size: 12))
@@ -144,7 +144,7 @@ struct UpOnlyEntryFlow: View {
                 }
                 UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", chevron: true,
                           action: { saved = nil }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
                 }
             }
             Spacer(minLength: 0)

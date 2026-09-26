@@ -37,12 +37,12 @@ struct DashboardTests {
         #expect(DashboardChart.stops(sampleDays: [], rangeStart: utc(2026, 8, 20), strideDays: 7).isEmpty)
     }
 
-    @Test("The x-axis marks days over 7 days, Mondays over 30, months over 12 (January as its year), years for a long All")
+    @Test("The x-axis marks days over 7 days, Mondays over 30, months over 12 (January too, not its year), years for a long All")
     func axisMarks() {
         #expect(DashboardChart.axisMarks(days(from: utc(2026, 9, 17), count: 8), range: .week).compactMap { $0 } == ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"])
         #expect(DashboardChart.axisMarks(days(from: utc(2026, 8, 26), count: 30), range: .month).compactMap { $0 } == ["Aug 31", "Sep 7", "Sep 14", "Sep 21"])
         #expect(DashboardChart.axisMarks(days(from: utc(2025, 9, 25), count: 365), range: .year).compactMap { $0 }
-                == ["Oct", "Nov", "Dec", "2026", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"])
+                == ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep"])
         #expect(DashboardChart.axisMarks(days(from: utc(2021, 6, 1), count: 270, every: 7), range: .all).compactMap { $0 } == ["2022", "2023", "2024", "2025", "2026"])
         // Only the first point of a period is marked, not the first point of the chart.
         #expect(DashboardChart.axisMarks(days(from: utc(2026, 3, 15), count: 60), range: .year).compactMap { $0 } == ["Apr", "May"])

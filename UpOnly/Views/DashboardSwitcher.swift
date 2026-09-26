@@ -113,7 +113,7 @@ extension UpOnlyUnlockedPanel {
     struct Slice: Identifiable { var id: String; var name: String; var value: Decimal; var tint: Color }
     /// Your total by kind: bank balances, crypto, metals and companies (at your share).
     func allocation(_ rows: [SelectionRow]) -> [Slice] {
-        [("Accounts", "Bank balances", UpOnlyTint.netWorth), ("Crypto", "Crypto", UpOnlyTint.crypto),
+        [("Accounts", "Personal cash", UpOnlyTint.netWorth), ("Crypto", "Crypto", UpOnlyTint.crypto),
          ("Metals", "Metals", UpOnlyTint.metals), ("Companies", "Companies", UpOnlyTint.company)].compactMap { section, name, tint in
             let value = rows.filter { $0.section == section }.compactMap(\.personal).reduce(Decimal(0), +)
             return value > 0 ? Slice(id: section, name: name, value: value, tint: tint) : nil

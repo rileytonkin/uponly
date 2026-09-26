@@ -8,8 +8,8 @@ struct UpOnlyMenuScroll<Content: View>: View {
     var maxHeight: CGFloat? = nil
     @ViewBuilder var content: () -> Content
     @Environment(\.upOnlyScrollHeight) private var pageHeight
-    /// The page's header, when it has one: pinned over the top of the scroll as a bar, so rows pass beneath it under
-    /// the system's soft blur rather than being cut off at a hard line.
+    /// The page's header, when it has one. When the page scrolls it's pinned over the top as a bar, so rows pass
+    /// beneath it under the system's soft blur rather than being cut off at a hard line.
     @Environment(\.upOnlyScrollHeader) private var header
     @State private var headerHeight: CGFloat = 0
     /// Whether rows have scrolled up under the header. Until they have, the header has no blur behind it at all, so
@@ -17,25 +17,30 @@ struct UpOnlyMenuScroll<Content: View>: View {
     @State private var scrolled = false
     var body: some View {
         let maxHeight = self.maxHeight ?? pageHeight
-        ScrollView {
-            // A scroll inside this one keeps its own edge; the header belongs to the page's outer scroll.
-            content().environment(\.upOnlyScrollHeader, nil).frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    if height.isFinite && height > 0 { contentHeight = ceil(height) }
-                }
-        }.scrollBounceBehavior(.basedOnSize)
-            .scrollEdgeEffectStyle(.soft, for: .vertical)
-            .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 1 } action: { _, now in scrolled = now }
-            .scrollEdgeEffectHidden(!scrolled, for: .top)
-            .safeAreaBar(edge: .top, spacing: 0) {
-                if let header {
-                    header.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                        if height.isFinite && height > 0 { headerHeight = ceil(height) }
+        // A page that fits has its header above it as plain views: with nothing to scroll there's no bar to show,
+        // even under the pointer. Only a page that scrolls pins its header as a bar with the blur behind it.
+        let scrolls = contentHeight > maxHeight + 0.5
+        VStack(spacing: 0) {
+            if let header, !scrolls { measured(header) }
+            ScrollView {
+                // A scroll inside this one keeps its own edge; the header belongs to the page's outer scroll.
+                content().environment(\.upOnlyScrollHeader, nil).frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        if height.isFinite && height > 0 { contentHeight = ceil(height) }
                     }
-                }
-            }
-            .frame(height: min(contentHeight, maxHeight) + (header == nil ? 0 : headerHeight))
+            }.scrollBounceBehavior(.basedOnSize)
+                .scrollEdgeEffectStyle(.soft, for: .vertical)
+                .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 1 } action: { _, now in scrolled = now }
+                .scrollEdgeEffectHidden(!scrolled, for: .top)
+                .safeAreaBar(edge: .top, spacing: 0) { if let header, scrolls { measured(header) } }
+                .frame(height: min(contentHeight, maxHeight) + (header != nil && scrolls ? headerHeight : 0))
+        }
+    }
+    private func measured(_ header: AnyView) -> some View {
+        header.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            if height.isFinite && height > 0 { headerHeight = ceil(height) }
+        }
     }
 }
 

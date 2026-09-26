@@ -184,13 +184,13 @@ struct UpOnlyChart: View {
     var includesZero = false
     var showsAllMarkers = false
     var selected: String?
-    var tint: Color = .accentColor
+    var tint: Color = UpOnlyTint.brand
     var onSelect: ((String) -> Void)?
     var bridgesGaps = false
     /// How tall the plot is: 120 pt, more where a page has room to spare.
     var plotHeight: CGFloat = 120
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
-         tint: Color = .accentColor, plotHeight: CGFloat = 120, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false) {
+         tint: Color = UpOnlyTint.brand, plotHeight: CGFloat = 120, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false) {
         self.points = points; self.includesZero = includesZero; self.showsAllMarkers = showsAllMarkers; self.selected = selected
         self.tint = tint; self.onSelect = onSelect; self.bridgesGaps = bridgesGaps; self.plotHeight = plotHeight
     }
@@ -232,7 +232,7 @@ struct UpOnlyChartCanvas: View {
     /// `bridgesGaps` is for daily history: straight segments, running across a few days without a value. Off for
     /// monthly charts, which are gently smoothed and keep a missing month as a gap.
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
-         tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, standIn: Bool = false, plotHeight: CGFloat = 120) {
+         tint: Color = UpOnlyTint.brand, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, standIn: Bool = false, plotHeight: CGFloat = 120) {
         self.points = points; self.includesZero = includesZero; self.selected = selected; self.tint = tint; self.onSelect = onSelect
         self.bridgesGaps = bridgesGaps; self.standIn = standIn; self.plotHeight = plotHeight
         let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, bridgesGaps: bridgesGaps)
@@ -335,7 +335,7 @@ struct UpOnlyChartCanvas: View {
     private func glow(_ line: Path, _ colour: Color, in context: GraphicsContext) {
         context.drawLayer { layer in
             layer.addFilter(.blur(radius: 5))
-            layer.stroke(line, with: .color(colour.opacity(0.7)), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            layer.stroke(line, with: .color(colour.opacity(0.5)), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
         }
     }
     private var historyChart: some View {
@@ -677,12 +677,12 @@ enum UpOnlyFormat {
 }
 
 enum UpOnlyTint {
-    /// Up Only's green, from the wordmark: the glow behind every page, selections and gains.
-    static let brand = Color(red: 0.086, green: 0.784, blue: 0.471)
+    /// Up Only's green, a little softer than the wordmark's: the glow behind every page, switches and gains.
+    static let brand = Color(red: 0.227, green: 0.71, blue: 0.498)
     static let metals = Color(red: 0.60, green: 0.47, blue: 0.23)
     static let cashFlow = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.086, green: 0.784, blue: 0.471, alpha: 1)
+            ? NSColor(srgbRed: 0.227, green: 0.71, blue: 0.498, alpha: 1)
             : NSColor(srgbRed: 0.13, green: 0.51, blue: 0.39, alpha: 1)
     })
     static let netWorth = Color(nsColor: NSColor(name: nil) { appearance in

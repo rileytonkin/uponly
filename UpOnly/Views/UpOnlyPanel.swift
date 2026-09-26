@@ -189,7 +189,7 @@ struct UpOnlyUnlockedPanel: View {
         case .cashFlow: return "Income & spending"
         case .portfolio(let id): return session.document?.portfolio(id: id)?.name ?? "Portfolio"
         case .holding(let id): return session.document?.holdings.first { $0.id == id }?.assetName ?? "Holding"
-        case .bankGroup(let id): return id == "personal" ? "Bank balances" : companyName(id)
+        case .bankGroup(let id): return id == "personal" ? "Personal cash" : companyName(id)
         }
     }
     /// The bank group page being shown: "personal" or a company's id.
@@ -204,7 +204,7 @@ struct UpOnlyUnlockedPanel: View {
         case .cashFlow: "Income & spending"
         case .portfolio(let id): portfolioTitle(id)
         case .holding(let id): session.document?.holdings.first { $0.id == id }?.assetName ?? "Holding"
-        case .bankGroup(let id): id == "personal" ? "Bank balances" : companyName(id)
+        case .bankGroup(let id): id == "personal" ? "Personal cash" : companyName(id)
         }
     }
     /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").

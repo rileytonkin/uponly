@@ -753,7 +753,7 @@ struct OwnedAssetTests {
         doc.businessAccounting = [try book()]
         let values = [component(doc.accounts[0].id, usd: 120, currency: "EUR"), component(doc.accounts[1].id, usd: -20, currency: "GBP"), component(doc.accounts[2].id, usd: 0)]
         let groups = BankBalanceGroup.groups(values, document: doc)
-        #expect(groups.map(\.name) == ["Bank balances", "Agency"])
+        #expect(groups.map(\.name) == ["Personal cash", "Agency"])
         #expect(groups[1].total == 100 && groups[0].total == 0)
         #expect(groups[1].businessID == "agency" && groups[0].businessID == nil)
         var missing = values; missing[0].usdValue = nil
