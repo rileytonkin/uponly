@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Builds Up Only's bank catalog: names, aliases, countries and a logo for each bank.
 
+  python3 -m pip install -r scripts/bank-catalog/requirements.txt  # Pillow, pinned to an exact version (Python 3.10+)
   python3 scripts/bank-catalog/build.py merge  # regional lists in .context/banks/*.json -> banks.json (optional;
                                                # banks.json is the curated list the app ships)
   python3 scripts/bank-catalog/build.py logos  # fetch each bank's App Store icon (favicon as a fallback), cached
   python3 scripts/bank-catalog/build.py assets # write BankLogos/*.imageset and the BankCatalog data asset
+  python3 scripts/bank-catalog/build.py review # contact sheets of every logo, in a new temporary folder
 
 Logos are the bank's own iOS app icon, whole, from Apple's public search API: a square tile with the mark inset,
 the same look for every bank. A bank without a matching app falls back to its website icon, redrawn as a tile with
 even padding. `logo-overrides.json` fixes any the matching gets wrong ({"id": "none"} or {"id": "<App Store id>"}).
 Nothing here needs an API key, and the app itself never fetches logos.
+
+Every id must match ID (it becomes a file name), and only https URLs on HOSTS are fetched, redirects included.
 """
-import io, json, re, sys, time, unicodedata, urllib.parse, urllib.request
+import io, json, re, sys, tempfile, time, unicodedata, urllib.parse, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +30,10 @@ CATALOG = ASSETS / "BankCatalog.dataset"
 SIZE = 88                               # 44 pt at 2x, the largest badge
 LIMIT = 1000
 AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+ID = re.compile(r"[a-z0-9-]+")
+# Apple's search API, its artwork CDN (which answers from is1 to is5) and Google's favicon service.
+HOSTS = {"itunes.apple.com", "t3.gstatic.com",
+         "is1-ssl.mzstatic.com", "is2-ssl.mzstatic.com", "is3-ssl.mzstatic.com", "is4-ssl.mzstatic.com", "is5-ssl.mzstatic.com"}
 BUSINESS = re.compile(r"\b(business|empresas?|negocios|pj|corporate|commercial|merchant|biz|pro|sme|bizz|comercios|firmen|entreprises?|work)\b", re.I)
 
 
@@ -39,9 +47,39 @@ def words(text):
     return [w for w in re.split(r"[^a-z0-9]+", text) if w]
 
 
+def checked_id(ident):
+    if not isinstance(ident, str) or not ID.fullmatch(ident):
+        sys.exit(f"Refusing bank id {ident!r}: ids must match ^{ID.pattern}$")
+    return ident
+
+
+def load_banks():
+    """banks.json, refusing any id that isn't a plain slug, since ids become file names."""
+    banks = json.loads(SOURCE.read_text())
+    for bank in banks:
+        checked_id(bank.get("id"))
+    return banks
+
+
+def allowed(url):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in HOSTS:
+        raise ValueError(f"refusing to fetch {url!r}: only https on {sorted(HOSTS)}")
+    return url
+
+
+class AllowedRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to another allowed https URL."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(req, fp, code, msg, headers, allowed(newurl))
+
+
+OPENER = urllib.request.build_opener(AllowedRedirects)
+
+
 def get(url, timeout=20):
-    request = urllib.request.Request(url, headers={"User-Agent": AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    request = urllib.request.Request(allowed(url), headers={"User-Agent": AGENT})
+    with OPENER.open(request, timeout=timeout) as response:
         return response.read()
 
 
@@ -81,6 +119,7 @@ def merge():
     out = [o for o in out if o["keep"] or o in ranked]
     for o in out:
         del o["keep"]
+        checked_id(o["id"])
     SOURCE.write_text(json.dumps(out, ensure_ascii=False, indent=1) + "\n")
     print(f"{len(out)} banks -> {SOURCE.relative_to(ROOT)}")
 
@@ -105,9 +144,12 @@ def app_icon(bank):
     if override == "none":
         return None
     if override:
+        if not re.fullmatch(r"[0-9]+", str(override)):
+            sys.exit(f"Refusing override {override!r} for {bank['id']}: use \"none\" or a numeric App Store id")
         # Some apps aren't in the US store (Binance); look in the UK's and the bank's own too.
+        lookup = lambda country: "https://itunes.apple.com/lookup?" + urllib.parse.urlencode({"id": override, "country": country})
         app = next(found for country in ("us", "gb", store_country(bank))
-                   for found in json.loads(get(f"https://itunes.apple.com/lookup?id={override}&country={country}"))["results"][:1])
+                   for found in json.loads(get(lookup(country)))["results"][:1])
         return {"kind": "appstore", "trackId": app["trackId"], "trackName": app["trackName"], "seller": app.get("sellerName"),
                 "score": 99, "url": re.sub(r"/\d+x\d+bb\.(jpg|png)$", "/1024x1024wa.png", app["artworkUrl512"])}
     names = [bank["name"]] + bank["aliases"][:2]
@@ -165,7 +207,7 @@ def favicon(bank):
 def logos():
     from PIL import Image
     CACHE.mkdir(parents=True, exist_ok=True)
-    banks = json.loads(SOURCE.read_text())
+    banks = load_banks()
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     for index, bank in enumerate(banks):
         if bank["id"] in manifest and (CACHE / (bank["id"] + ".png")).exists():
@@ -257,7 +299,7 @@ def tile(image):
 
 def assets():
     from PIL import Image
-    banks = json.loads(SOURCE.read_text())
+    banks = load_banks()
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     LOGOS.mkdir(parents=True, exist_ok=True)
     for old in LOGOS.glob("*.imageset"):
@@ -300,12 +342,12 @@ def processed(bank, manifest):
 def review():
     """Contact sheets of every logo as it will look in its rounded badge, with names, for checking by eye."""
     from PIL import Image, ImageDraw
-    banks = json.loads(SOURCE.read_text())
+    banks = load_banks()
     manifest = json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
     done = [b for b in banks if b["id"] in manifest]
     columns, rows, cell = 10, 6, 124
     mask = Image.new("L", (SIZE, SIZE), 0); ImageDraw.Draw(mask).rounded_rectangle((0, 0, SIZE - 1, SIZE - 1), radius=int(SIZE * 0.28), fill=255)
-    out = Path("/tmp/bank-review"); out.mkdir(exist_ok=True)
+    out = Path(tempfile.mkdtemp(prefix="bank-review-"))
     for page in range(0, len(done), columns * rows):
         sheet = Image.new("RGB", (columns * cell, rows * cell), (36, 36, 38))
         draw = ImageDraw.Draw(sheet)
