@@ -207,12 +207,12 @@ struct UpOnlyUnlockedPanel: View {
         case .bankGroup(let id): id == "personal" ? "Personal cash" : companyName(id)
         }
     }
-    /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Studio").
+    /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").
     func portfolioTitle(_ id: UUID) -> String {
         let parts = portfolioTitleParts(id)
         return parts.name + (parts.owner.map { " · " + $0 } ?? "")
     }
-    /// The name and, only when another portfolio of the same kind shares it, whose it is: ("Crypto", "Studio").
+    /// The name and, only when another portfolio of the same kind shares it, whose it is: ("Crypto", "Northwind").
     func portfolioTitleParts(_ id: UUID) -> (name: String, owner: String?) {
         guard let document = session.document, let portfolio = document.portfolio(id: id) else { return ("Portfolio", nil) }
         let clash = document.portfolios.contains { !$0.isArchived && $0.id != id && $0.kind == portfolio.kind && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }

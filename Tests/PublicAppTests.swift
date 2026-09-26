@@ -415,9 +415,9 @@ struct BulkInputTests {
     @Test("Month evidence gives one USD line per source, the biggest movements of any kind, and accounts that went quiet")
     func monthEvidence() {
         var doc = empty()
-        let monzo = Account(name: "Monzo", currency: "GBP"), card = Account(name: "Travel card", currency: "USD")
+        let monzo = Account(name: "Monzo", currency: "GBP"), cardCo = Account(name: "Card Co", currency: "USD")
         var wise = Account(name: "Alex · GBP", currency: "GBP"); wise.externalProfileID = "7"
-        doc.accounts = [monzo, card, wise]
+        doc.accounts = [monzo, cardCo, wise]
         let july = MonthKey("2026-07")!, august = MonthKey("2026-08")!
         doc.fx = [FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(2), providerTime: Date(timeIntervalSince1970: 1_787_000_000), fetchedAt: Date(timeIntervalSince1970: 1_787_000_000), provider: "test")]
         doc.entries = [
@@ -427,7 +427,7 @@ struct BulkInputTests {
             Entry(month: august, kind: .transfer, amount: 2000, currency: "GBP", label: "Sample Co", source: .csv, sourceRef: monzo.id.uuidString + ":4"),
             Entry(month: august, kind: .expense, amount: 40, currency: "GBP", label: "Cafe", source: .wise, sourceRef: "wise:7:a"),
             Entry(month: august, kind: .expense, amount: 5, currency: "USD", label: "Cash"),
-            Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: card.id.uuidString + ":9")
+            Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: cardCo.id.uuidString + ":9")
         ]
         let evidence = MonthEvidence.build(august, document: doc, now: Date(timeIntervalSince1970: 1_787_000_000))
         #expect(evidence.sources.map(\.name) == ["Monzo", "Wise · Alex", "Added by hand"])
@@ -436,7 +436,7 @@ struct BulkInputTests {
         #expect(evidence.sources[2].moneyIn == 0 && evidence.sources[2].moneyOut == 5)
         #expect(evidence.largest.map(\.entry.label) == ["Example Studio Ltd", "Sample Co", "Airbnb", "Cafe", "Airbnb refund", "Cash"])
         #expect(evidence.largest[1].usd == 4000)
-        #expect(evidence.silent == ["Travel card"])
+        #expect(evidence.silent == ["Card Co"])
     }
     @Test("A business cost paid personally leaves personal spending and month evidence")
     func businessCostPaidPersonally() {

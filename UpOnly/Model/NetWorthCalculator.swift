@@ -888,7 +888,7 @@ nonisolated struct BankBalanceGroup: Identifiable {
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
-    /// Bank-by-bank breakdown of a group: the Wise profile, Monzo, Card Co, each with its currency balances.
+    /// Bank-by-bank breakdown of a group: a Wise profile and two banks, each with its currency balances.
     static func banks(_ components: [ValuationComponent], document: VaultDocument) -> [BankBalanceGroup] {
         let accounts = Dictionary(document.accounts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return Dictionary(grouping: components) { component in accounts[component.id]?.externalProfileID.map { "wise:" + $0 } ?? component.id.uuidString }

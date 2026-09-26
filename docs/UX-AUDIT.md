@@ -82,7 +82,7 @@ No functionality was removed. Each change makes an existing action visible or pl
 - Crypto and metal entries carry an "As of" date and an optional "Paid" amount with currency. The date is the quantity observation's effective date, so charts and history use it directly; nothing new is inferred.
 - Backdating is allowed: a purchase dated before a holding or portfolio existed moves their start back to that day, and an earlier total may be inserted before later ones. When that happens the stored daily values from that day forward are recomputed off the main actor; days without saved prices become gaps rather than stale numbers until the price-history catch-up fills them.
 - Costs live in an optional `purchases` list of lots (holding, quantity bought, total paid, currency, date). Old vaults load unchanged. Gain is simple: current value minus cost; no time-weighting.
-- Each holding shows "Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)" on the portfolio page and in Manage. A cost in another currency shows unconverted until a rate for that month exists.
+- Each holding shows "Since Jan 2025 · Paid $1,000 · +$250 (+25%)" on the portfolio page and in Manage. A cost in another currency shows unconverted until a rate for that month exists.
 
 Review notes from the bug pass: the duplicate check now compares against the total on the chosen date, not today; the entry date is always parsed as ISO regardless of a file's date format; lock clears the new navigation flags; the crypto page values each portfolio once rather than once per row.
 
