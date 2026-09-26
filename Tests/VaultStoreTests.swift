@@ -841,22 +841,23 @@ struct VaultStoreTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("UpOnlyTest-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let schedule = BackgroundRefreshSchedule(), signing = VaultCrypto.makeSigningKeyPair()
-        let config = BackgroundConfiguration(vaultID: UUID(), inboxPublicKey: Data(), signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: [], metals: [], pricesEnabled: true, fxEnabled: false, metalsEnabled: false, coinGeckoKey: "")
+        let config = BackgroundConfiguration(vaultID: UUID(), inboxPublicKey: Data(), signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: [], metals: [], pricesEnabled: true, fxEnabled: false, metalsEnabled: false, coinGeckoKey: "", fileKey: BackgroundFiles.newKey())
+        let files = try #require(config.files(root: root))
         let offline: [Error] = [URLError(.notConnectedToInternet), URLError(.networkConnectionLost), CancellationError()]
         for error in offline {
             let ok = await BackgroundRefresh.scheduled("crypto", configuration: config, root: root, schedule: schedule) { throw error }
             #expect(!ok)
-            #expect(await !schedule.failed(vaultID: config.vaultID, root: root, source: "crypto"))
+            #expect(await !schedule.failed(vaultID: config.vaultID, files: files, source: "crypto"))
         }
         let ok = await BackgroundRefresh.scheduled("crypto", configuration: config, root: root, schedule: schedule) { throw PriceError.unavailable }
         let failedAt = Date()
         #expect(!ok)
-        #expect(await schedule.failed(vaultID: config.vaultID, root: root, source: "crypto"))
-        #expect(try await !schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(240)))
-        #expect(try await schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(301)))
-        try await schedule.finish(vaultID: config.vaultID, root: root, failed: true, source: "crypto", now: failedAt.addingTimeInterval(302))
-        #expect(try await !schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(302 + 590)))
-        #expect(try await schedule.claim(vaultID: config.vaultID, root: root, source: "crypto", now: failedAt.addingTimeInterval(302 + 601)))
+        #expect(await schedule.failed(vaultID: config.vaultID, files: files, source: "crypto"))
+        #expect(try await !schedule.claim(vaultID: config.vaultID, files: files, source: "crypto", now: failedAt.addingTimeInterval(240)))
+        #expect(try await schedule.claim(vaultID: config.vaultID, files: files, source: "crypto", now: failedAt.addingTimeInterval(301)))
+        try await schedule.finish(vaultID: config.vaultID, files: files, failed: true, source: "crypto", now: failedAt.addingTimeInterval(302))
+        #expect(try await !schedule.claim(vaultID: config.vaultID, files: files, source: "crypto", now: failedAt.addingTimeInterval(302 + 590)))
+        #expect(try await schedule.claim(vaultID: config.vaultID, files: files, source: "crypto", now: failedAt.addingTimeInterval(302 + 601)))
         // Current rates stop at the first connectivity error instead of recording an issue per currency.
         await #expect(throws: URLError.self) {
             try await PublicPrices.fx(currencies: ["EUR", "GBP"]) { _ in throw URLError(.notConnectedToInternet) }
@@ -1212,12 +1213,14 @@ struct VaultStoreTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let schedule = BackgroundRefreshSchedule(), vaultID = UUID(), now = Date(timeIntervalSince1970: 1_767_312_000)
+        // Sealed, but under a key the Keychain configuration holds, readable without the vault.
+        let files = BackgroundFiles(root: root, key: BackgroundFiles.newKey())
         for failures in [Int.max, Int.min] {
             let record = #"{"vaultID":"\#(vaultID.uuidString)","attemptedAt":"2026-01-01T00:00:00.000Z","failed":true,"failures":\#(failures)}"#
-            try Data(record.utf8).write(to: root.appendingPathComponent("Background-crypto.schedule"))
-            #expect(try await schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now))
-            try await schedule.finish(vaultID: vaultID, root: root, failed: true, source: "crypto", now: now)
-            #expect(await schedule.failed(vaultID: vaultID, root: root, source: "crypto"))
+            try files.sealSchedule(Data(record.utf8), source: "crypto").write(to: files.schedule("crypto"))
+            #expect(try await schedule.claim(vaultID: vaultID, files: files, source: "crypto", now: now))
+            try await schedule.finish(vaultID: vaultID, files: files, failed: true, source: "crypto", now: now)
+            #expect(await schedule.failed(vaultID: vaultID, files: files, source: "crypto"))
         }
     }
 

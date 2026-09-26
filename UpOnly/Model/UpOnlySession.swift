@@ -385,7 +385,7 @@ final class UpOnlySession {
             if !isFixture {
                 let root = Config.supportDirectory, stored = opened.document
                 shown = await Task.detached(priority: .userInitiated) {
-                    BackgroundRefresh.cachedPackets(document: stored, root: root).packets
+                    BackgroundRefresh.cachedPackets(document: stored, files: BackgroundConfiguration.files(for: stored.vaultID, root: root)).packets
                         .reduce(stored) { document, packet in (try? BackgroundRefresh.applying(packet, to: document)) ?? document }
                 }.value
             }
@@ -1098,12 +1098,7 @@ final class UpOnlySession {
         // the retired inbox key are deleted.
         if let rotated = try? await vault.currentSession().document, token == sessionToken { publish(rotated) }
         await configureBackground()
-        if !isFixture {
-            let root = Config.supportDirectory
-            for name in (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [] where name.hasPrefix("Background-") && name.hasSuffix(".sealed") {
-                try? FileManager.default.removeItem(at: root.appendingPathComponent(name))
-            }
-        }
+        if !isFixture { BackgroundRefresh.deleteSealed(root: Config.supportDirectory) }
         guard token == sessionToken else { return false }
         // A save since (the new signer's) finishes a change that didn't finish at once.
         if settled || !vault.io.fileExists(at: layout.pendingRecovery) {
@@ -1187,11 +1182,12 @@ final class UpOnlySession {
                 let inbox = VaultCrypto.makeInboxKeyPair(), signing = VaultCrypto.makeSigningKeyPair()
                 var isolated = VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
                 isolated.backgroundSignerPublicKey = signing.publicX963
-                let config = BackgroundConfiguration(vaultID: isolated.vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR", "GBP"], metals: [.gold], pricesEnabled: true, fxEnabled: true, metalsEnabled: true, coinGeckoKey: "", wiseEnabled: true, accountingEnabled: true)
+                let fileKey = BackgroundFiles.newKey(), files = BackgroundFiles(root: Config.supportDirectory, key: fileKey)
+                let config = BackgroundConfiguration(vaultID: isolated.vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR", "GBP"], metals: [.gold], pricesEnabled: true, fxEnabled: true, metalsEnabled: true, coinGeckoKey: "", wiseEnabled: true, accountingEnabled: true, fileKey: fileKey)
                 let issues = await BackgroundRefresh.fetch(configuration: config, root: Config.supportDirectory)
                 var verified: [String] = []
                 for source in BackgroundRefresh.sources {
-                    let path = BackgroundRefresh.path(source, root: Config.supportDirectory)
+                    let path = files.sealed(source)
                     guard FileManager.default.fileExists(atPath: path.path) else { continue }
                     let envelope = try VaultJSON.decode(BackgroundEnvelope.self, from: Data(contentsOf: path))
                     let packet = try envelope.open(document: isolated)
@@ -1488,8 +1484,8 @@ extension UpOnlySession {
             guard token == sessionToken, !Task.isCancelled, !request.isCancelled, document?.settings.automaticWise == true else { return }
             try await mutatePrepared { doc in try WiseAPI.apply(snapshot, to: doc) }
             guard token == sessionToken else { return }
-            if let document {
-                try? await BackgroundRefreshSchedule.shared.finish(vaultID: document.vaultID, root: Config.supportDirectory, failed: false)
+            if let document, let files = await backgroundFiles(for: document.vaultID) {
+                try? await BackgroundRefreshSchedule.shared.finish(vaultID: document.vaultID, files: files, failed: false)
             }
             backgroundIssues.removeAll { $0 == "Bank balances" }
             // Not after a lock during the schedule update: the note would land in the next unlock.
@@ -1572,8 +1568,12 @@ extension UpOnlySession {
         let token = sessionToken, revision = sourceRevision
         if automatic {
             guard priceRequest == nil else { return }
-            // A reconnect retries right away; otherwise catch-up runs once per history slot.
-            let claimed = reconnected ? true : (try? await BackgroundRefreshSchedule.shared.claim(vaultID: doc.vaultID, root: Config.supportDirectory, source: "history")) == true
+            // A reconnect retries right away; otherwise catch-up runs once per history slot. With no background
+            // configuration saved yet there's no slot to keep, and it runs, as it would on a reconnect.
+            var claimed = true
+            if !reconnected, let files = await backgroundFiles(for: doc.vaultID) {
+                claimed = (try? await BackgroundRefreshSchedule.shared.claim(vaultID: doc.vaultID, files: files, source: "history")) == true
+            }
             guard claimed, token == sessionToken, state == .unlocked, priceRequest == nil else { return }
         } else {
             refreshing = true
@@ -2124,6 +2124,9 @@ extension UpOnlySession {
             config.wiseEnabled = doc.settings.automaticWise
             config.accountingEnabled = await Task.detached(priority: .utility) { (try? AccountingConnection.load()) != nil }.value
             #endif
+            // The key that names the files and seals the schedules stays with its signer; a new signer gets a new one, and
+            // so does a configuration an earlier build saved without one.
+            config.fileKey = (minted ? nil : saved?.fileKey) ?? BackgroundFiles.newKey()
             guard token == sessionToken, state == .unlocked else { return }
             if config != saved {
                 let next = config
@@ -2133,19 +2136,27 @@ extension UpOnlySession {
                 if saved?.fxEnabled != next.fxEnabled || saved?.currencies != next.currencies { changed.append("fx") }
                 if saved?.metalsEnabled != next.metalsEnabled || saved?.metals != next.metals { changed.append("metals") }
                 let root = Config.supportDirectory, vaultID = doc.vaultID
-                await BackgroundRefreshSchedule.shared.reset(vaultID: vaultID, root: root, sources: changed)
+                if let files = next.files(root: root) { await BackgroundRefreshSchedule.shared.reset(vaultID: vaultID, files: files, sources: changed) }
                 // A new signing key: packets sealed before it (for another vault, or to an inbox key since replaced) can
-                // never open, so they go once it's saved, with the loop that could still write one stopped until then.
-                let stale = minted
+                // never open. A new file key: files named under the old one, or by source as earlier builds named them,
+                // would never be found again. Either way every sealed packet and schedule goes once it's saved, with the
+                // loop that could still write one stopped until then.
+                let stale = minted || next.fileKey != saved?.fileKey
                 if stale { backgroundTask?.cancel() }
                 defer { if stale { startBackgroundRefresh() } }
-                try await Task.detached(priority: .utility) { try next.save(); if stale { BackgroundRefresh.deleteSealed(root: root) } }.value
+                try await Task.detached(priority: .utility) { try next.save(); if stale { BackgroundRefresh.deleteFiles(root: root) } }.value
                 if !stale, token == sessionToken, state == .unlocked { startBackgroundRefresh() }
             }
         } catch {
             // A lock partway through isn't a failed setup, and mustn't show as one on the lock screen.
             if token == sessionToken { backgroundIssues = ["Background source setup"] }
         }
+    }
+    /// The background files' names and schedule key (`BackgroundFiles`) from the saved configuration, read off the main
+    /// thread: nil until `configureBackground` saves one for this vault, or while the Keychain can't be read.
+    private func backgroundFiles(for vaultID: UUID) async -> BackgroundFiles? {
+        let root = Config.supportDirectory
+        return await Task.detached(priority: .utility) { BackgroundConfiguration.files(for: vaultID, root: root) }.value
     }
     /// Deletes the background configuration, and what it fetched and scheduled, unless it belongs to `vaultID` (nil when
     /// no vault is left), then restarts the loop, which idles until `configureBackground` saves one for this vault.
@@ -2162,7 +2173,7 @@ extension UpOnlySession {
         // Measured against what's saved, not what's shown: unlocking already shows cached updates that aren't saved yet.
         guard let current = try? await vault.currentSession().document, token == sessionToken, backgroundCacheRequest == nil else { return }
         let root = Config.supportDirectory
-        let request = Task.detached(priority: .utility) { BackgroundRefresh.cachedPackets(document: current, root: root) }
+        let request = Task.detached(priority: .utility) { BackgroundRefresh.cachedPackets(document: current, files: BackgroundConfiguration.files(for: current.vaultID, root: root)) }
         backgroundCacheRequest = request
         defer { if token == sessionToken { backgroundCacheRequest = nil } }
         let result = await withTaskCancellationHandler(operation: { await request.value }, onCancel: { request.cancel() })
