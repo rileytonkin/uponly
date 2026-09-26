@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check build phases, entitlements, secrets and vault files
+        run: bash .github/scripts/guard.sh
+
+  test:
+    name: Test and build
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select the newest Xcode
+        run: |
+          set -euo pipefail
+          xcode=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|_rc' | sort -V | tail -n 1)
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+          major=$(xcodebuild -version | awk 'NR == 1 { split($2, v, "."); print v[1] }')
+          if [ "$major" -lt 26 ]; then
+            echo "::error::Xcode 26 or later is required; the newest here is $xcode"
+            exit 1
+          fi
+      - name: Test (UpOnlyFixture)
+        run: >-
+          xcodebuild test -quiet
+          -project UpOnly.xcodeproj -scheme UpOnlyFixture
+          -destination 'platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+      - name: Build the public app (UpOnly, Debug, unsigned)
+        run: >-
+          xcodebuild build -quiet
+          -project UpOnly.xcodeproj -scheme UpOnly -configuration Debug
+          -destination 'platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          CODE_SIGNING_ALLOWED=NO
+      - name: Build the private app (UpOnly + UPONLY_PERSONAL, Debug, unsigned)
+        run: >-
+          xcodebuild build -quiet
+          -project UpOnly.xcodeproj -scheme UpOnly -configuration Debug
+          -destination 'platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          CODE_SIGNING_ALLOWED=NO
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) UPONLY_PERSONAL'

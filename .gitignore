@@ -6,9 +6,39 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+*.xcarchive
+*.dSYM/
 Local.xcconfig
-*.uponly
-*.uponlybackup/
-*.wrapper
+build-personal.sh
 .env*
 __pycache__/
+
+# Local agent settings
+.claude/settings.local.json
+.claude/worktrees/
+.conductor/settings.local.toml
+
+# Vault, backups and app-container files: never commit them, even encrypted
+*.uponly*
+*.wrapper*
+*.sealed
+*.schedule
+*.journal
+*.restore-*
+diagnostics.txt
+unlock-timing.json
+accounting-audit.json
+payment-counterparties.json
+
+# Statements and exports
+*.csv
+
+# Signing material and credentials
+*.p12
+*.p8
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.provisionprofile
+*service-account*.json
