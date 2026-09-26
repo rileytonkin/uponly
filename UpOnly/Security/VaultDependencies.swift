@@ -4,6 +4,9 @@ import Security
 
 protocol VaultFileIO: Sendable {
     nonisolated func data(at url: URL) throws -> Data
+    /// A regular file of at most `limit` bytes, never through a symlink (`BoundedFile`): for files anyone could have
+    /// swapped, such as a chosen backup's, and for the vault's own, so a stray pipe or huge file can't hang or fill memory.
+    nonisolated func data(at url: URL, limit: Int) throws -> Data
     nonisolated func write(_ data: Data, to url: URL, sync: Bool) throws
     nonisolated func replaceItem(at original: URL, withItemAt temp: URL) throws
     nonisolated func installItem(at destination: URL, from staging: URL) throws
@@ -116,6 +119,12 @@ final class MemoryFileIO: VaultFileIO, @unchecked Sendable {
         guard let data = files[url.path] else {
             throw CocoaError(.fileNoSuchFile)
         }
+        return data
+    }
+
+    func data(at url: URL, limit: Int) throws -> Data {
+        let data = try self.data(at: url)
+        guard data.count <= limit else { throw CocoaError(.fileReadTooLarge) }
         return data
     }
 
@@ -268,6 +277,10 @@ final class DiskFileIO: VaultFileIO, @unchecked Sendable {
 
     func data(at url: URL) throws -> Data {
         try Data(contentsOf: url)
+    }
+
+    func data(at url: URL, limit: Int) throws -> Data {
+        try BoundedFile.read(url, limit: limit)
     }
 
     func write(_ data: Data, to url: URL, sync: Bool) throws {
@@ -475,6 +488,7 @@ final class KeychainVaultKeyStore: VaultKeyStoring, @unchecked Sendable {
         if added == errSecDuplicateItem {
             // Only real item attributes may be updated; the authentication context stays in the query.
             let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: key] as CFDictionary)
+            if status == errSecUserCanceled || status == errSecAuthFailed { throw VaultError.cancelled }
             guard status == errSecSuccess else { throw VaultError.keychainUnavailable(status) }
             return
         }
@@ -635,5 +649,22 @@ final class LiveAuthenticator: VaultAuthenticating, @unchecked Sendable {
     nonisolated var keychainContext: AnyObject? {
         lock.lock(); defer { lock.unlock() }
         return context
+    }
+}
+
+/// Reads a regular file of at most `limit` bytes. It never follows a symlink or waits on a pipe, and the type and size
+/// are checked on the open descriptor, so the file can't be swapped between the check and the read.
+nonisolated enum BoundedFile {
+    static func read(_ url: URL, limit: Int) throws -> Data {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw CocoaError(errno == ENOENT ? .fileReadNoSuchFile : .fileReadNoPermission) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw CocoaError(.fileReadUnknown) }
+        guard info.st_size <= off_t(limit) else { throw CocoaError(.fileReadTooLarge) }
+        let data = try handle.read(upToCount: limit + 1) ?? Data()
+        guard data.count <= limit else { throw CocoaError(.fileReadTooLarge) }
+        return data
     }
 }

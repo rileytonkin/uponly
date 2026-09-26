@@ -8,6 +8,10 @@ nonisolated enum VaultSchema {
     static let persistedFile = 1
     static let recoveryWrapper = 1
     static let backupPackage = 1
+    /// Which fields of the document this build knows, saved in it as `writerRevision`: raise when a field is added to the
+    /// document. A document from a later revision is refused (a newer version wrote it, and saving it here would drop the
+    /// fields this build doesn't know); one from this revision or earlier that doesn't decode is damaged.
+    static let revision = 1
 }
 
 nonisolated enum VaultLimits {
@@ -18,6 +22,8 @@ nonisolated enum VaultLimits {
     static let maxVaultFileBytes = 128 * 1024 * 1024
     static let maxBackupBytes = 384 * 1024 * 1024
     static let maxManifestBytes = 1024 * 1024
+    /// Recovery wrappers and restore journals, a few hundred bytes each: anything larger isn't one.
+    static let maxRecordBytes = 1024 * 1024
     static let bankStaleAfter: TimeInterval = 36 * 60 * 60
 }
 
@@ -68,11 +74,13 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
     case unsafeFilename
     case unavailable
     case overflow
+    case restoreUnsettled
     var errorDescription: String? {
         switch self {
         case .cancelled: "The action was cancelled."
         case .locked, .staleSession: "Up Only is locked. Unlock it, then try again."
-        case .invalidAmount, .overflow: "Enter a valid amount within the supported range."
+        case .invalidAmount: "Enter a valid amount within the supported range."
+        case .overflow: "This change couldn’t be saved: an amount is outside the range Up Only can store. Your last saved data is unchanged."
         case .invalidCurrency: "Enter a three-letter currency code, such as USD or GBP."
         case .invalidAssetID: "Choose a coin from search or enter its exact CoinGecko ID."
         case .insufficientQuantity: "You can’t move more than the quantity you hold."
@@ -90,6 +98,7 @@ nonisolated enum VaultError: LocalizedError, Equatable, Sendable {
         case .missingRecoveryWrapper: "This backup is missing recovery information. Choose another backup."
         case .corrupt, .backupIncoherent, .invalidSignature, .unsafeFilename: "This file could not be verified. Choose an original, unmodified Up Only file."
         case .unavailable: "The action couldn’t finish. Your last saved data is unchanged; try again."
+        case .restoreUnsettled: "A restore didn’t finish, and the journal it left beside the vault folder can’t be read, so Up Only can’t tell where your vault is. Nothing was moved; the journal and the folders beside it need attention."
         }
     }
 
@@ -179,12 +188,30 @@ nonisolated enum MoneyInput {
         guard value >= 0 else { throw VaultError.invalidAmount }
     }
 
+    /// What an entered amount must stay below: 10^24, a whole part of at most 24 digits. Far beyond any real balance,
+    /// price or quantity, it keeps sums, conversions and quantity × price of entered values well inside what a saved
+    /// document can hold.
+    static let enteredLimit = Decimal(sign: .plus, exponent: 24, significand: 1)
+
+    /// Reads an amount someone typed or a file holds, exactly: at most 160 characters and below `enteredLimit` in size.
     static func parseExact(_ text: String) throws -> Decimal {
+        let value = try parse(text, maxLength: 160)
+        guard value.magnitude < enteredLimit else { throw VaultError.invalidAmount }
+        return value
+    }
+
+    /// Reads a decimal a saved document holds: any exact value `Decimal` can, whatever its size (its text runs to about
+    /// 170 characters), so everything a save wrote reads back. Never for input, which `parseExact` caps.
+    static func parseSaved(_ text: String) throws -> Decimal {
+        try parse(text, maxLength: nil)
+    }
+
+    private static func parse(_ text: String, maxLength: Int?) throws -> Decimal {
         var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // ".12" and "-.5" are how people type small quantities; read them as "0.12" and "-0.5".
         guard trimmed != ".", trimmed != "-." else { throw VaultError.invalidAmount }
         if trimmed.hasPrefix(".") { trimmed = "0" + trimmed } else if trimmed.hasPrefix("-.") { trimmed = "-0" + trimmed.dropFirst() }
-        guard !trimmed.isEmpty, trimmed.count <= 160 else { throw VaultError.invalidAmount }
+        guard !trimmed.isEmpty, trimmed.count <= maxLength ?? .max else { throw VaultError.invalidAmount }
         let allowed = CharacterSet(charactersIn: "0123456789.-")
         guard trimmed.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
             throw VaultError.invalidAmount
@@ -262,7 +289,7 @@ nonisolated struct PreciseDecimal: Codable, Sendable, Hashable, Comparable {
         let container = try decoder.singleValueContainer()
         if let text = try? container.decode(String.self) {
             do {
-                value = try MoneyInput.parseExact(text)
+                value = try MoneyInput.parseSaved(text)
             } catch {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "Not an exact decimal")
             }

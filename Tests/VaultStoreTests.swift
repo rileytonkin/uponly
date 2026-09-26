@@ -46,12 +46,15 @@ final class CrashingFileIO: VaultFileIO, @unchecked Sendable {
     let disk = MemoryFileIO()
     var crashBefore: ((_ step: String, _ url: URL) -> Bool)?
     var crashed = false
+    /// Changes what a write stores, as a failing drive might.
+    var tamper: ((_ url: URL, _ data: Data) -> Data)?
     private func step(_ name: String, _ url: URL) throws {
         if !crashed, crashBefore?(name, url) == true { crashed = true }
         if crashed { throw VaultError.diskWriteFailed }
     }
     func data(at url: URL) throws -> Data { try disk.data(at: url) }
-    func write(_ data: Data, to url: URL, sync: Bool) throws { try step("write", url); try disk.write(data, to: url, sync: sync) }
+    func data(at url: URL, limit: Int) throws -> Data { try disk.data(at: url, limit: limit) }
+    func write(_ data: Data, to url: URL, sync: Bool) throws { try step("write", url); try disk.write(tamper?(url, data) ?? data, to: url, sync: sync) }
     func replaceItem(at original: URL, withItemAt temp: URL) throws { try step("replace", original); try disk.replaceItem(at: original, withItemAt: temp) }
     func installItem(at destination: URL, from staging: URL) throws { try step("install", destination); try disk.installItem(at: destination, from: staging) }
     func replacementDirectory(for destination: URL) throws -> URL { try disk.replacementDirectory(for: destination) }
@@ -609,7 +612,7 @@ struct VaultStoreTests {
         let h = harness()
         let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
         let next = RecoveryCode.random()
-        try await h.store.rotateRecovery(next, sessionID: created.sessionID)
+        #expect(try await h.store.rotateRecovery(next, sessionID: created.sessionID))
         #expect(h.auth.evaluateCount == 2)
         #expect(await h.store.isUnlocked)
         #expect(!h.io.fileExists(at: h.layout.recovery.appendingPathExtension("tmp")))
@@ -1044,10 +1047,12 @@ struct VaultStoreTests {
         document.backgroundSignerPublicKey = Data([2]); document.backgroundAppliedAt = ["crypto": document.createdAt]
         document.purchases = []; document.transferCounterparties = ["Sample Ltd"]; document.reviewedMonths = ["2026-09"]
         document.pendingHistoryRebuild = PendingHistoryRebuild(from: document.createdAt, cursor: document.createdAt)
+        document.writerRevision = VaultSchema.revision
         let bytes = try VaultJSON.encode(document)
         #expect(try VaultJSON.encode(VaultJSON.decode(VaultDocument.self, from: bytes)) == bytes)
-        // A new stored property has to be read in VaultDocument.init(from:) too, or the next save drops it. Then update this count.
-        #expect(Mirror(reflecting: document).children.count == 32)
+        // A new stored property has to be read in VaultDocument.init(from:) too, or the next save drops it. Then update
+        // this count, and raise VaultSchema.revision.
+        #expect(Mirror(reflecting: document).children.count == 33)
     }
 
     @Test("A background configuration saved before the Wise and accounting switches still loads, with both off")
@@ -1153,7 +1158,8 @@ struct VaultStoreTests {
         let oldKey = try keys.load(vaultID: id, context: nil)
         // No disk write lands once the new key is in the Keychain, as if the app quit there.
         keys.onStore = { io.failWrite = true }
-        try await store.rotateRecovery(newCode, sessionID: created.sessionID)
+        // Committed, but not finished: it says so.
+        #expect(try await store.rotateRecovery(newCode, sessionID: created.sessionID) == false)
         keys.onStore = nil; io.failWrite = false
         #expect(io.fileExists(at: layout.pendingRecovery))
         if path == "backup" {
@@ -1459,6 +1465,322 @@ struct VaultStoreTests {
         #expect(!h.layout.holdsOnlyWrapper(h.io))
         await #expect(throws: VaultError.alreadyExists) { _ = try await h.store.startOver() }
         #expect(h.io.stored(h.layout.recovery) == wrapper && h.io.stored(url) == Data("x".utf8))
+    }
+
+    // MARK: Values that must read back, and documents from later builds
+
+    @Test("Entered amounts stay below 10^24, and saved values read back at any size Decimal holds")
+    func enteredAndSavedAmounts() throws {
+        let nines = String(repeating: "9", count: 24), limit = "1" + String(repeating: "0", count: 24)
+        #expect(try MoneyInput.parseExact(nines) == Decimal(string: nines))
+        #expect(try MoneyInput.parseExact("-" + nines + ".5") == Decimal(string: "-" + nines + ".5"))
+        #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact(limit) }
+        #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseExact("-" + limit + ".0") }
+        // Near the largest and smallest magnitudes Decimal holds, written out in full: past the 160 characters input takes.
+        let mantissa = try #require(Decimal(string: "12345678901234567890123456789012345678"))
+        let values = [Decimal(sign: .plus, exponent: 127, significand: mantissa), Decimal(sign: .minus, exponent: 120, significand: mantissa),
+                      Decimal(sign: .plus, exponent: -110, significand: mantissa)]
+        #expect(NSDecimalNumber(decimal: values[0]).stringValue.count > 160)
+        for value in values {
+            #expect(try MoneyInput.parseSaved(NSDecimalNumber(decimal: value).stringValue) == value)
+            #expect(try VaultJSON.decode([PreciseDecimal].self, from: VaultJSON.encode([PreciseDecimal(value)])) == [PreciseDecimal(value)])
+        }
+        #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseSaved("NaN") }
+        #expect(throws: VaultError.invalidAmount) { _ = try MoneyInput.parseSaved("1." + String(repeating: "1", count: 60)) }
+    }
+
+    @Test("A value too long for the old reader saves and opens again; one that can't be read back is never saved")
+    func hugeValuesReadBack() async throws {
+        let h = harness()
+        let created = try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical)
+        let mantissa = try #require(Decimal(string: "12345678901234567890123456789012345678"))
+        let huge = Decimal(sign: .plus, exponent: 125, significand: mantissa)
+        func quote(_ price: Decimal) throws -> QuoteObservation {
+            try QuoteObservation(assetID: CanonicalAssetID("bitcoin"), priceUSD: PreciseDecimal(price), providerTime: Date(), fetchedAt: Date(), provider: "test")
+        }
+        var next = created.document
+        next.generation += 1
+        next.quotes = try [quote(huge)]
+        try await h.store.commit(next, expectedGeneration: 1, sessionID: created.sessionID)
+        h.store.lock()
+        let reopened = try await h.store.unlock()
+        #expect(reopened.document.quotes.first?.priceUSD.value == huge && reopened.document.writerRevision == VaultSchema.revision)
+        #expect(await !h.store.openedPrevious)
+        let saved = try #require(h.io.stored(h.layout.current))
+        var unreadable = reopened.document
+        unreadable.generation += 1
+        unreadable.quotes = try [quote(.nan)]
+        await #expect(throws: VaultError.overflow) {
+            try await h.store.commit(unreadable, expectedGeneration: reopened.document.generation, sessionID: reopened.sessionID)
+        }
+        #expect(h.io.stored(h.layout.current) == saved)
+    }
+
+    /// `document` with `edit` applied to its JSON, sealed under the vault's key as a save would, so it authenticates.
+    private func sealed(_ document: VaultDocument, keyData: Data, edit: (inout [String: Any]) -> Void) throws -> Data {
+        var object = try #require(try JSONSerialization.jsonObject(with: VaultJSON.encode(document)) as? [String: Any])
+        edit(&object)
+        let plaintext = try JSONSerialization.data(withJSONObject: object)
+        let box = try VaultCrypto.seal(plaintext, key: VaultCrypto.key(from: keyData), schema: document.schema, vaultID: document.vaultID, generation: document.generation)
+        return try VaultJSON.encode(PersistedVaultFile(format: VaultSchema.persistedFile, vaultID: document.vaultID, generation: document.generation,
+                                                       nonce: box.nonce, ciphertext: box.ciphertext, tag: box.tag))
+    }
+
+    @Test("A document from a later revision is refused even when it decodes; one that doesn't decode is damage unless a later revision wrote it",
+          arguments: ["later, decodes", "later, doesn't decode", "this revision", "no revision"])
+    func writerRevisionDecides(_ kind: String) async throws {
+        let h = harness()
+        let created = try await createWithAccount(h.store, h.recovery)
+        #expect(created.document.writerRevision == VaultSchema.revision)
+        let keyData = try h.keys.load(vaultID: created.document.vaultID, context: nil)
+        var next = created.document
+        next.generation += 1
+        let bytes = try sealed(next, keyData: keyData) { object in
+            switch kind {
+            case "later, decodes": object["writerRevision"] = VaultSchema.revision + 1; object["aFieldFromLater"] = true
+            case "later, doesn't decode": object["writerRevision"] = VaultSchema.revision + 1; object["entries"] = "a later shape"
+            case "this revision": object["entries"] = "damaged"
+            default: object.removeValue(forKey: "writerRevision"); object.removeValue(forKey: "entries")
+            }
+        }
+        try h.io.write(bytes, to: h.layout.current, sync: true)
+        h.store.lock()
+        let damaged = h.layout.root.appendingPathComponent("vault.uponly.damaged")
+        if kind.hasPrefix("later") {
+            await #expect(throws: VaultError.unknownSchema) { _ = try await h.store.unlock() }
+            #expect(h.io.stored(h.layout.current) == bytes && !h.io.fileExists(at: damaged))
+        } else {
+            // Written by a build that knew every field, so it's damaged: the previous copy opens and the file is kept aside.
+            #expect(try await h.store.unlock().document.generation == 1)
+            #expect(await h.store.openedPrevious)
+            #expect(h.io.stored(damaged) == bytes)
+        }
+    }
+
+    @Test("A new recovery code also gives the vault a new inbox key, and no background signer is trusted until one is made")
+    func rotationReplacesInboxKey() async throws {
+        let h = harness()
+        let created = try await createWithAccount(h.store, h.recovery)
+        var signed = created.document
+        signed.generation += 1
+        signed.backgroundSignerPublicKey = VaultCrypto.makeSigningKeyPair().publicX963
+        try await h.store.commit(signed, expectedGeneration: created.document.generation, sessionID: created.sessionID)
+        #expect(try await h.store.rotateRecovery(RecoveryCode.random(), sessionID: created.sessionID))
+        h.store.lock()
+        let rotated = try await h.store.unlock().document
+        #expect(rotated.inboxPublicKeyX963 != created.document.inboxPublicKeyX963 && rotated.inboxPrivateKeyX963 != created.document.inboxPrivateKeyX963)
+        #expect(rotated.inboxPrivateKeyX963.count == 97 && rotated.backgroundSignerPublicKey == nil && rotated.accounts.count == 1)
+    }
+
+    @Test("A code change that can't finish at once says so, and the next save finishes it")
+    @MainActor func unfinishedRotationFinishesAtNextSave() async throws {
+        let io = MemoryFileIO(), keys = SetupTestKeyStore()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-settle-" + UUID().uuidString))
+        let store = VaultStore(layout: layout, io: io, keys: keys, authenticator: FixtureAuthenticator())
+        let old = RecoveryCode.random(), new = RecoveryCode.random()
+        let created = try await createWithAccount(store, old)
+        store.lock()
+        let session = UpOnlySession(testing: store, layout: layout)
+        await session.unlock()
+        // No disk write lands once the new key is in the Keychain.
+        keys.onStore = { io.failWrite = true }
+        #expect(await session.replaceRecoveryCode(new))
+        keys.onStore = nil; io.failWrite = false
+        #expect(session.message == "Your new recovery code is saved, but finishing up didn’t complete. Up Only will finish it at the next save or unlock; until then your old code may still open this vault.")
+        #expect(io.fileExists(at: layout.pendingRecovery) && session.document?.inboxPublicKeyX963 != created.document.inboxPublicKeyX963)
+        try await session.mutate { $0.accounts.append(Account(name: "Second bank", currency: "USD")) }
+        #expect(!io.fileExists(at: layout.pendingRecovery))
+        // Finished: only the new code opens the vault.
+        try keys.delete(vaultID: created.document.vaultID)
+        session.lock()
+        await #expect(throws: VaultError.wrongRecoveryCode) { _ = try await store.recover(old) }
+        #expect(try await store.recover(new).document.accounts.count == 2)
+    }
+
+    @Test("Finder's files in the Inbox don't stop setup, Start over or a welcome-screen restore")
+    func finderFilesInInbox() async throws {
+        let h = harness()
+        try h.layout.ensureDirectories(h.io)
+        try h.io.write(Data("finder".utf8), to: h.layout.inbox.appendingPathComponent(".DS_Store"), sync: true)
+        #expect(try await h.store.create(recovery: h.recovery, confirmation: h.recovery.canonical).document.generation == 1)
+        let unfinished = harness()
+        try unfinished.layout.ensureDirectories(unfinished.io)
+        try unfinished.io.write(Data("wrapper".utf8), to: unfinished.layout.recovery, sync: true)
+        try unfinished.io.write(Data(), to: unfinished.layout.inbox.appendingPathComponent(".DS_Store"), sync: true)
+        #expect(unfinished.layout.holdsOnlyWrapper(unfinished.io))
+        _ = try await unfinished.store.startOver()
+        #expect(!unfinished.io.fileExists(at: unfinished.layout.recovery))
+        let restore = harness()
+        try restore.layout.ensureDirectories(restore.io)
+        try restore.io.write(Data(), to: restore.layout.root.appendingPathComponent(".DS_Store"), sync: true)
+        try restore.io.write(Data(), to: restore.layout.inbox.appendingPathComponent(".DS_Store"), sync: true)
+        try await restore.store.releaseEmptyDestination()
+        #expect(!restore.io.fileExists(at: restore.layout.root))
+    }
+
+    @Test("A welcome-screen restore never deletes a hidden leftover: the folder is moved beside it, numbered if the name is taken",
+          arguments: ["in the folder", "in the Inbox"])
+    func releaseSetsAsideLeftovers(_ place: String) async throws {
+        let h = harness()
+        try h.layout.ensureDirectories(h.io)
+        let folder = place == "in the folder" ? h.layout.root : h.layout.inbox
+        let leftover = folder.appendingPathComponent(".vault.uponly.tmp." + UUID().uuidString)
+        try h.io.write(Data("ciphertext".utf8), to: leftover, sync: true)
+        try await h.store.releaseEmptyDestination()
+        #expect(!h.io.fileExists(at: h.layout.root))
+        let parent = h.layout.root.deletingLastPathComponent()
+        let aside = try #require(try h.io.contentsOfDirectory(at: parent).first { $0.lastPathComponent.hasPrefix(h.layout.root.lastPathComponent + " (set aside ") })
+        let moved = aside.appendingPathComponent(leftover.path.dropFirst(h.layout.root.path.count + 1).description)
+        #expect(h.io.stored(moved) == Data("ciphertext".utf8))
+        let date = Date(timeIntervalSince1970: 1_790_000_000), first = h.layout.setAsideRoot(at: date, io: h.io)
+        try h.io.createDirectory(at: first)
+        #expect(h.layout.setAsideRoot(at: date, io: h.io).lastPathComponent == String(first.lastPathComponent.dropLast()) + " 2)")
+    }
+
+    @Test("A restore journal that can't be read is left as it is: the vault in its folder opens and says so, and without one unlock explains",
+          arguments: ["unreadable", "foreign"])
+    @MainActor func unreadableRestoreJournal(_ kind: String) async throws {
+        let h = harness()
+        _ = try await createWithAccount(h.store, h.recovery)
+        let journal = kind == "unreadable" ? Data("not a journal".utf8)
+            : try JSONSerialization.data(withJSONObject: ["aside": "Documents", "staging": h.layout.root.lastPathComponent + ".restore-x", "vaultSHA256": ""])
+        try h.io.write(journal, to: h.layout.restoreJournal, sync: true)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        session.returnToUnlock()
+        await session.unlock()
+        #expect(session.state == .unlocked && session.document?.accounts.count == 1)
+        #expect(session.message == UpOnlySession.skippedRestoreJournalNotice)
+        #expect(h.io.stored(h.layout.restoreJournal) == journal)
+        session.lock()
+        try h.io.removeItem(at: h.layout.current)
+        try h.io.removeItem(at: h.layout.previous)
+        await session.unlock()
+        #expect(session.state == .locked && session.message == VaultError.restoreUnsettled.errorDescription)
+        await #expect(throws: VaultError.restoreUnsettled) { _ = try await h.store.recover(h.recovery) }
+        #expect(h.io.stored(h.layout.restoreJournal) == journal)
+    }
+
+    @Test("Bounded reads take only a regular file within the limit, never a link or a pipe, and a backup holding a pipe is refused at once")
+    func boundedReads() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("UpOnlyTest-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let io = DiskFileIO()
+        try io.createDirectory(at: root)
+        let file = root.appendingPathComponent("file"), link = root.appendingPathComponent("link"), pipe = root.appendingPathComponent("pipe")
+        try io.write(Data("12345".utf8), to: file, sync: false)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        #expect(mkfifo(pipe.path, 0o600) == 0)
+        #expect(try io.data(at: file, limit: 5) == Data("12345".utf8))
+        for (url, limit) in [(file, 4), (link, 5), (pipe, 5), (root, 5)] {
+            #expect(throws: CocoaError.self) { _ = try io.data(at: url, limit: limit) }
+        }
+        let memory = MemoryFileIO()
+        try memory.write(Data("12345".utf8), to: file, sync: false)
+        #expect(throws: CocoaError.self) { _ = try memory.data(at: file, limit: 4) }
+        // A backup with a file swapped for a pipe.
+        let code = RecoveryCode.random()
+        let store = VaultStore(layout: VaultLayout(root: root.appendingPathComponent("Vault")), io: io, keys: MemoryKeyStore(), authenticator: FixtureAuthenticator())
+        _ = try await store.create(recovery: code, confirmation: code.canonical)
+        let backup = root.appendingPathComponent("Sample.uponlybackup")
+        let package = try await BackupCoordinator.makePackage(store: store, producers: [])
+        try BackupCoordinator.publish(package, to: backup, io: io)
+        for name in ["recovery.wrapper", "manifest.json"] {
+            try FileManager.default.removeItem(at: backup.appendingPathComponent(name))
+            #expect(mkfifo(backup.appendingPathComponent(name).path, 0o600) == 0)
+        }
+        #expect(!BackupCoordinator.isBackup(at: backup, io: io))
+        #expect(throws: VaultError.backupIncoherent) { _ = try BackupCoordinator.read(from: backup, io: io) }
+    }
+
+    @Test("Recovery says the code was wrong only when it was, and otherwise what stood in the way")
+    @MainActor func recoveryFailureMessages() async throws {
+        let h = harness()
+        let created = try await createWithAccount(h.store, h.recovery)
+        try h.keys.delete(vaultID: created.document.vaultID)
+        h.store.lock()
+        let session = UpOnlySession(testing: h.store, layout: h.layout)
+        session.returnToUnlock()
+        await session.recover(code: RecoveryCode.random().canonical)
+        #expect(session.message == "That recovery code could not open this vault.")
+        for url in [h.layout.current, h.layout.previous] { try h.io.write(Data("damaged".utf8), to: url, sync: true) }
+        await session.recover(code: h.recovery.canonical)
+        #expect(session.message == "This vault’s files are damaged, and no copy of them opened with this code. Nothing was changed.")
+        #expect(session.state != .unlocked)
+    }
+
+    @Test("Restoring reads back every file it writes, the previous copy and pending imports included", arguments: ["vault.uponly.prev", "batch"])
+    func stageReadsBackEverything(_ name: String) async throws {
+        let source = harness()
+        _ = try await createWithAccount(source.store, source.recovery)
+        try source.io.write(Data("pending".utf8), to: source.layout.inbox.appendingPathComponent("batch"), sync: true)
+        let package = try await BackupCoordinator.makePackage(store: source.store, producers: [])
+        #expect(package.previous != nil && package.pending.count == 1)
+        let io = CrashingFileIO()
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-stage-" + UUID().uuidString))
+        io.tamper = { url, data in url.lastPathComponent == name && url.path.contains(".restore-") ? Data(data.reversed()) : data }
+        #expect(throws: VaultError.backupIncoherent) {
+            _ = try BackupCoordinator.restore(package: package, recovery: source.recovery, keys: MemoryKeyStore(), layout: layout, io: io)
+        }
+        #expect(!io.fileExists(at: layout.root) && restoreFinished(io, layout))
+    }
+
+    @Test("A welcome-screen restore puts the vault in place before the Keychain takes its key, and removes it if the Keychain refuses")
+    func welcomeRestoreOrder() async throws {
+        let backup = try await otherBackup()
+        let id = backup.package.manifest.vaultID
+        func folder() -> VaultLayout { VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-welcome-" + UUID().uuidString)) }
+        let io = CrashingFileIO()
+        let placed = folder(), keys = SetupTestKeyStore()
+        var inPlace = false
+        keys.beforeStore = { inPlace = io.fileExists(at: placed.current) }
+        _ = try BackupCoordinator.restore(package: backup.package, recovery: backup.code, keys: keys, layout: placed, io: io)
+        #expect(inPlace && keys.contains(vaultID: id) && restoreFinished(io, placed))
+        // Refused: the copy goes, and the folder is as it was.
+        let refused = folder(), refusing = SetupTestKeyStore()
+        refusing.storeError = .keychainUnavailable(-25308)
+        #expect(throws: VaultError.keychainUnavailable(-25308)) {
+            _ = try BackupCoordinator.restore(package: backup.package, recovery: backup.code, keys: refusing, layout: refused, io: io)
+        }
+        #expect(!io.fileExists(at: refused.root) && restoreFinished(io, refused))
+        // Stopped at the Keychain update: the vault is there, and the code just typed opens it.
+        let stopped = folder()
+        refusing.beforeStore = { io.crashed = true }
+        _ = try? BackupCoordinator.restore(package: backup.package, recovery: backup.code, keys: refusing, layout: stopped, io: io)
+        refusing.beforeStore = nil; refusing.storeError = nil; io.crashed = false
+        #expect(io.fileExists(at: stopped.current) && !refusing.contains(vaultID: id))
+        let relaunched = VaultStore(layout: stopped, io: io, keys: refusing, authenticator: FixtureAuthenticator())
+        await #expect(throws: VaultError.needsRecovery) { _ = try await relaunched.unlock() }
+        #expect(try await relaunched.recover(backup.code).document.vaultID == id)
+    }
+
+    @Test("Unlock and recovery remove staging folders a stopped restore left, but nothing else, and nothing while a journal waits")
+    func strayStagingRemoved() async throws {
+        let h = harness()
+        _ = try await createWithAccount(h.store, h.recovery)
+        let parent = h.layout.root.deletingLastPathComponent(), name = h.layout.root.lastPathComponent
+        func stray() throws -> URL {
+            let url = parent.appendingPathComponent(name + ".restore-" + UUID().uuidString, isDirectory: true)
+            try h.io.createDirectory(at: url)
+            try h.io.write(Data("copy".utf8), to: url.appendingPathComponent("vault.uponly"), sync: true)
+            return url
+        }
+        let other = parent.appendingPathComponent(name + ".restore-notes", isDirectory: true)
+        try h.io.createDirectory(at: other)
+        let first = try stray()
+        h.store.lock()
+        _ = try await h.store.unlock()
+        #expect(!h.io.fileExists(at: first) && h.io.fileExists(at: other))
+        let second = try stray()
+        h.store.lock()
+        _ = try await h.store.recover(h.recovery)
+        #expect(!h.io.fileExists(at: second))
+        let kept = try stray()
+        try h.io.write(Data("not a journal".utf8), to: h.layout.restoreJournal, sync: true)
+        h.store.lock()
+        _ = try await h.store.unlock()
+        let skipped = await h.store.skippedRestoreJournal
+        #expect(h.io.fileExists(at: kept) && skipped)
     }
 
     // MARK: A vault from a newer version

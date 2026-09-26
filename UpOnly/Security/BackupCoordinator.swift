@@ -92,7 +92,7 @@ nonisolated enum BackupCoordinator {
         guard (try? io.isSymbolicLink(at: url)) == false, (try? io.isDirectory(at: url)) == true,
               let children = try? io.contentsOfDirectory(at: url),
               Set(children.map(\.lastPathComponent).filter { !$0.hasPrefix(".") }).isSubset(of: names),
-              let bytes = try? io.data(at: url.appendingPathComponent("manifest.json")), bytes.count <= VaultLimits.maxManifestBytes,
+              let bytes = try? io.data(at: url.appendingPathComponent("manifest.json"), limit: VaultLimits.maxManifestBytes),
               let manifest = try? VaultJSON.decode(BackupManifest.self, from: bytes) else { return false }
         return manifest.format == VaultSchema.backupPackage
     }
@@ -117,11 +117,18 @@ nonisolated enum BackupCoordinator {
             .appendingPathComponent(layout.root.lastPathComponent + ".restore-" + UUID().uuidString, isDirectory: true)
         defer { try? io.removeItem(at: stagingRoot) }
         try stage(package, at: stagingRoot, io: io)
+        // The copy goes in place before the Keychain takes its key: if the app stops in between, the folder holds a vault
+        // the code just typed opens, not a Keychain key with no vault. A staging folder left by an earlier stop is removed
+        // at the next unlock or recovery.
+        var installed = false
         do {
-            try keys.store(vaultID: opened.document.vaultID, key: opened.key, context: authenticator?.keychainContext)
             try io.installItem(at: layout.root, from: stagingRoot)
+            installed = true
+            try keys.store(vaultID: opened.document.vaultID, key: opened.key, context: authenticator?.keychainContext)
             return (opened.document, package.pending)
         } catch {
+            // The folder was empty before, so what's there is only the backup's copy, which the backup still holds.
+            if installed { try? io.removeItem(at: layout.root) }
             if let vaultError = error as? VaultError { throw vaultError }
             throw VaultError.backupIncoherent
         }
@@ -141,27 +148,17 @@ nonisolated enum BackupCoordinator {
         return (try VaultCrypto.reveal(persisted, key: VaultCrypto.key(from: keyData)), keyData)
     }
 
-    /// Writes the backup's files into a new vault folder at `staging`, flushed, and reads them back.
+    /// Writes the backup's files into a new vault folder at `staging`, flushed, and reads every one back.
     static func stage(_ package: BackupPackage, at staging: URL, io: VaultFileIO) throws {
         let folder = VaultLayout(root: staging)
+        var files = [(url: folder.current, bytes: package.vault), (url: folder.recovery, bytes: package.recovery)]
+        if let previous = package.previous { files.append((url: folder.previous, bytes: previous)) }
+        files += package.pending.map { (url: folder.inbox.appendingPathComponent($0.name), bytes: $0.bytes) }
         do {
             try folder.ensureDirectories(io)
-            try io.write(package.vault, to: folder.current, sync: true)
-            try io.write(package.recovery, to: folder.recovery, sync: true)
-            if let previous = package.previous {
-                try io.write(previous, to: folder.previous, sync: true)
-            }
-            for item in package.pending {
-                try io.write(item.bytes, to: folder.inbox.appendingPathComponent(item.name), sync: true)
-            }
-            guard try io.data(at: folder.current) == package.vault,
-                  try io.data(at: folder.recovery) == package.recovery else {
-                throw VaultError.backupIncoherent
-            }
-            for item in package.pending {
-                guard try io.data(at: folder.inbox.appendingPathComponent(item.name)) == item.bytes else {
-                    throw VaultError.backupIncoherent
-                }
+            for file in files { try io.write(file.bytes, to: file.url, sync: true) }
+            for file in files {
+                guard try io.data(at: file.url, limit: file.bytes.count) == file.bytes else { throw VaultError.backupIncoherent }
             }
         } catch {
             if let vaultError = error as? VaultError { throw vaultError }
@@ -239,8 +236,12 @@ extension BackupCoordinator {
         func read(_ name: String, limit: Int) throws -> Data {
             let url = root.appendingPathComponent(name)
             guard !(try io.isSymbolicLink(at: url)), !(try io.isDirectory(at: url)) else { throw VaultError.backupIncoherent }
-            if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > limit { throw VaultError.oversizedBatch }
-            let bytes = try io.data(at: url)
+            // A regular file within the limit, checked on the file as it's read, so a pipe or a swapped-in link can't
+            // hang the read or make it unbounded.
+            let bytes: Data
+            do { bytes = try io.data(at: url, limit: limit) }
+            catch CocoaError.fileReadTooLarge { throw VaultError.oversizedBatch }
+            catch { throw VaultError.backupIncoherent }
             total += bytes.count
             guard bytes.count <= limit, total <= VaultLimits.maxBackupBytes else { throw VaultError.oversizedBatch }
             return bytes

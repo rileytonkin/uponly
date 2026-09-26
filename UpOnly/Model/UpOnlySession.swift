@@ -385,7 +385,7 @@ final class UpOnlySession {
             let timing = ProcessInfo.processInfo.environment["UPONLY_MEASURE_UNLOCK"] == "1"
                 ? UnlockTiming(method: passwordUnlockRequested ? "password" : authenticationContext != nil ? "touch_id" : "system") : nil
             let opened = try await vault.unlock(timing: timing)
-            let previous = await vault.openedPrevious
+            let previous = await vault.openedPrevious, skippedJournal = await vault.skippedRestoreJournal
             // Prices, rates and balances fetched while locked go in before the dashboard first draws, so its totals
             // don't change a moment after unlocking. They're saved as usual right after (applyBackgroundCache).
             var shown = opened.document
@@ -403,11 +403,13 @@ final class UpOnlySession {
             isBusy = false; authenticationContext = nil; passwordUnlockRequested = false
             publish(shown, freshUnlock: true)
             if previous { message = Self.previousCopyNotice }
+            if skippedJournal { message = (message.map { $0 + " " } ?? "") + Self.skippedRestoreJournalNotice }
             timing?.mark("dashboard_published")
         } catch VaultError.needsRecovery { if sessionToken == token { state = .recovery } }
         catch VaultError.cancelled { if sessionToken == token { authenticationFailed = true } }
         catch VaultError.keychainUnavailable(_) { if sessionToken == token { authenticationFailed = true; message = "macOS couldn’t access this app’s secure storage. Please reopen the updated app and try again." } }
         catch VaultError.unknownSchema { if sessionToken == token { authenticationFailed = true; message = Self.newerVersionNotice } }
+        catch VaultError.restoreUnsettled { if sessionToken == token { authenticationFailed = true; message = VaultError.restoreUnsettled.errorDescription } }
         catch VaultError.notFound where layout.holdsOnlyWrapper(vault.io) { if sessionToken == token { canStartOver = true } }
         catch { if sessionToken == token { authenticationFailed = true; message = "Your vault could not be opened. Please try unlocking again." } }
     }
@@ -448,9 +450,25 @@ final class UpOnlySession {
             guard sessionToken == token else { return }
             publish(opened.document, freshUnlock: true)
             if await vault.openedPrevious { message = Self.previousCopyNotice }
+            if await vault.skippedRestoreJournal { message = (message.map { $0 + " " } ?? "") + Self.skippedRestoreJournalNotice }
         } catch VaultError.cancelled { }
-        catch VaultError.unknownSchema { if sessionToken == token { message = Self.newerVersionNotice } }
-        catch { if sessionToken == token { message = "That recovery code could not open this vault." } }
+        catch { if sessionToken == token { message = Self.recoveryFailure(error) } }
+    }
+
+    static let skippedRestoreJournalNotice = "A restore didn’t finish, and the journal it left beside the vault folder couldn’t be read, so it was left as it is. Your vault opened from its folder; the journal and any folders beside it need attention."
+
+    /// Why recovery didn't open the vault: the code only when it was wrong, otherwise what stood in the way.
+    private static func recoveryFailure(_ error: Error) -> String {
+        switch error as? VaultError {
+        case .wrongRecoveryCode?: "That recovery code could not open this vault."
+        case .unknownSchema?: newerVersionNotice
+        case .keychainUnavailable?: "The code opened your vault, but macOS couldn’t save its key in this app’s secure storage. Please reopen the app and try again."
+        case .corrupt?: "This vault’s files are damaged, and no copy of them opened with this code. Nothing was changed."
+        case .notFound?, .missingRecoveryWrapper?: "Up Only couldn’t find or read this vault’s files, so there was nothing for the code to open. Nothing was changed."
+        case .diskWriteFailed?: "Up Only couldn’t write to the vault’s folder. Check available disk space and try again."
+        case let other?: other.errorDescription ?? "Your vault could not be recovered. Please try again."
+        case nil: "Your vault could not be recovered. Please try again."
+        }
     }
 
     /// Start over, when setup stopped before saving the vault: its unused recovery file is moved beside the vault folder,
@@ -1041,21 +1059,39 @@ final class UpOnlySession {
         guard state == .unlocked else { return false }
         let token = sessionToken
         message = nil
+        var settled = false
         do {
             let writers = try await acquireWriter(token: token, background: false)
             isBusy = true
             defer { writers.release(); if token == sessionToken { isBusy = false } }
             let current = try await vault.currentSession()
             guard token == sessionToken else { throw VaultError.locked }
-            try await vault.rotateRecovery(code, sessionID: current.sessionID)
+            settled = try await vault.rotateRecovery(code, sessionID: current.sessionID)
             guard token == sessionToken else { return false }
-            flash("Recovery code replaced. Export a new backup so it uses the new code.")
-            return true
         } catch VaultError.cancelled { return false }
         catch {
             if token == sessionToken { message = "Your recovery code couldn’t be replaced. Your current code still works." }
             return false
         }
+        // The saved document has a new inbox key and trusts no background signer yet. Once it's shown and the writer is
+        // free, the background configuration is rewritten from it (a new signer, the new inbox key), and updates sealed to
+        // the retired inbox key are deleted.
+        if let rotated = try? await vault.currentSession().document, token == sessionToken { publish(rotated) }
+        await configureBackground()
+        if !isFixture {
+            let root = Config.supportDirectory
+            for name in (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? [] where name.hasPrefix("Background-") && name.hasSuffix(".sealed") {
+                try? FileManager.default.removeItem(at: root.appendingPathComponent(name))
+            }
+        }
+        guard token == sessionToken else { return false }
+        // A save since (the new signer's) finishes a change that didn't finish at once.
+        if settled || !vault.io.fileExists(at: layout.pendingRecovery) {
+            flash("Recovery code replaced. Export a new backup so it uses the new code.")
+        } else {
+            message = "Your new recovery code is saved, but finishing up didn’t complete. Up Only will finish it at the next save or unlock; until then your old code may still open this vault."
+        }
+        return true
     }
     /// A success note that clears itself, so it doesn't linger on later pages.
     func flash(_ text: String) {
