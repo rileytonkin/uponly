@@ -92,6 +92,32 @@ nonisolated enum UpOnlyStandIn {
     }
 }
 
+/// One track with the chosen segment raised, as market apps do: the dashboard's chart range and any other small
+/// choice of period.
+struct UpOnlySegments<Value: Hashable>: View {
+    let options: [(value: Value, title: String, spoken: String)]
+    @Binding var selection: Value
+    var label: String
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.value) { option in
+                let chosen = selection == option.value
+                Button { selection = option.value } label: {
+                    Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
+                        .foregroundStyle(chosen ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 22)
+                        .background {
+                            if chosen { Capsule().fill(Color(nsColor: .controlBackgroundColor)).shadow(color: .black.opacity(0.12), radius: 1, y: 0.5) }
+                        }
+                        .contentShape(Capsule())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel(option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }.padding(2).background(Color.primary.opacity(0.06), in: Capsule())
+            .accessibilityElement(children: .contain).accessibilityLabel(label)
+    }
+}
+
 /// A change as an outlined pill, "↑ 21.0%", green up and red down, as on the admin dashboard.
 struct UpOnlyChangeBadge: View {
     var fraction: Decimal

@@ -43,15 +43,15 @@ nonisolated struct UpOnlyChartScale {
         var high = ceil(rawHigh / step) * step
         var low = floor(rawLow / step) * step
         if includesZero, rawLow >= 0 { low = 0 }
-        // A small dip below zero gets a little room, not a whole band.
-        if includesZero, rawLow < 0, abs(rawLow) < step * 0.35 { low = -step * 0.35 }
+        // A small dip below zero (an overdraft of a few cents) gets a little room, not a whole band.
+        if includesZero || rawHigh > 0, rawLow < 0, abs(rawLow) < step * 0.35 { low = -step * 0.35 }
         if high == low { high = low + step }
         if !includesZero, high - rawHigh < step * 0.1 { high += step * 0.2 }
         lower = low; upper = high
         var marks: [Double] = []
         var tick = ceil(low / step) * step
         while tick <= high + step / 2 { marks.append(tick); tick += step }
-        if includesZero, low < 0, !marks.contains(0) { marks.append(0) }
+        if includesZero || rawHigh > 0, low < 0, !marks.contains(0) { marks.append(0) }
         ticks = marks.sorted()
     }
     func fraction(_ value: Decimal) -> Double {

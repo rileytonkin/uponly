@@ -55,26 +55,9 @@ extension UpOnlyUnlockedPanel {
             if hasAssetChart || companyID != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     rangeControl
-                    if companyID != nil {
-                        Picker("Chart", selection: Binding(get: { companyChart }, set: { companyChart = $0 })) {
-                            Text("Assets").tag(CompanyChart.balance)
-                            Text("Profit / loss").tag(CompanyChart.profit)
-                        }.pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize().accessibilityLabel("Company chart")
-                    }
-                    if !showProfit, focusOptions.count > 2 {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
-                                ForEach(focusOptions, id: \.focus) { option in
-                                    Button(option.label) { companyFocus = option.focus }
-                                        .buttonStyle(.plain).font(.system(size: 11, weight: companyFocus == option.focus ? .semibold : .regular))
-                                        .padding(.horizontal, 9).padding(.vertical, 4)
-                                        .background(companyFocus == option.focus ? UpOnlyTint.netWorth.opacity(0.16) : Color.primary.opacity(0.06), in: Capsule())
-                                        .foregroundStyle(companyFocus == option.focus ? .primary : .secondary)
-                                        .accessibilityAddTraits(companyFocus == option.focus ? [.isSelected] : [])
-                                }
-                            }
-                        }
-                    }
+                    // What the chart shows, as two quiet tabs that label it. A bank is focused from its row below and
+                    // a holding opens its portfolio, so the chart needs no other switch.
+                    if companyID != nil { chartTabs.padding(.top, 2) }
                     if showProfit {
                         // The accounting figures belong with their chart, not above the assets.
                         if let book {
@@ -124,6 +107,18 @@ extension UpOnlyUnlockedPanel {
                 Label(warning, systemImage: "exclamationmark.triangle").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+    /// "Assets   Profit / loss": the chosen one in the primary colour, the other quiet.
+    var chartTabs: some View {
+        HStack(spacing: 16) {
+            ForEach([(CompanyChart.balance, "Assets"), (CompanyChart.profit, "Profit / loss")], id: \.1) { chart, title in
+                let chosen = companyChart == chart
+                Button { companyChart = chart } label: {
+                    Text(title).font(UpOnlyType.body.weight(chosen ? .semibold : .regular)).foregroundStyle(chosen ? Color.primary : Color.secondary)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }.accessibilityElement(children: .contain).accessibilityLabel("Company chart")
     }
     func companyBankRow(_ bank: BankBalanceGroup, document: VaultDocument?) -> AssetRow {
         let ids = Set(bank.components.map(\.id))
