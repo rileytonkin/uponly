@@ -789,6 +789,13 @@ nonisolated enum AssetOwnership {
     /// The month whose ownership applies to a value at `date`: its saved day's month, so today's value (at now, even
     /// when UTC is already in the next month) takes this month on the Mac.
     static func month(at date: Date, now: Date = Date()) -> MonthKey { MonthKey(day: UTCDay.day(of: date, now: now)) }
+    /// Whose something is: Personal, a company's accounting name, else the name of the bank profile its accounts come
+    /// from, else Company.
+    static func ownerName(_ owner: String?, in document: VaultDocument) -> String {
+        guard let id = owner, !id.isEmpty else { return "Personal" }
+        if let book = document.businessAccounting?.first(where: { $0.id == id }) { return book.name }
+        return document.accounts.first { businessID(for: $0, in: document) == id }.map(profileName) ?? "Company"
+    }
     /// The Wise profile's name: everything before " · currency" (and before a jar's name after that).
     static func profileName(_ account: Account) -> String {
         guard account.externalProfileID != nil, let range = account.name.range(of: " · " + account.currency) else { return account.name }

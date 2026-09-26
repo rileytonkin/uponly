@@ -639,6 +639,17 @@ enum UpOnlyFormat {
         guard let valueUSD, let price = unitPrice(quantity: quantity, valueUSD: valueUSD, metal: metal) else { return amount }
         return amount + " · " + price
     }
+    /// "Paid $4,200", or "Paid $30,000 for 0.5 of 2" when the purchases cover only part of the holding; nil without a cost.
+    static func paid(_ summary: HoldingPerformance, metal: Bool = false) -> String? {
+        var covered = ""
+        if let part = summary.coveredQuantity, let held = summary.heldQuantity {
+            let amount = { (value: Decimal) in metal ? holding(quantity: value, valueUSD: nil, symbol: "", metal: true) : compact(value) ?? coinAmount.string(from: NSDecimalNumber(decimal: value)) ?? "" }
+            covered = " for " + amount(part) + " of " + amount(held)
+        }
+        if let cost = summary.costUSD { return "Paid " + money(cost) + covered }
+        if let native = summary.costNative, let currency = summary.costCurrency { return "Paid " + currencyMoney(native, currency: currency) + " " + currency + covered }
+        return nil
+    }
     /// "Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", or nil when nothing is known.
     static func performance(_ summary: HoldingPerformance, metal: Bool = false) -> String? {
         var parts: [String] = []

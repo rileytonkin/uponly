@@ -335,7 +335,7 @@ struct UpOnlyGuidedEntry: View {
     }
     /// Whose a portfolio is: a company's name, or Personal.
     private func ownerName(_ portfolio: Portfolio) -> String {
-        portfolio.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }.flatMap { id in session.document?.businessAccounting?.first { $0.id == id }?.name } ?? "Personal"
+        session.document.map { AssetOwnership.ownerName(portfolio.ownerBusinessID, in: $0) } ?? "Personal"
     }
     /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").
     private func portfolioLabel(_ portfolio: Portfolio) -> String {

@@ -197,10 +197,15 @@ struct UpOnlyUnlockedPanel: View {
     }
     /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").
     func portfolioTitle(_ id: UUID) -> String {
-        guard let document = session.document, let portfolio = document.portfolio(id: id) else { return "Portfolio" }
+        let parts = portfolioTitleParts(id)
+        return parts.name + (parts.owner.map { " · " + $0 } ?? "")
+    }
+    /// The name and, only when another portfolio of the same kind shares it, whose it is: ("Crypto", "Northwind").
+    func portfolioTitleParts(_ id: UUID) -> (name: String, owner: String?) {
+        guard let document = session.document, let portfolio = document.portfolio(id: id) else { return ("Portfolio", nil) }
         let clash = document.portfolios.contains { !$0.isArchived && $0.id != id && $0.kind == portfolio.kind && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
-        guard clash else { return portfolio.name }
-        return portfolio.name + " · " + (portfolio.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }.map(companyName) ?? "Personal")
+        guard clash else { return (portfolio.name, nil) }
+        return (portfolio.name, portfolio.ownerBusinessID.flatMap { $0.isEmpty ? nil : $0 }.map(companyName) ?? "Personal")
     }
     /// A company's accounting name, else the name of the bank profile its accounts come from.
     func companyName(_ id: String) -> String {
@@ -313,7 +318,12 @@ struct UpOnlyUnlockedPanel: View {
                 Image(systemName: showingSwitcher ? "xmark" : "chevron.up.chevron.down").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary).frame(width: 26, height: 26)
                     .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-                Text(selectionTitle).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).truncationMode(.middle)
+                // Whose a same-named portfolio is goes beside its name, smaller, so the name itself keeps the room.
+                let title: (name: String, owner: String?) = if case .portfolio(let id) = session.dashboardSelection { portfolioTitleParts(id) } else { (selectionTitle, nil) }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                    if let owner = title.owner { Text(owner).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
+                }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")

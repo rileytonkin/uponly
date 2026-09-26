@@ -41,11 +41,18 @@ extension UpOnlyManagement {
         // One valuation per portfolio; each row reads its own value from it.
         let values = NetWorthCalculator.value(at: now, scope: .portfolio(portfolio.id), document: doc).components
         let addTitle = mode == .metals ? "Add gold or silver" : "Add a coin"
-        let owner = portfolio.ownerBusinessID?.nilIfEmpty.flatMap { id in doc.businessAccounting?.first { $0.id == id }?.name }
+        let owner = portfolio.ownerBusinessID?.nilIfEmpty.map { _ in AssetOwnership.ownerName(portfolio.ownerBusinessID, in: doc) }
+        // A portfolio named like the page ("Crypto" on Crypto), or like another one, is told apart by whose it is.
+        let pageTitle = mode == .metals ? "Metals" : "Crypto"
+        let plainName = portfolio.name.caseInsensitiveCompare(pageTitle) == .orderedSame
+            || doc.portfolios.contains { !$0.isArchived && $0.id != portfolio.id && $0.kind == portfolio.kind && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
+        let total = values.isEmpty ? nil : AssetOwnership.sum(values)
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(portfolio.name + (owner.map { " · " + $0 } ?? "")).font(UpOnlyType.section).lineLimit(1).truncationMode(.middle)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(plainName ? owner ?? "Personal" : portfolio.name).font(UpOnlyType.section).lineLimit(1)
+                if !plainName, let owner { Text(owner).font(UpOnlyType.body).foregroundStyle(.secondary).lineLimit(1) }
                 Spacer(minLength: 8)
+                if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
                 ManageRowMenu(label: "More options for " + portfolio.name) {
                     Button(addTitle + "…") { session.startImport(mode, portfolioID: portfolio.id) }
                     if holdings.count > 1 { Button(mode == .metals ? "Update all weights…" : "Update all holdings…") { session.startImport(mode, prefill: true, portfolioID: portfolio.id) } }
@@ -67,12 +74,13 @@ extension UpOnlyManagement {
             }
         }
     }
-    /// A holding: its logo, name, quantity and what's known of its cost, and its value. The row updates it.
+    /// A holding: its logo, name, quantity and what it cost on one line, and its value over its gain on what was paid.
+    /// The row updates it.
     func holdingRow(_ holding: Holding, mode: ImportMode, value: Decimal?, document doc: VaultDocument, now: Date, canMove: Bool, divided: Bool) -> some View {
         let quantity = ManageFormat.amount(doc.effectiveQuantity(holdingID: holding.id, at: now) ?? 0, of: holding, catalog: session.catalog)
-        let performance = UpOnlyFormat.performance(HoldingPerformance.summary(holdingID: holding.id, valueUSD: value, document: doc), metal: mode == .metals)
-        return UpOnlyRow(title: holding.assetName, caption: [quantity, performance].compactMap { $0 }.joined(separator: " · "), captionIsPrivate: true,
-                         value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", divided: divided,
+        let summary = HoldingPerformance.summary(holdingID: holding.id, valueUSD: value, document: doc)
+        return UpOnlyRow(title: holding.assetName, caption: [quantity, UpOnlyFormat.paid(summary, metal: mode == .metals)].compactMap { $0 }.joined(separator: " · "), captionIsPrivate: true,
+                         value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", change: summary.returnFraction, divided: divided,
                          action: { session.startImport(mode, prefill: true, holdingID: holding.id) }) {
             UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 24)
         } menu: {
