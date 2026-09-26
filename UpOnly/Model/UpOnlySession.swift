@@ -308,6 +308,9 @@ final class UpOnlySession {
         #if UPONLY_PERSONAL
         if !isFixture {
             wiseProfiles = (try? WiseConnection.load())?.profiles ?? []
+            // A live Wise check for development: Debug builds only, so no environment variable can make the owner's
+            // Release build fetch and print account counts.
+            #if DEBUG
             if ProcessInfo.processInfo.environment["UPONLY_PERSONAL_VERIFY"] == "1" {
                 Task {
                     do {
@@ -321,6 +324,7 @@ final class UpOnlySession {
                     NSApplication.shared.terminate(nil)
                 }
             }
+            #endif
         }
         #endif
         #if UPONLY_FIXTURE
