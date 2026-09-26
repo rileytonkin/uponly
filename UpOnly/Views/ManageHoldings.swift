@@ -84,7 +84,7 @@ extension UpOnlyManagement {
                 Button(mode == .metals ? "Update weight…" : "Update quantity…") { session.startImport(mode, prefill: true, holdingID: holding.id) }
                 Button("Purchases…") { editor = .purchases(holding) }
                 if canMove { Button("Move to another portfolio…") { editor = .move(holding) } }
-                Button("Show on dashboard") { showOnDashboard(.portfolio(holding.portfolioID)) }
+                Button("Show on dashboard") { showOnDashboard(.holding(holding.id)) }
             }
         }
     }

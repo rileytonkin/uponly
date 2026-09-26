@@ -188,6 +188,7 @@ struct UpOnlyUnlockedPanel: View {
         case .all: return "All assets"
         case .cashFlow: return "Income & spending"
         case .portfolio(let id): return session.document?.portfolio(id: id)?.name ?? "Portfolio"
+        case .holding(let id): return session.document?.holdings.first { $0.id == id }?.assetName ?? "Holding"
         case .bankGroup(let id): return id == "personal" ? "Bank balances" : companyName(id)
         }
     }
@@ -202,6 +203,7 @@ struct UpOnlyUnlockedPanel: View {
         case .all: "All assets"
         case .cashFlow: "Income & spending"
         case .portfolio(let id): portfolioTitle(id)
+        case .holding(let id): session.document?.holdings.first { $0.id == id }?.assetName ?? "Holding"
         case .bankGroup(let id): id == "personal" ? "Bank balances" : companyName(id)
         }
     }
@@ -263,7 +265,7 @@ struct UpOnlyUnlockedPanel: View {
         // The banner only shows on the overview and cash flow, so it is only worked out there. The overview asks for a
         // missing balance, quantity, price or rate itself, right under the total, so the banner leaves those to it.
         let onWorth = hasData && !(session.destination == 0 && shows(.cashFlow)) && showsNetWorth
-        let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil ? attentionItems(valueFixes: !onWorth) : []
+        let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil && selectedHolding == nil ? attentionItems(valueFixes: !onWorth) : []
         // The title row is pinned over the page as the scroll's top bar, so the page passes beneath it under the
         // system's soft blur, as on Manage.
         let header = navigationHeader.padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 16)
@@ -274,6 +276,7 @@ struct UpOnlyUnlockedPanel: View {
             else {
                 if !attention.isEmpty { attentionBanner(attention).padding(.bottom, 16) }
                 if let group { companyContent(group) }
+                else if let holding = selectedHolding { holdingContent(holding) }
                 else if !hasData, shows(.cashFlow) || showsNetWorth { addFirstData }
                 else if session.destination == 0 && shows(.cashFlow) { monthContent }
                 else if showsNetWorth { worthContent }
@@ -340,7 +343,9 @@ struct UpOnlyUnlockedPanel: View {
     var switcherTitle: some View {
         Button { showingSwitcher.toggle() } label: {
             // Whose a same-named portfolio is sits under its name, as a window's subtitle does, so the name keeps the room.
-            let title: (name: String, owner: String?) = if case .portfolio(let id) = session.dashboardSelection { portfolioTitleParts(id) } else { (selectionTitle, nil) }
+            // A holding's page says which portfolio it's in the same way.
+            let title: (name: String, owner: String?) = if case .portfolio(let id) = session.dashboardSelection { portfolioTitleParts(id) }
+                else if let holding = selectedHolding { (holding.assetName, portfolioTitle(holding.portfolioID)) } else { (selectionTitle, nil) }
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
@@ -393,7 +398,11 @@ struct UpOnlyUnlockedPanel: View {
         let portfolio = selectedPortfolio
         let onBanks = selectedGroupID != nil
         return Button {
-            if let portfolio { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id)) }
+            if let holding = selectedHolding {
+                // On a holding's page, + updates how much of it you hold.
+                showImport(session.startImport(PreciousMetal.asset(holding.assetID) != nil ? .metals : .holdings, prefill: true, portfolioID: holding.portfolioID, holdingID: holding.id))
+            }
+            else if let portfolio { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id)) }
             else if onBanks { showImport(session.startImport(.bankBalances)) }
             else { session.addingInMenu = true }
         } label: {
@@ -409,6 +418,17 @@ struct UpOnlyUnlockedPanel: View {
             if let portfolio = selectedPortfolio {
                 Button { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, prefill: true, portfolioID: portfolio.id)) } label: {
                     Label(portfolio.kind == .metals ? "Update weights" : "Update holdings", systemImage: "square.and.pencil")
+                }
+                Divider()
+            }
+            if let holding = selectedHolding {
+                let metal = PreciousMetal.asset(holding.assetID) != nil
+                Button { showImport(session.startImport(metal ? .metals : .holdings, prefill: true, portfolioID: holding.portfolioID, holdingID: holding.id)) } label: {
+                    Label(metal ? "Update weight" : "Update quantity", systemImage: "square.and.pencil")
+                }
+                Button { openHoldingEditor(.purchases(holding.id)) } label: { Label("Purchases", systemImage: "cart") }
+                if (session.document?.portfolios.filter { !$0.isArchived && $0.kind == (metal ? .metals : .crypto) }.count ?? 0) > 1 {
+                    Button { openHoldingEditor(.move(holding.id)) } label: { Label("Move to another portfolio", systemImage: "arrow.left.arrow.right") }
                 }
                 Divider()
             }

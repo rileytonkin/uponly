@@ -99,7 +99,7 @@ extension UpOnlyUnlockedPanel {
             if !portfolios.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(Set(portfolios.map(\.kind)).count > 1 ? "Crypto & metals" : portfolios[0].kind == .metals ? "Metals" : "Crypto").font(UpOnlyType.section)
-                    // Every holding on its own row, biggest first, as a portfolio page lists them; each opens its portfolio.
+                    // Every holding on its own row, biggest first, as a portfolio page lists them; each opens its own page.
                     assetList(holdingValues.sorted { ($0.usdValue?.value ?? 0) > ($1.usdValue?.value ?? 0) }.compactMap { part -> AssetRow? in
                         guard let holding = document?.holdings.first(where: { $0.id == part.id }), let portfolio = portfolios.first(where: { $0.id == holding.portfolioID }) else { return nil }
                         let metal = portfolio.kind == .metals
@@ -108,7 +108,7 @@ extension UpOnlyUnlockedPanel {
                                         value: part.usdValue.map { UpOnlyFormat.exactMoney($0.value) } ?? "Price needed",
                                         logo: holding.assetID.rawValue, symbol: metal ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                         tint: metal ? UpOnlyTint.metals : UpOnlyTint.crypto) {
-                            select(.portfolio(portfolio.id), .drill)
+                            select(.holding(holding.id), .drill)
                         }
                     })
                 }

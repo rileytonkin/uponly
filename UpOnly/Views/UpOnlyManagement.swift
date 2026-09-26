@@ -182,6 +182,7 @@ struct UpOnlyManagement: View {
             importBaseline = session.importDraft?.rows.map(\.content) ?? []
             if origin == "Entries" { entryMonth = session.entryMonthForManagement }
             if session.requestedRateCurrency != nil { editor = .exchangeRate; editorReturnsHome = true }
+            if openRequestedHoldingEditor() { editorReturnsHome = true }
             #if UPONLY_FIXTURE
             // Opens one of the smaller editors directly, for checking its layout.
             if let doc = session.document, let crypto = doc.holdings.first(where: { PreciousMetal.asset($0.assetID) == nil }) {
@@ -209,6 +210,7 @@ struct UpOnlyManagement: View {
         // Esc is Back here, a step at a time.
         .onChange(of: session.backRequests) { if session.managementInMenu { back() } }
         .onChange(of: session.requestedRateCurrency) { _, currency in if currency != nil { editor = .exchangeRate } }
+        .onChange(of: session.requestedHoldingEditor) { _, request in if request != nil, openRequestedHoldingEditor() { editorReturnsHome = true } }
     }
     /// Needs attention's report and the closed months still to check, oldest first.
     var attention: (report: DataAttention, months: [MonthKey])? {
@@ -286,11 +288,22 @@ struct UpOnlyManagement: View {
         if Self.manageGroups.contains(section) || section == "Needs attention" || section == origin { leaveManage() }
         else { session.managementSection = returnToReview ? "Needs attention" : "Manage" }
     }
+    /// A holding's purchases, or moving it, asked for from its dashboard page. Closing the form goes back there.
+    func openRequestedHoldingEditor() -> Bool {
+        guard let request = session.requestedHoldingEditor else { return false }
+        let id: UUID = switch request { case .purchases(let id), .move(let id): id }
+        guard let holding = session.document?.holdings.first(where: { $0.id == id }) else { session.requestedHoldingEditor = nil; return false }
+        switch request {
+        case .purchases: editor = .purchases(holding)
+        case .move: editor = .move(holding)
+        }
+        return true
+    }
     func leaveManage() {
         session.entryMonthForManagement = ""; session.message = nil; session.managementInMenu = false
     }
     func finishEditing() {
-        editor = nil; session.requestedRateCurrency = nil
+        editor = nil; session.requestedRateCurrency = nil; session.requestedHoldingEditor = nil
         if editorReturnsHome { editorReturnsHome = false; leaveManage() }
     }
     /// Manage's first page, in the home list's style: what you've recorded in one card, how it's kept in another,

@@ -121,6 +121,30 @@ struct UpOnlySegments<Value: Hashable>: View {
     }
 }
 
+/// A figure in its own tile, as market apps lay out a holding's numbers: a quiet title, the figure large, and an
+/// optional line under it (a move, a note). Tiles sit two to a row.
+struct UpOnlyStatTile: View {
+    var title: String
+    var value: String
+    var isPrivate = false
+    var detail: String? = nil
+    var detailTint: Color? = nil
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+            Group { if isPrivate { UpOnlyPrivateText(value) } else { Text(value) } }
+                .font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
+                .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: value)
+            if let detail {
+                Text(detail).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(detailTint ?? .secondary).lineLimit(1)
+            }
+        }.padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityElement(children: .combine)
+    }
+}
+
 /// A change as an outlined pill, "↑ 21.0%", green up and red down, as on the admin dashboard.
 struct UpOnlyChangeBadge: View {
     var fraction: Decimal

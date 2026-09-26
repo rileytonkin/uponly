@@ -254,11 +254,11 @@ extension UpOnlyUnlockedPanel {
                         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().frame(width: 96, alignment: .trailing)
                         .accessibilityLabel("Sort holdings").accessibilityValue(effectiveHoldingSort.title)
                 }.font(UpOnlyType.caption).foregroundStyle(.secondary).padding(.bottom, 2)
-                // Clicking a holding updates it; updating them all is in the … menu.
+                // Clicking a holding opens its own page; updating them all is in the … menu.
                 ForEach(lines) { line in
-                    Button { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, prefill: true, portfolioID: portfolio.id, holdingID: line.id)) } label: {
+                    Button { select(.holding(line.id), .drill) } label: {
                         holdingRow(line)
-                    }.buttonStyle(UpOnlyRowButtonStyle()).accessibilityHint("Update " + line.ticker)
+                    }.buttonStyle(UpOnlyRowButtonStyle()).accessibilityHint("Open " + line.name)
                 }
             }
         }
