@@ -78,7 +78,7 @@ extension UpOnlyUnlockedPanel {
             if let valuation, valuation.missing.contains(where: { $0.reason == "ownership" }) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(ownershipMessage(valuation, at: snapshot.interval.end)).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("Open Accounts") { manage("Accounts") }.buttonStyle(.glass).controlSize(.small)
+                    Button("Open Accounts") { manage("Accounts") }.buttonStyle(.upOnlySecondary).controlSize(.small)
                 }.padding(.top, 12)
             }
             if let valuation, valuation.missing.contains(where: { $0.reason == "fx" }) {
@@ -92,7 +92,7 @@ extension UpOnlyUnlockedPanel {
                         Text("Prices needed").font(UpOnlyType.section)
                         Text("No price yet for " + unpriced.map(\.label).joined(separator: ", ") + ". Check that Crypto prices are on in Settings.").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Button("Set up prices") { manage("Sources") }
-                            .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.regular)
+                            .buttonStyle(.upOnlyPrimary).controlSize(.regular)
                     }
                     ForEach(valuation.components.filter { $0.missing != nil && $0.missing != "fx" && $0.missing != "quote" }, id: \.id) { component in
                         VStack(alignment: .leading, spacing: 6) {
@@ -102,20 +102,20 @@ extension UpOnlyUnlockedPanel {
                             Button(component.missing == "balance" ? "Add balance" : "Review amount") {
                                 if component.missing == "balance" { showImport(session.startImport(.bankBalances, prefill: true, accountID: component.id)) }
                                 else { manage("Accounts") }
-                            }.buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.small)
+                            }.buttonStyle(.upOnlyPrimary).controlSize(.small)
                         }
                     }
                 }.padding(.top, 16)
             }
             if snapshot.hasHistory {
-                VStack(alignment: .leading, spacing: 10) {
-                    rangeControl
+                VStack(alignment: .leading, spacing: 12) {
                     if snapshot.points.contains(where: { $0.value != nil }) {
                         UpOnlyChart(points: snapshot.points, tint: trendTint(snapshot.points), plotHeight: chartPlotHeight, bridgesGaps: true)
                     } else {
                         Text("No saved values" + worthRange.within + ".").font(UpOnlyType.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    rangeControl
                 }.padding(.top, 18)
             }
             if let portfolio {
@@ -268,7 +268,7 @@ extension UpOnlyUnlockedPanel {
     func holdingRow(_ line: HoldingLine) -> some View {
         HStack(alignment: .center, spacing: 8) {
             HStack(spacing: 10) {
-                UpOnlyAssetBadge(assetID: line.assetID, symbol: line.ticker, size: 28)
+                UpOnlyAssetBadge(assetID: line.assetID, symbol: line.ticker, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(line.ticker).font(UpOnlyType.row.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                     if let quantity = line.quantity {
@@ -318,7 +318,7 @@ extension UpOnlyUnlockedPanel {
             Button(selectedPortfolio?.kind == .metals ? "Add gold or silver" : selectedPortfolio != nil ? "Add a coin" : "Add") {
                 if let portfolio = selectedPortfolio { showImport(session.startImport(portfolio.kind == .metals ? .metals : .holdings, portfolioID: portfolio.id)) }
                 else { session.addingInMenu = true }
-            }.buttonStyle(.glassProminent)
+            }.buttonStyle(.upOnlyPrimary)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(14).modifier(UpOnlyContentSurface())
     }
 }

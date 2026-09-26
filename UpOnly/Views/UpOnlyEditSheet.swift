@@ -67,7 +67,7 @@ struct UpOnlyEditSheet: View {
                 Spacer(minLength: 0)
                 Button { Task { await save() } } label: {
                     Text(saving ? "Saving…" : actionTitle).frame(maxWidth: .infinity).frame(minHeight: 24)
-                }.buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(.defaultAction).disabled(saving)
+                }.buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(.defaultAction).disabled(saving)
             }
         }.frame(minHeight: fillHeight, alignment: .top)
         .onAppear {
@@ -244,7 +244,7 @@ struct UpOnlyEditSheet: View {
                         UpOnlyRow(title: lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)),
                                   caption: ManageFormat.amount(lot.quantity.value, of: holding, catalog: session.catalog), captionIsPrivate: true,
                                   value: UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency)) {
-                            UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 28)
+                            UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 32)
                         } menu: {
                             ManageRowMenu(label: "Options for this purchase") { Button("Remove purchase…", role: .destructive) { lotToRemove = lot } }
                         }

@@ -17,22 +17,22 @@ struct UpOnlyAmount: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text(parts.sign + "$").fixedSize(horizontal: false, vertical: true)
-                        .font(.system(size: 24, weight: .medium))
+                        .font(.system(size: 24, weight: .bold))
                     Text(parts.whole).fixedSize(horizontal: false, vertical: true)
-                        .font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3)
+                        .font(.system(size: 40, weight: .bold).monospacedDigit()).tracking(-1.3)
                     if !parts.fraction.isEmpty {
-                        Text(parts.fraction).font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
+                        Text(parts.fraction).font(.system(size: 40, weight: .bold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
                     }
                 }.fixedSize()
                     // The digits roll to a new figure as prices update or the page changes, as the system's do.
                     .contentTransition(.numericText(value: NSDecimalNumber(decimal: shown).doubleValue))
                     .animation(.snappy(duration: 0.4), value: shown)
-                Text(parts.sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .semibold).monospacedDigit())
+                Text(parts.sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .bold).monospacedDigit())
             }.foregroundStyle(tint)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(session.privacyMode ? "Hidden value" : parts.sign + "$" + parts.whole + parts.fraction)
         } else {
-            Text("••••").font(.system(size: 40, weight: .semibold)).foregroundStyle(.primary)
+            Text("••••").font(.system(size: 40, weight: .bold)).foregroundStyle(.primary)
                 .accessibilityLabel("Hidden value")
         }
     }
@@ -110,7 +110,7 @@ struct UpOnlySegments<Value: Hashable>: View {
                     Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
                         .foregroundStyle(chosen ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity, minHeight: 26)
-                        .background { if chosen { Capsule().fill(Color.primary.opacity(0.08)).matchedGeometryEffect(id: "pill", in: pill) } }
+                        .background { if chosen { Capsule().fill(Color.white.opacity(0.12)).matchedGeometryEffect(id: "pill", in: pill) } }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain)
                     .accessibilityLabel(option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
@@ -391,7 +391,7 @@ struct UpOnlyBankBadge: View {
     var body: some View {
         if let logo = BankLogos.logo(for: name, synced: synced), let picture = NSImage(named: "BankLogos/" + logo) {
             Image(nsImage: picture).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
-                .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
+                .frame(width: size, height: size).clipShape(Circle())
                 .accessibilityHidden(true)
         } else if let image { UpOnlyProfileImage(data: image, name: name, size: size) }
         else { UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: size) }
@@ -460,7 +460,7 @@ struct UpOnlyRowButtonStyle: ButtonStyle {
             configuration.label.background {
                 // Inset inside the card: clear of its edges and of the lines between rows.
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? UpOnlyTint.netWorth.opacity(0.1) : hovering && isEnabled ? Color.primary.opacity(0.05) : .clear)
+                    .fill(configuration.isPressed ? Color.primary.opacity(0.08) : selected ? UpOnlyTint.brand.opacity(0.14) : hovering && isEnabled ? Color.primary.opacity(0.05) : .clear)
                     .padding(.horizontal, -7).padding(.vertical, 3)
             }.onHover { hovering = $0 }
         }
@@ -495,18 +495,21 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                     HStack(spacing: 10) {
                         badge()
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(title).font(UpOnlyType.row.weight(.medium)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                            Text(title).font(UpOnlyType.row.weight(.semibold)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
                             if let caption {
                                 Group { if captionIsPrivate { UpOnlyPrivateText(caption) } else { Text(caption) } }
                                     .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             }
-                        }.frame(minWidth: 96, alignment: .leading)  // a huge amount shrinks before the name disappears
+                        }.frame(minWidth: 108, alignment: .leading)  // a huge amount shrinks before the name disappears
                         Spacer(minLength: 8)
                         if let value {
                             // Value over its change, as in Delta, so the name keeps the width.
                             VStack(alignment: .trailing, spacing: 1) {
                                 // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
-                                UpOnlyPrivateText(value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1)
+                                // A figure is bold; words in its place ("Balance needed", "Not reported") stay quiet.
+                                let figure = value.contains(where: \.isNumber)
+                                UpOnlyPrivateText(value).font(figure ? UpOnlyType.row.weight(.semibold).monospacedDigit() : UpOnlyType.body)
+                                    .foregroundStyle(figure ? .primary : .secondary).lineLimit(1)
                                     .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: value)
                                     .minimumScaleFactor(value.count > 13 ? 0.7 : 1)
                                 // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
@@ -520,7 +523,7 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                         }
                         if chevron { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
                     // Every row is at least two lines tall, so one with a second line doesn't stand out from the rest.
-                    }.frame(minHeight: 30).padding(.vertical, 8).contentShape(Rectangle())
+                    }.frame(minHeight: 32).padding(.vertical, 9).contentShape(Rectangle())
                 }.buttonStyle(UpOnlyRowButtonStyle(selected: selected)).disabled(action == nil)
                     .contextMenu { ForEach(Array(options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
                     .accessibilityLabel(title).accessibilityValue(spokenValue)

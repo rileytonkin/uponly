@@ -1186,9 +1186,6 @@ final class UpOnlySession {
         do {
             let preview = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_DESTINATION"] ?? ""
             let longText = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_LONG_TEXT"] == "1"
-            if let dark = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_DARK"] {
-                NSApplication.shared.appearance = NSAppearance(named: dark == "1" ? .darkAqua : .aqua)
-            }
             #if UPONLY_PERSONAL
             wiseProfiles = [WiseConfiguredProfile(id: 1, name: "Personal", bucket: .personal), WiseConfiguredProfile(id: 2, name: longText ? "Business operations" : "Business", bucket: .otherBusiness), WiseConfiguredProfile(id: 3, name: "Studio", bucket: .otherBusiness)]
             #endif
@@ -1373,7 +1370,7 @@ final class UpOnlySession {
             let window = UpOnlyFixtureWindow(contentRect: NSRect(x: offscreen ? -5000 : 120, y: offscreen ? -5000 : 120, width: 344, height: 560), styleMask: [.borderless], backing: .buffered, defer: false)
             window.title = "Up Only Preview"
             window.isReleasedWhenClosed = false
-            window.appearance = NSAppearance(named: ProcessInfo.processInfo.environment["UPONLY_PREVIEW_DARK"] == "1" ? .darkAqua : .aqua)
+            window.appearance = NSAppearance(named: .darkAqua)
             if preview == "calendar" { window.contentView = NSHostingView(rootView: UpOnlyDateCalendar(date: .constant(Date()), done: {})) }
             else { window.contentView = NSHostingView(rootView: UpOnlyPanel().environment(self)) }
             previewWindow = window

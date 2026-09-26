@@ -57,7 +57,7 @@ extension UpOnlyManagement {
                         }
                     }
                 }
-                if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.glass) }
+                if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.upOnlySecondary) }
             }
         }
     }

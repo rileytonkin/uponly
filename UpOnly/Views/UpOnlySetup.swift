@@ -12,19 +12,21 @@ enum UpOnlyLayout {
 /// Type roles shared by every page, so the same kind of text looks the same everywhere.
 enum UpOnlyType {
     /// The dashboard's title, beside the switcher box ("All assets", a portfolio's name).
-    static let pageTitle = Font.system(size: 20, weight: .semibold)
+    static let pageTitle = Font.system(size: 20, weight: .bold)
+    /// A page's centred title, between its round Back and its actions ("Settings", "Add").
+    static let barTitle = Font.system(size: 17, weight: .semibold)
     /// Page and empty-state titles ("Which account?", "Nothing here yet").
-    static let title = Font.system(size: 18, weight: .semibold)
+    static let title = Font.system(size: 18, weight: .bold)
     /// A page's own groups, above the sections inside them ("Accounts", "Crypto" on Manage).
-    static let group = Font.system(size: 15, weight: .semibold)
+    static let group = Font.system(size: 16, weight: .semibold)
     /// Section headings inside a page or card ("Holdings", "Bank accounts", "Transactions").
-    static let section = Font.system(size: 13, weight: .semibold)
+    static let section = Font.system(size: 15, weight: .semibold)
     /// Row names and row amounts.
-    static let row = Font.system(size: 13)
+    static let row = Font.system(size: 14)
     /// Explanations under a title or card.
-    static let body = Font.system(size: 12)
+    static let body = Font.system(size: 13)
     /// Captions, eyebrows and secondary row lines.
-    static let caption = Font.system(size: 11)
+    static let caption = Font.system(size: 12)
 }
 /// The round glass button every header uses: Back, +, and the eye and "…" beside them.
 struct UpOnlyCircleButton: View {
@@ -48,17 +50,20 @@ struct UpOnlyPageHeader: View {
     let back: () -> Void
     var subtitle: String?
     var trailing: AnyView?
-    /// The same header as the dashboard's: a round glass button to go back (or ✕ to cancel an editor) and the page's
-    /// title beside it at the dashboard's title size, with the page's own actions on the right.
+    /// A round glass button to go back (or ✕ to cancel an editor) on the left, the page's own actions on the right,
+    /// and the title centred between them, as market apps title a page. Both sides keep the same width, so the title
+    /// stays centred when there's one action or none.
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             UpOnlyCircleButton(symbol: backTitle == "Cancel" ? "xmark" : backTitle == "Done" ? "checkmark" : "chevron.left", label: backLabel, action: back)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(UpOnlyType.pageTitle).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
-                if let subtitle { Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-            }
-            Spacer(minLength: 8)
-            if let trailing { trailing }
+                .frame(width: 72, alignment: .leading)
+            VStack(spacing: 1) {
+                Text(title).font(UpOnlyType.barTitle).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle).minimumScaleFactor(0.85)
+                if let subtitle {
+                    Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                }
+            }.frame(maxWidth: .infinity)
+            HStack(spacing: 8) { if let trailing { trailing } }.frame(minWidth: 72, alignment: .trailing)
         }.controlSize(.regular).frame(minHeight: 32)
     }
 }
@@ -78,7 +83,7 @@ struct UpOnlyConfirmation: View {
                 Spacer(minLength: 0)
                 Button(confirmTitle, role: .destructive, action: confirm)
                     .accessibilityIdentifier("ConfirmDestructiveAction")
-            }.buttonStyle(.glass).controlSize(.regular)
+            }.buttonStyle(.upOnlySecondary).controlSize(.regular)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -86,10 +91,49 @@ struct UpOnlyConfirmation: View {
 /// Every card and tile: a soft filled shape with no outline or lines inside, so rows are grouped by the card and
 /// spaced apart rather than ruled off. The fill shows on the light and the dark panel alike.
 struct UpOnlyContentSurface: ViewModifier {
-    static let fill = Color.primary.opacity(0.05)
+    static let fill = Color.white.opacity(0.07)
     func body(content: Content) -> some View {
         content.background(Self.fill, in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius, style: .continuous))
     }
+}
+/// Every page's background: near-black, with Up Only's green glowing softly down from the top edge.
+struct UpOnlyBackdrop: View {
+    static let base = Color(red: 0.035, green: 0.035, blue: 0.04)
+    var body: some View {
+        ZStack {
+            Self.base
+            EllipticalGradient(colors: [UpOnlyTint.brand.opacity(0.32), UpOnlyTint.brand.opacity(0.1), .clear],
+                               center: UnitPoint(x: 0.5, y: -0.08), startRadiusFraction: 0, endRadiusFraction: 0.62)
+                .frame(height: 300).frame(maxHeight: .infinity, alignment: .top)
+        }.ignoresSafeArea().allowsHitTesting(false)
+    }
+}
+/// The app's two buttons, as market apps draw them: a white pill for the page's main action and a dark one beside it.
+/// Sized by the control size: small for inline actions, large for the full-width button at the foot of a form.
+struct UpOnlyPillButtonStyle: ButtonStyle {
+    var prominent: Bool
+    func makeBody(configuration: Configuration) -> some View { Pill(configuration: configuration, prominent: prominent) }
+    // A view of its own, so it reads whether the button is enabled and its control size where the button is.
+    private struct Pill: View {
+        let configuration: ButtonStyleConfiguration
+        let prominent: Bool
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.controlSize) private var controlSize
+        var body: some View {
+            let small = controlSize == .small || controlSize == .mini, large = controlSize == .large || controlSize == .extraLarge
+            configuration.label
+                .font(.system(size: small ? 12 : large ? 14 : 13, weight: .semibold)).lineLimit(1)
+                .foregroundStyle(prominent ? (isEnabled ? Color.black : Color.white.opacity(0.35)) : Color.white.opacity(isEnabled ? 1 : 0.35))
+                .padding(.horizontal, small ? 12 : large ? 20 : 16).frame(minHeight: small ? 26 : large ? 40 : 32)
+                .background(Capsule().fill(prominent ? (isEnabled ? Color.white : Color.white.opacity(0.12)) : Color.white.opacity(0.1)))
+                .opacity(configuration.isPressed ? 0.75 : 1)
+                .contentShape(Capsule())
+        }
+    }
+}
+extension ButtonStyle where Self == UpOnlyPillButtonStyle {
+    static var upOnlyPrimary: UpOnlyPillButtonStyle { UpOnlyPillButtonStyle(prominent: true) }
+    static var upOnlySecondary: UpOnlyPillButtonStyle { UpOnlyPillButtonStyle(prominent: false) }
 }
 /// One look for problems on every page: a warning asks for a fix; an error says something failed.
 struct UpOnlyNotice: View {
@@ -141,7 +185,7 @@ struct UpOnlySymbolBadge: View {
     var body: some View {
         Image(systemName: symbol).font(.system(size: size * 0.48, weight: .medium))
             .foregroundStyle(tint).frame(width: size, height: size)
-            .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: size * 0.28))
+            .background(tint.opacity(0.16), in: Circle())
             .accessibilityHidden(true)
     }
 }
@@ -214,7 +258,7 @@ struct UpOnlySetup: View {
             UpOnlySetupHeader(step: 2, symbol: "arrow.triangle.2.circlepath", title: "Keep values current",
                               subtitle: "Up Only can fetch reference exchange rates and gold and silver prices while it runs. Your balances never leave this Mac.")
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 28)
+                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Automatic prices and exchange rates").font(UpOnlyType.row.weight(.medium))
                     Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(UpOnlyType.caption).foregroundStyle(.secondary)
@@ -228,15 +272,15 @@ struct UpOnlySetup: View {
             VStack(spacing: 9) {
                 Button { Task { await finish(addData: true) } } label: {
                     Text("Add your first balance").frame(maxWidth: .infinity)
-                }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+                }.buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(.defaultAction)
                 Button { Task { await finish(addData: false) } } label: {
                     Text("Skip for now").frame(maxWidth: .infinity)
-                }.buttonStyle(.glass).controlSize(.large)
+                }.buttonStyle(.upOnlySecondary).controlSize(.large)
             }.disabled(saving || session.isBusy)
             if let error { UpOnlyNotice(error, style: .error) }
             if let message = session.setupProgressMessage {
                 UpOnlyNotice(message)
-                Button("Save progress again") { session.checkpointSetup(progress) }.buttonStyle(.glass).controlSize(.small)
+                Button("Save progress again") { session.checkpointSetup(progress) }.buttonStyle(.upOnlySecondary).controlSize(.small)
             }
             if saving { ProgressView().controlSize(.small) }
         }.padding(UpOnlyLayout.inset).frame(maxWidth: 380).fixedSize(horizontal: false, vertical: true)
@@ -334,7 +378,7 @@ struct UpOnlySourceRow: View {
         let status = self.status
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 28)
+                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(UpOnlyType.row.weight(.medium)).lineLimit(1)
                     HStack(spacing: 5) {
@@ -421,7 +465,7 @@ struct UpOnlySources: View {
                         Image(systemName: "arrow.clockwise").symbolEffect(.rotate, options: .repeat(.continuous), isActive: session.refreshing)
                     }.frame(maxWidth: .infinity)
                 }
-                    .buttonStyle(.glass).controlSize(.large).disabled(session.isBusy || session.refreshing)
+                    .buttonStyle(.upOnlySecondary).controlSize(.large).disabled(session.isBusy || session.refreshing)
             }
             if let failure { UpOnlyNotice(failure, style: .error) }
             else if let status = message ?? session.sourceMessage {
@@ -475,6 +519,6 @@ struct UpOnlyProfileImage: View {
         Group {
             if let data, let image = NSImage(data: data) { Image(nsImage: image).resizable().scaledToFill() }
             else { Text(String(name.split(separator: " ").prefix(2).compactMap(\.first))).fixedSize(horizontal: false, vertical: true).font(.system(size: size * 0.36, weight: .semibold)).foregroundStyle(UpOnlyTint.netWorth).frame(maxWidth: .infinity, maxHeight: .infinity).background(UpOnlyTint.netWorth.opacity(0.12)) }
-        }.frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.3)).accessibilityHidden(true)
+        }.frame(width: size, height: size).clipShape(Circle()).accessibilityHidden(true)
     }
 }

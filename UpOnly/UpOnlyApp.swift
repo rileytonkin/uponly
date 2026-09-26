@@ -19,6 +19,8 @@ import Observation
         let app = NSApplication.shared
         let delegate = UpOnlyApplicationDelegate()
         app.setActivationPolicy(.accessory)
+        // Always dark, as market apps are: black pages, dark cards and the green glow.
+        app.appearance = NSAppearance(named: .darkAqua)
         app.delegate = delegate
         delegate.startMenu()
         withExtendedLifetime(delegate) { app.run() }
@@ -102,9 +104,7 @@ import Observation
         host.view.layoutSubtreeIfNeeded()
         let size = host.preferredContentSize
         if size.width > 0, size.height > 0 { popover.contentSize = size }
-        #if UPONLY_FIXTURE
-        popover.appearance = NSApp.appearance
-        #endif
+        popover.appearance = NSAppearance(named: .darkAqua)
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         host.view.window?.makeKey()

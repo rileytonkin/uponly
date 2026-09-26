@@ -80,7 +80,7 @@ struct UpOnlyGuidedEntry: View {
             if unchanged {
                 Text(mode == .bankBalances ? "This balance is already saved." : "This quantity is already saved.")
                     .font(UpOnlyType.body).foregroundStyle(.secondary)
-                Button("Done", action: back).buttonStyle(.glass)
+                Button("Done", action: back).buttonStyle(.upOnlySecondary)
             }
             if let error { Label(error, systemImage: "exclamationmark.circle").font(UpOnlyType.body).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             if working { HStack(spacing: 8) { ProgressView().controlSize(.small); Text(step == 2 ? "Saving…" : "Checking…").font(UpOnlyType.body).foregroundStyle(.secondary) } }
@@ -148,7 +148,7 @@ struct UpOnlyGuidedEntry: View {
                                   value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: item.currency) }, chevron: true, action: {
                             row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
                         }) {
-                            UpOnlyBankBadge(name: item.name, size: 28)
+                            UpOnlyBankBadge(name: item.name, size: 32)
                         }
                     }
                     UpOnlyRow(title: "New account", caption: "Name it and pick its currency", chevron: true, action: {
@@ -162,7 +162,7 @@ struct UpOnlyGuidedEntry: View {
                 ForEach(Array(PreciousMetal.selectable.enumerated()), id: \.element) { index, metal in
                     UpOnlyRow(title: metal.name, caption: metal.rawValue, chevron: true, action: {
                         row.holding.coin = metal.rawValue; row.holding.assetName = metal.name; chose()
-                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
+                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 32) }
                 }
             }
         } else if exactCoin {
@@ -187,7 +187,7 @@ struct UpOnlyGuidedEntry: View {
                     UpOnlyRow(title: coin.name, caption: coin.symbol.uppercased(), chevron: true, action: {
                         row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; chose()
                     }) {
-                        UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
+                        UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 32)
                     }
                     .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
                 }
@@ -200,7 +200,7 @@ struct UpOnlyGuidedEntry: View {
             }
         }
     }
-    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
+    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32) }
     /// A new account: its bank's logo appears as the name is typed; the currency and owner are choices below it.
     private var newAccountForm: some View {
         VStack(spacing: 16) {
@@ -212,7 +212,7 @@ struct UpOnlyGuidedEntry: View {
                 // Banks matching what's typed, each with its logo; picking one fills in its name and usual currency.
                 ForEach(nameSuggestions) { bank in
                     UpOnlyRow(title: bank.name, caption: bank.caption, action: { choose(bank) }) {
-                        UpOnlyBankBadge(name: bank.name, size: 28)
+                        UpOnlyBankBadge(name: bank.name, size: 32)
                     }
                     .accessibilityIdentifier("BankSuggestion-" + bank.id)
                 }
@@ -275,7 +275,7 @@ struct UpOnlyGuidedEntry: View {
                     // Bought in several goes: each buy with its day, costs filled in.
                     ManageCard {
                         UpOnlyRow(title: "Several buys", caption: "Each with its date; costs fill in from that day's price", chevron: true, action: startBuys) {
-                            UpOnlySymbolBadge(symbol: "list.bullet", tint: mode == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 28)
+                            UpOnlySymbolBadge(symbol: "list.bullet", tint: mode == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 32)
                         }
                     }
                 }
@@ -325,7 +325,7 @@ struct UpOnlyGuidedEntry: View {
         }
     }
     @ViewBuilder private var portfolioBadge: some View {
-        if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 28) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 28) }
+        if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 32) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 32) }
     }
     /// "Northwind · 3 holdings": whose it is, when a company's, and what's in it.
     private func portfolioCaption(_ portfolio: Portfolio) -> String {
@@ -747,7 +747,7 @@ struct UpOnlyGuidedEntry: View {
     }
     private func primary(_ title: String, shortcut: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).frame(height: 28) }
-            .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(shortcut ? KeyboardShortcut.defaultAction : nil)
+            .buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(shortcut ? KeyboardShortcut.defaultAction : nil)
     }
     /// One step back: from review to the amount, from the amount to the choice, and out when nothing would be lost.
     private func goBack() {

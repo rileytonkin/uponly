@@ -40,7 +40,7 @@ struct UpOnlyImportView: View {
         VStack(alignment: .leading, spacing: 16) {
             if let batch = session.importDraft {
                 if usesSummary(batch) {
-                    Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.glass)
+                    Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.upOnlySecondary)
                 } else if !isBalanceUpdate(batch) { batchHeader(batch) }
                 if let message = session.importMessage { Text(message).fixedSize(horizontal: false, vertical: true).font(.callout).foregroundStyle(.secondary) }
                 if session.importLoading {
@@ -116,7 +116,7 @@ struct UpOnlyImportView: View {
                     ManageCard {
                         ForEach(Array(orderedModes.filter { $0 != .statements }.enumerated()), id: \.element) { index, mode in
                             UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), chevron: true, action: { openMode(mode, bulk: true) }) {
-                                UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 28)
+                                UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 32)
                             }
                         }
                     }
@@ -129,7 +129,7 @@ struct UpOnlyImportView: View {
                             ForEach(Array(tracked.enumerated()), id: \.element) { index, mode in
                                 UpOnlyRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All metals",
                                           caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table", chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
-                                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 28)
+                                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 32)
                                 }
                             }
                         }
@@ -138,7 +138,7 @@ struct UpOnlyImportView: View {
             }
             if let batch = session.importDraft, batch.mode != .statements || !batch.rows.isEmpty || busy { importFooter(batch) }
         }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
-        }.background(Color(nsColor: .windowBackgroundColor))
+        }.background(UpOnlyBackdrop())
         }
         }
         }
@@ -183,7 +183,7 @@ struct UpOnlyImportView: View {
                     let statement = batch.mode == .statements && !batch.rows.isEmpty
                     ManageCard {
                         HStack(spacing: 10) {
-                            UpOnlyBankBadge(name: statement ? source.account.name : source.filename, size: 28)
+                            UpOnlyBankBadge(name: statement ? source.account.name : source.filename, size: 32)
                             if statement {
                                 Menu { accountChoices(source) } label: {
                                     HStack(spacing: 4) {
@@ -227,7 +227,7 @@ struct UpOnlyImportView: View {
                                     // A new account starts in the file's own currency; left empty, it goes back to it.
                                     UpOnlyCurrencyField(code: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) }),
                                                         fallback: fileCurrency(source) ?? "USD", label: "Account currency").frame(width: 52).textFieldStyle(.roundedBorder)
-                                    Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.glass)
+                                    Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.upOnlySecondary)
                                 }
                             }.padding(.vertical, 9)
                         }
@@ -246,7 +246,7 @@ struct UpOnlyImportView: View {
                         // The account is what's missing, so choosing one is the next step, not fixing rows.
                         Text("Which account are these transactions from?").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Menu { accountChoices(source) } label: { Text("Choose an account").frame(maxWidth: .infinity) }
-                            .menuStyle(.button).buttonStyle(.glassProminent).controlSize(.large).accessibilityLabel("Choose an account for " + source.filename)
+                            .menuStyle(.button).buttonStyle(.upOnlyPrimary).controlSize(.large).accessibilityLabel("Choose an account for " + source.filename)
                     } else if let source = batch.sources.first(where: { review.needsFormat.contains($0.id) }) {
                         // Also a question about the file, answered on its card above.
                         Text("Choose how " + source.filename + " writes " + (source.unconfirmedDate != nil ? "dates" : "amounts") + " above to continue.")
@@ -257,7 +257,7 @@ struct UpOnlyImportView: View {
                             UpOnlyNotice(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.", style: .warning)
                             primaryAction("Fix rows") { showProblems(review) }
                         } else {
-                            Button("Check them one by one") { showProblems(review) }.buttonStyle(.glass)
+                            Button("Check them one by one") { showProblems(review) }.buttonStyle(.upOnlySecondary)
                         }
                     } else if review.learnedDays > 0 && review.readyRows == 0 {
                         Text("Dates added for \(review.learnedDays.formatted()) saved transactions").font(UpOnlyType.section)
@@ -275,12 +275,12 @@ struct UpOnlyImportView: View {
                                     if batch.mode == .bankBalances {
                                         UpOnlyRow(title: row.bank.account.name, caption: row.bank.account.currency + " · " + row.bank.date,
                                                   value: balanceText(row, in: batch) + " " + row.bank.account.currency) {
-                                            UpOnlyBankBadge(name: row.bank.account.name, size: 28)
+                                            UpOnlyBankBadge(name: row.bank.account.name, size: 32)
                                         }
                                     } else {
                                         UpOnlyRow(title: row.holding.assetName.isEmpty ? row.holding.portfolioName : row.holding.assetName,
                                                   caption: row.holding.portfolioName + " · " + (review.states[row.id]?.displayText(privacy: session.privacyMode) ?? "")) {
-                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 28)
+                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 32)
                                         }
                                     }
                                 }
@@ -354,7 +354,7 @@ struct UpOnlyImportView: View {
     /// The page's one main action: full width, prominent.
     private func primaryAction(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).frame(maxWidth: .infinity) }
-            .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(.defaultAction)
+            .buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(.defaultAction)
     }
     private var coveredPeriod: String {
         guard let firstText = coveredMonths.first, let lastText = coveredMonths.last,
@@ -377,12 +377,12 @@ struct UpOnlyImportView: View {
             UpOnlyFlow(spacing: 8) {
                 if session.importLoading {
                     ProgressView().controlSize(.small)
-                    Button("Cancel reading") { session.cancelImport() }.buttonStyle(.glass)
+                    Button("Cancel reading") { session.cancelImport() }.buttonStyle(.upOnlySecondary)
                 } else if reviewing {
                     ProgressView().controlSize(.small)
-                    Button("Cancel review") { invalidateReview() }.buttonStyle(.glass)
+                    Button("Cancel review") { invalidateReview() }.buttonStyle(.upOnlySecondary)
                 } else if review != nil {
-                    Button("Back to editing") { invalidateReview() }.buttonStyle(.glass)
+                    Button("Back to editing") { invalidateReview() }.buttonStyle(.upOnlySecondary)
                 }
             }.controlSize(.small).font(UpOnlyType.body)
             // The main action, full width like the rest of the app's.
@@ -577,10 +577,10 @@ struct UpOnlyImportView: View {
             UpOnlyNotice(count == 1 ? "1 transaction has the same day, description and amount as another." : "\(count.formatted()) transactions have the same day, description and amount as others.")
             ManageCard {
                 UpOnlyRow(title: "Skip all duplicates", caption: "Leave them out of this import", action: busy ? nil : { settleDuplicates(keep: false) }) {
-                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 28)
+                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 32)
                 }
                 UpOnlyRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", action: busy ? nil : { settleDuplicates(keep: true) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 28)
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 32)
                 }
             }
         }
