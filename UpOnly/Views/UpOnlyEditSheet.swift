@@ -299,9 +299,9 @@ struct UpOnlyEditSheet: View {
                 }
                 UpOnlyFormRow(label: "Date") { UpOnlyDateButton(date: $date) }
             }
-            // Only a rate from the month's last seven days prices it (MonthlyLedger.rate).
-            if let month = MonthKey(session.entryMonthForManagement), let cutoff = rateCutoff, date > cutoff || cutoff.timeIntervalSince(date) > 7 * 86400 {
-                UpOnlyNotice("This rate won’t count for " + month.title + ". Choose a date in the last 7 days of the month.")
+            // A rate typed in prices the month it's dated in, or from the last seven days before the next (MonthlyLedger.rate).
+            if let month = MonthKey(session.entryMonthForManagement), let cutoff = rateCutoff, date > cutoff || MonthKey(day: date) != month && cutoff.timeIntervalSince(date) > 7 * 86400 {
+                UpOnlyNotice("This rate won’t count for " + month.title + ". Choose a date in " + month.title + ".")
             }
         }
     }

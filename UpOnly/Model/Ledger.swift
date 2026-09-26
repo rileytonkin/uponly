@@ -159,6 +159,17 @@ nonisolated struct ImportedStatement: Codable, Sendable, Equatable {
     var importedAt: Date
     var accountID: UUID?
 }
+extension VaultDocument {
+    /// Statement files whose original is kept in the vault (and so in every backup), and their size in bytes.
+    var statementOriginals: (files: Int, bytes: Int) {
+        importedStatements.reduce((files: 0, bytes: 0)) { $1.originalBytes.isEmpty ? $0 : (files: $0.files + 1, bytes: $0.bytes + $1.originalBytes.count) }
+    }
+    /// Deletes the kept originals of imported statements. Their transactions stay, and so does each file's hash and account
+    /// and every row's fingerprint, so importing a file again still skips what's already saved.
+    mutating func deleteStatementOriginals() {
+        for index in importedStatements.indices { importedStatements[index].originalBytes = Data() }
+    }
+}
 nonisolated struct MonthTotals {
     var personalIncome: Decimal = 0
     var personalSpend: Decimal = 0
@@ -195,11 +206,15 @@ nonisolated struct PanelState {
     var missingMonths: Int = 0
 }
 nonisolated enum MonthlyLedger {
+    /// The month's closing rate: the latest from its last seven days (or the week before now, this month), as a daily
+    /// source publishes them. A rate typed in by hand counts from anywhere in the month, since it's there on purpose.
     static func rate(currency: String, month: MonthKey, document: VaultDocument, now: Date = Date()) -> Decimal? {
         if currency == "USD" { return 1 }
-        guard let end = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) else { return nil }
+        guard let start = UTCDay.calendar.date(from: DateComponents(year: month.year, month: month.month, day: 1)),
+              let end = UTCDay.calendar.date(from: DateComponents(year: month.next.year, month: month.next.month, day: 1)) else { return nil }
         let cutoff = min(end.addingTimeInterval(-1), now)
-        return document.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" && $0.providerTime <= cutoff && cutoff.timeIntervalSince($0.providerTime) <= 7 * 86400 }
+        return document.fx.filter { $0.sourceCurrency == currency && $0.targetCurrency == "USD" && $0.providerTime <= cutoff
+            && (cutoff.timeIntervalSince($0.providerTime) <= 7 * 86400 || $0.provider == "Manual" && $0.providerTime >= start) }
             .max(by: { $0.providerTime < $1.providerTime })?.rate.value
     }
     static func nativeTotals(_ month: MonthKey, document: VaultDocument) throws -> [CurrencyMonthTotals] {
@@ -362,8 +377,15 @@ nonisolated struct MonthEvidence: Sendable, Equatable {
             }
             result.sources.append(Source(id: key, name: sourceName(for: first, accounts: document.accounts).name, count: rows.count, moneyIn: moneyIn, moneyOut: moneyOut))
         }
-        result.largest = Array(personal.map { Item(entry: $0, usd: usd($0)) }
-            .sorted { ($0.usd ?? $0.entry.amount) > ($1.usd ?? $1.entry.amount) })
+        // Dollars can't be ranked against pounds: rows with a rate go biggest first, then those without, by currency and size.
+        result.largest = personal.map { Item(entry: $0, usd: usd($0)) }.sorted { a, b in
+            switch (a.usd, b.usd) {
+            case let (x?, y?): return x > y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return a.entry.currency != b.entry.currency ? a.entry.currency < b.entry.currency : a.entry.amount > b.entry.amount
+            }
+        }
         let previous = month.previous.description
         let active = Set(order)
         var seen = Set<String>()

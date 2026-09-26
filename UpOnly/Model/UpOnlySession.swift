@@ -903,6 +903,8 @@ final class UpOnlySession {
         guard state == .unlocked, !importLoading else { return }
         if importDraft == nil { startImport(importMode) }
         guard let draft = importDraft else { return }
+        // Only files on this Mac: a dragged web link is never fetched.
+        guard urls.allSatisfy(\.isFileURL) else { importMessage = "Choose files on this Mac."; return }
         if draft.mode == .statements, urls.contains(where: { $0.pathExtension.lowercased() != "csv" }) {
             importMessage = "Choose CSV files for statements."
             return
@@ -912,7 +914,7 @@ final class UpOnlySession {
         let accounts = document?.accounts ?? []
         let task = Task.detached(priority: .userInitiated) { () throws -> ImportBatchDraft in
             var next = draft
-            guard urls.count + next.sources.filter({ !$0.grid.isEmpty }).count <= ImportBatchDraft.maxFiles else { throw ImportFailure("Choose at most 50 files.") }
+            guard urls.count + next.files.count <= ImportBatchDraft.maxFiles else { throw ImportFailure("Choose at most 50 files.") }
             // Only an account chosen before picking files applies to every file; otherwise each file is matched on its own.
             let defaultAccount = next.sources.first { $0.grid.isEmpty && $0.account.existingID != nil }?.account ?? ImportAccount()
             if next.rows.isEmpty { next.sources.removeAll { $0.grid.isEmpty } }
@@ -920,9 +922,12 @@ final class UpOnlySession {
                 try Task.checkCancellation()
                 let access = url.startAccessingSecurityScopedResource()
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
-                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard size <= VaultLimits.maxBatchBytes else { throw StatementError.tooLarge }
-                let bytes = try Data(contentsOf: url)
+                // A regular file, read no further than the size limit: a pipe or device can't stall reading, and a file
+                // swapped or grown after it was chosen can't be read past the limit. A chosen symlink reads what it points to.
+                let bytes: Data
+                do { bytes = try BoundedFile.read(url.resolvingSymlinksInPath(), limit: VaultLimits.maxBatchBytes) }
+                catch CocoaError.fileReadTooLarge { throw StatementError.tooLarge }
+                catch CocoaError.fileReadUnknown { throw ImportFailure(url.lastPathComponent + " isn’t a file that can be read. Choose a CSV file.") }
                 for var source in try ImportParser.sources(bytes: bytes, filename: url.lastPathComponent, mode: next.mode) {
                     source.account = ImportParser.account(for: source, preferred: defaultAccount, saved: accounts)
                     // Income, spending and company transfers are classified when the batch is checked, with the final number format.

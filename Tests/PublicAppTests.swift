@@ -340,7 +340,8 @@ struct BulkInputTests {
         var draft = ImportBatchDraft(mode: .statements, sources: [source], rows: try ImportParser.rows(source: source, mode: .statements))
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
         #expect(saved.entries.map(\.month) == ["2026-01", "2026-08"])
-        #expect(saved.entries[1].kind == .transfer && !draft.rows[2].included)
+        // Monzo's Transfers count by their sign until review says they're your own.
+        #expect(saved.entries[1].kind == .income && !draft.rows[2].included)
         draft.sources[0].account = ImportParser.account(for: source, preferred: ImportAccount(), saved: saved.accounts)
         #expect(draft.sources[0].account.existingID == saved.accounts[0].id)
         #expect(ImportBatchProcessor.evaluate(draft, document: saved).duplicates == 2)
@@ -939,17 +940,22 @@ struct BulkInputTests {
         #expect(review.duplicates == 1 && review.readyRows == 1)
         #expect(review.document?.bankBalances.filter { $0.accountID == checking.id }.count == 1)
     }
-    @Test("Day-first or month-first dates follow the reading that's in order over the shortest time, and review asks when that can't tell")
+    @Test("Day-first or month-first dates are decided by the only reading that's in order, and review asks when both are")
     func ambiguousDates() throws {
+        // 1–12 September reads in order either way (as 9 January–9 December too), so the shorter span is only a guess.
         let september = (1...12).map { String(format: "%02d/09/2025", $0) }
-        #expect(ImportDateFormat.detection(september).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
-        #expect(ImportDateFormat.detection(Array(september.reversed())).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
-        let uk = try batch("Date,Description,Amount,Currency\n" + september.map { $0 + ",Coffee,-3,USD" }.joined(separator: "\n"), mode: .statements)
-        #expect(uk.sources[0].dateFormat == .dayFirst && uk.sources[0].unconfirmedDate == nil)
+        #expect(ImportDateFormat.detection(september).map { $0.format == .dayFirst && $0.unconfirmed == "01/09/2025" } == true)
+        #expect(ImportDateFormat.detection(Array(september.reversed())).map { $0.format == .dayFirst && $0.unconfirmed == "12/09/2025" } == true)
+        var uk = try batch("Date,Description,Amount,Currency\n" + september.map { $0 + ",Coffee,-3,USD" }.joined(separator: "\n"), mode: .statements)
+        #expect(uk.sources[0].dateFormat == .dayFirst && uk.sources[0].unconfirmedDate == "01/09/2025")
+        #expect(ImportBatchProcessor.evaluate(uk, document: empty()).needsFormat == [uk.sources[0].id])
+        uk.sources[0].unconfirmedDate = nil
         let saved = try #require(ImportBatchProcessor.evaluate(uk, document: empty()).document)
         #expect(saved.entries.compactMap(\.day) == (1...12).map { String(format: "2025-09-%02d", $0) })
-        // Month first when that reading is the short one, and in order one way only is enough.
-        #expect(ImportDateFormat.detection(["12/01/2025", "12/02/2025", "12/03/2025"]).map { $0.format == .monthFirst && $0.unconfirmed == nil } == true)
+        // A day past the 12th has only one reading.
+        #expect(ImportDateFormat.detection(september + ["13/09/2025"]).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
+        // Interest on the 12th of each month is in order either way too; in order one way only is enough.
+        #expect(ImportDateFormat.detection(["12/01/2025", "12/02/2025", "12/03/2025"]).map { $0.format == .monthFirst && $0.unconfirmed == "12/01/2025" } == true)
         #expect(ImportDateFormat.detection(["02/01/2025", "01/02/2025", "03/02/2025"]).map { $0.format == .dayFirst && $0.unconfirmed == nil } == true)
         // Dates that read the same either way need no question.
         #expect(ImportDateFormat.detection(["05/05/2025", "07/07/2025"]).map { $0.unconfirmed == nil } == true)
@@ -998,12 +1004,14 @@ struct BulkInputTests {
         // Any other file can be switched, which doesn't change which rows count as already saved.
         var generic = try batch("Date,Description,Amount\n2026-01-02,Coffee,4.50\n2026-01-03,Payment,-200", mode: .statements)
         #expect(!generic.sources[0].positiveIsOutflow && !ImportParser.signsKnown(generic.sources[0].grid))
-        // Its negative payment answers the question, so only files with nothing negative are asked about.
-        #expect(generic.sources[0].hasNegativeAmount && amex.sources[0].hasNegativeAmount && !charges.sources[0].hasNegativeAmount)
-        #expect(try batch("Date,Description,Amount\n2026-01-02,Refund,(4.50)", mode: .statements).sources[0].hasNegativeAmount)
-        let asWritten = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
+        // A negative payment doesn't say which way its purchases go, so review shows what the new rows add up to.
+        let asRead = ImportBatchProcessor.evaluate(generic, document: empty())
+        #expect(asRead.flows == ["USD": ImportEvaluation.MoneyFlow(moneyIn: Decimal(string: "4.5")!, moneyOut: 200)])
+        let asWritten = try #require(asRead.document)
         generic.sources[0].positiveIsOutflow = true
-        let flipped = try #require(ImportBatchProcessor.evaluate(generic, document: empty()).document)
+        let flippedReview = ImportBatchProcessor.evaluate(generic, document: empty())
+        #expect(flippedReview.flows == ["USD": ImportEvaluation.MoneyFlow(moneyIn: 200, moneyOut: Decimal(string: "4.5")!)])
+        let flipped = try #require(flippedReview.document)
         #expect(flipped.entries.map(\.kind) == [.expense, .income] && flipped.entries.map(\.importFingerprint) == asWritten.entries.map(\.importFingerprint))
         // A type chosen in review sets the direction: an expense is money out whatever its sign.
         var edited = try batch("Date,Description,Amount\n2026-01-02,Coffee,4.50", mode: .statements)
@@ -1090,6 +1098,303 @@ struct BulkInputTests {
         let draft = try batch("Date, Description, Amount, Currency\n2026-01-02, \"Coffee, large\" , -4.50, USD\n2026-01-03,12\" pizza,-9,USD", mode: .statements)
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
         #expect(saved.entries.map(\.label) == ["Coffee, large", "12\" pizza"] && saved.entries.map(\.amount) == [Decimal(string: "4.5")!, 9])
+    }
+}
+
+@Suite("Import audit fixes")
+struct ImportAuditTests {
+    private func empty() -> VaultDocument {
+        let pair = VaultCrypto.makeInboxKeyPair()
+        return VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
+    }
+    private func batch(_ csv: String, mode: ImportMode = .statements, name: String = "Example") throws -> ImportBatchDraft {
+        var source = try ImportParser.source(bytes: Data(csv.utf8), filename: "sample.csv", mode: mode)
+        source.account = ImportAccount(name: name)
+        return ImportBatchDraft(mode: mode, sources: [source], rows: try ImportParser.rows(source: source, mode: mode))
+    }
+    private func day(_ date: Date) -> String { ImportDateFormat.today(date) }
+    private func choose(_ account: Account, in draft: inout ImportBatchDraft) {
+        for index in draft.sources.indices { draft.sources[index].account = ImportAccount(existingID: account.id, name: account.name, currency: account.currency) }
+    }
+    @Test("Interest on the 1st of each month reads in order either way, so review asks rather than picking the shorter span")
+    func firstOfTheMonth() throws {
+        var interest = try batch("Date,Description,Amount,Currency\n01/01/2026,Interest,1,GBP\n01/02/2026,Interest,1,GBP\n01/03/2026,Interest,1,GBP")
+        #expect(interest.sources[0].unconfirmedDate == "01/02/2026")
+        let waiting = ImportBatchProcessor.evaluate(interest, document: empty())
+        #expect(waiting.needsFormat == [interest.sources[0].id] && waiting.document == nil)
+        interest.sources[0].dateFormat = .dayFirst; interest.sources[0].unconfirmedDate = nil
+        let saved = try #require(ImportBatchProcessor.evaluate(interest, document: empty()).document)
+        #expect(saved.entries.map(\.month) == ["2026-01", "2026-02", "2026-03"])
+    }
+    @Test("Re-importing a statement brings back rows removed since and skips the rest, keeping its one record")
+    func reimportAfterRemoving() throws {
+        for csv in ["TransactionID,Date,Description,Amount,Currency\na,2026-01-02,Coffee,-4,USD\nb,2026-01-03,Lunch,-9,USD",
+                    "Date,Description,Amount,Currency\n2026-01-02,Coffee,-4,USD\n2026-01-03,Lunch,-9,USD"] {
+            var draft = try batch(csv)
+            var saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+            #expect(saved.entries.count == 2 && saved.importedStatements.count == 1)
+            saved.entries.removeAll { $0.label == "Lunch" }
+            // Read afresh, as choosing the file again does.
+            draft = try batch(csv)
+            choose(saved.accounts[0], in: &draft)
+            let review = ImportBatchProcessor.evaluate(draft, document: saved)
+            #expect(review.duplicates == 1 && review.readyRows == 1 && review.states[draft.rows[1].id] == .ready("New transaction"))
+            let restored = try #require(review.document)
+            #expect(restored.entries.map(\.label) == ["Coffee", "Lunch"] && restored.importedStatements == saved.importedStatements)
+            // Once it's back, the same file again adds nothing.
+            draft = try batch(csv)
+            choose(saved.accounts[0], in: &draft)
+            let again = ImportBatchProcessor.evaluate(draft, document: restored)
+            #expect(again.duplicates == 2 && again.added == 0 && !again.hasErrors)
+        }
+    }
+    @Test("In a statement imported before, a saved ID is the same payment even if review changed it; another file's conflict still blocks")
+    func reimportEditedRow() throws {
+        let csv = "TransactionID,Date,Description,Amount,Currency\na,2026-01-02,Coffee,-4,USD"
+        var edited = try batch(csv)
+        edited.rows[0].statement.amount = "-5"
+        let saved = try #require(ImportBatchProcessor.evaluate(edited, document: empty()).document)
+        var original = try batch(csv)
+        choose(saved.accounts[0], in: &original)
+        let review = ImportBatchProcessor.evaluate(original, document: saved)
+        #expect(review.duplicates == 1 && !review.hasErrors)
+        var other = try batch(csv + "\nb,2026-01-03,Tea,-2,USD")
+        choose(saved.accounts[0], in: &other)
+        #expect(ImportBatchProcessor.evaluate(other, document: saved).states[other.rows[0].id] == .error("This transaction ID has different saved details. Correct it or exclude the row."))
+    }
+    @Test("A time with a zone is filed under its day on this Mac; the fingerprint keeps the date as written, so re-imports still match")
+    func zonedTimes() throws {
+        let iso = ImportDateFormat.iso, utc = TimeZone(secondsFromGMT: 0)!, athens = TimeZone(secondsFromGMT: 2 * 3600)!, newYork = TimeZone(secondsFromGMT: -5 * 3600)!
+        #expect(day(try iso.date("2026-01-31T23:30:00Z", in: athens)) == "2026-02-01")
+        #expect(day(try iso.date("2026-01-31T23:30:00Z", in: newYork)) == "2026-01-31")
+        #expect(day(try iso.date("2026-01-31T23:30:00.250-05:00", in: utc)) == "2026-02-01")
+        #expect(day(try iso.date("2026-02-01 00:30:00 +0100", in: utc)) == "2026-01-31")
+        #expect(day(try ImportDateFormat.dayFirst.date("31/01/2026 23:30 +01", in: athens)) == "2026-02-01")
+        // Without a zone, or without a Mac's zone to convert to, the date is as written.
+        #expect(day(try iso.date("2026-01-31 23:30:00", in: athens)) == "2026-01-31")
+        #expect(day(try iso.date("2026-01-31T23:30:00Z")) == "2026-01-31")
+        let now = try iso.date("2026-03-01")
+        let csv = "Date,Description,Amount,Currency\n2026-01-31T23:30:00Z,Late coffee,-4,USD"
+        // Saved on a Mac in UTC (as every version so far filed it), then read again in Athens and New York.
+        let saved = try #require(ImportBatchProcessor.evaluate(try batch(csv), document: empty(), now: now, timeZone: utc).document)
+        #expect(saved.entries[0].day == "2026-01-31" && saved.entries[0].month == "2026-01")
+        var draft = try batch(csv)
+        choose(saved.accounts[0], in: &draft)
+        for zone in [athens, newYork] { #expect(ImportBatchProcessor.evaluate(draft, document: saved, now: now, timeZone: zone).duplicates == 1) }
+        // Read first in Athens, it's February's; the fingerprint is still the written date's.
+        let east = try #require(ImportBatchProcessor.evaluate(try batch(csv), document: empty(), now: now, timeZone: athens).document)
+        #expect(east.entries[0].day == "2026-02-01" && east.entries[0].month == "2026-02")
+        #expect(east.entries[0].importFingerprint == saved.entries[0].importFingerprint)
+        #expect(east.entries[0].importFingerprint == ImportBatchProcessor.fingerprint(date: try iso.date("2026-01-31"), label: "Late coffee", signedAmount: -4, currency: "USD"))
+    }
+    @Test("Signed card exports show their money in and out per currency before saving")
+    func reviewFlows() throws {
+        let csv = "Date,Description,Amount,Currency\n2026-01-02,Shoes,120,GBP\n2026-01-03,Payment,-500,GBP\n2026-01-04,Hotel,80,EUR"
+        var card = try batch(csv)
+        let asRead = ImportBatchProcessor.evaluate(card, document: empty())
+        #expect(asRead.flows == ["GBP": ImportEvaluation.MoneyFlow(moneyIn: 120, moneyOut: 500), "EUR": ImportEvaluation.MoneyFlow(moneyIn: 80, moneyOut: 0)])
+        card.sources[0].positiveIsOutflow = true
+        let flipped = ImportBatchProcessor.evaluate(card, document: empty())
+        #expect(flipped.flows == ["GBP": ImportEvaluation.MoneyFlow(moneyIn: 500, moneyOut: 120), "EUR": ImportEvaluation.MoneyFlow(moneyIn: 0, moneyOut: 80)])
+        // Rows already saved aren't new money.
+        let saved = try #require(flipped.document)
+        choose(saved.accounts[0], in: &card)
+        #expect(ImportBatchProcessor.evaluate(card, document: saved).flows.isEmpty)
+    }
+    @Test("A row in another currency than the chosen account's needs fixing or excluding")
+    func accountCurrency() throws {
+        var doc = empty()
+        let checking = Account(name: "Checking", currency: "USD"); doc.accounts = [checking]
+        var draft = try batch("Date,Description,Amount,Currency\n2026-01-02,Croissant,-4,EUR\n2026-01-03,Tea,-3,USD")
+        choose(checking, in: &draft)
+        let review = ImportBatchProcessor.evaluate(draft, document: doc)
+        #expect(review.states[draft.rows[0].id] == .error("This row is in EUR but the account is in USD. Choose an account in EUR, or exclude the row."))
+        #expect(review.states[draft.rows[1].id] == .ready("New transaction") && review.document == nil)
+        draft.rows[0].included = false
+        #expect(try #require(ImportBatchProcessor.evaluate(draft, document: doc).document).entries.map(\.currency) == ["USD"])
+    }
+    @Test("A Wise history split by currency counts as one file of its size against the batch limits")
+    func splitFileLimits() throws {
+        let part = ImportSourceDraft(filename: "wise.csv", bytes: Data(count: 7 * 1024 * 1024), grid: [["TransactionID"]])
+        let parts = ["CHF", "EUR", "GBP", "JPY", "USD"].map { code -> ImportSourceDraft in var piece = part; piece.id = UUID(); piece.splitCurrency = code; return piece }
+        var draft = ImportBatchDraft(mode: .statements, sources: parts)
+        #expect(draft.files.count == 1)
+        try draft.checkLimits()
+        // Five separate files of that size are over 32 MiB.
+        draft.sources = parts.map { var separate = $0; separate.splitCurrency = nil; return separate }
+        #expect(throws: ImportFailure.self) { try draft.checkLimits() }
+        // 49 files and a split one are 50 files.
+        let small = (1...49).map { ImportSourceDraft(filename: "\($0).csv", bytes: Data("file \($0)".utf8), grid: [["Date"]]) }
+        let wise = ["EUR", "GBP"].map { code -> ImportSourceDraft in var piece = ImportSourceDraft(filename: "wise.csv", bytes: Data("wise".utf8), grid: [["Date"]]); piece.splitCurrency = code; return piece }
+        draft.sources = small + wise
+        #expect(draft.files.count == 50)
+        try draft.checkLimits()
+    }
+    @Test("Balances need a date from 1900 onwards, as statement rows do")
+    func balanceDates() throws {
+        let old = try batch("Account,Currency,Balance,ObservedOn\nChecking,USD,100,1899-12-31", mode: .bankBalances)
+        #expect(ImportBatchProcessor.evaluate(old, document: empty()).states[old.rows[0].id] == .error("Use a balance date from 1900 onwards."))
+        var statement = try batch("Date,Description,Amount,Currency\n2026-01-02,Coffee,-4,USD")
+        statement.sources[0].balance = "100"; statement.sources[0].balanceDate = "0001-01-01"
+        #expect(ImportBatchProcessor.evaluate(statement, document: empty()).sourceErrors[statement.sources[0].id] == "Use a balance date from 1900 onwards.")
+    }
+    @Test("One batch adds at most 100 new accounts and 100 new portfolios")
+    func newAccountCap() throws {
+        let accounts = try batch("Account,Currency,Balance,ObservedOn\n" + (1...101).map { "Account \($0),USD,1,2026-01-02" }.joined(separator: "\n"), mode: .bankBalances)
+        let review = ImportBatchProcessor.evaluate(accounts, document: empty())
+        #expect(review.states[accounts.rows[99].id] == .ready("Record dated balance"))
+        #expect(review.states[accounts.rows[100].id] == .error("One import can add at most 100 new accounts. Choose existing accounts, or import the rest separately."))
+        let portfolios = try batch("Portfolio,Coin,Quantity\n" + (1...101).map { "Wallet \($0),bitcoin,1" }.joined(separator: "\n"), mode: .holdings)
+        let held = ImportBatchProcessor.evaluate(portfolios, document: empty())
+        #expect(held.states[portfolios.rows[99].id].map { state -> Bool in if case .ready = state { return true }; return false } == true)
+        #expect(held.states[portfolios.rows[100].id] == .error("One import can add at most 100 new portfolios. Choose existing portfolios, or import the rest separately."))
+    }
+    @Test("Files are read only when regular and within the limit, never through a symlink or from a pipe")
+    func boundedRead() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("UpOnlyBounded-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func code(_ url: URL, limit: Int) -> CocoaError.Code? {
+            do { _ = try BoundedFile.read(url, limit: limit); return nil } catch { return (error as? CocoaError)?.code }
+        }
+        let file = directory.appendingPathComponent("statement.csv")
+        try Data("Date,Amount\n".utf8).write(to: file)
+        #expect(try BoundedFile.read(file, limit: 12) == Data("Date,Amount\n".utf8))
+        #expect(code(file, limit: 11) == .fileReadTooLarge)
+        let link = directory.appendingPathComponent("link.csv")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+        #expect(code(link, limit: 100) == .fileReadNoPermission)
+        #expect(code(directory.appendingPathComponent("missing.csv"), limit: 100) == .fileReadNoSuchFile)
+        let pipe = directory.appendingPathComponent("pipe.csv")
+        try #require(mkfifo(pipe.path, 0o600) == 0)
+        #expect(code(pipe, limit: 100) == .fileReadUnknown)
+        #expect(code(directory, limit: 100) == .fileReadUnknown)
+    }
+    @Test("Dropped web links aren't read, and a chosen symlink reads the file it points to")
+    @MainActor func importURLs() async throws {
+        let io = MemoryFileIO(), layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-import-test-" + UUID().uuidString))
+        let session = UpOnlySession(testing: VaultStore(layout: layout, io: io, keys: MemoryKeyStore(), authenticator: FixtureAuthenticator()), layout: layout)
+        await session.create(recovery: .random())
+        session.startImport(.statements)
+        await session.readImportFiles([try #require(URL(string: "https://example.com/statement.csv"))])
+        #expect(session.importMessage == "Choose files on this Mac." && session.importDraft?.rows.isEmpty == true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let csv = directory.appendingPathComponent("statement.csv"), link = directory.appendingPathComponent("link.csv")
+        try Data("Date,Description,Amount,Currency\n2026-01-02,Coffee,-4,USD\n".utf8).write(to: csv)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: csv)
+        await session.readImportFiles([link])
+        #expect(session.importMessage == nil && session.importDraft?.rows.count == 1)
+    }
+    @Test("A UTF-8 file with a stray bad byte stays UTF-8, and a byte order mark is dropped whatever the encoding")
+    func lenientEncoding() throws {
+        var bytes = Data("Date,Description,Amount\n".utf8)
+        for index in 1...60 { bytes += Data("2026-01-02,Café \(index),-1\n".utf8) }
+        bytes += Data("2026-01-03,X".utf8) + Data([0xFF]) + Data("Y,-2\n".utf8)
+        let text = try ImportParser.decode(bytes)
+        #expect(text.contains("Café 60") && text.contains("X\u{FFFD}Y"))
+        // Windows-1252 text stays Windows-1252, with or without a stray UTF-8 byte order mark.
+        let latin = try #require("Date,Description,Amount\n2026-01-02,£5 voucher,-5".data(using: .windowsCP1252))
+        for input in [latin, Data([0xEF, 0xBB, 0xBF]) + latin] {
+            let source = try ImportParser.source(bytes: input, filename: "uk.csv", mode: .statements)
+            #expect(source.grid[0][0] == "Date" && source.grid[1][1] == "£5 voucher")
+        }
+        let marked = try ImportParser.source(bytes: Data([0xEF, 0xBB, 0xBF]) + Data("Date,Description,Amount\n2026-01-02,Café,-5".utf8), filename: "bom.csv", mode: .statements)
+        #expect(marked.grid[0][0] == "Date" && marked.mapping[.date] == 0)
+    }
+    @Test("Monzo transfers count as spending and income until review says they're your own; pots and marked payees stay transfers")
+    func monzoTransfers() throws {
+        let header = "Transaction ID,Date,Time,Type,Name,Emoji,Category,Amount,Currency,Local amount,Local currency,Notes and #tags,Address,Receipt,Description,Category split,Money Out,Money In"
+        func line(_ id: String, _ date: String, _ type: String, _ name: String, _ category: String, _ amount: String) -> String {
+            [id, date, "10:00:00", type, name, "", category, amount, "GBP", amount, "GBP", "", "", "", name.uppercased(), "", "", ""].joined(separator: ",")
+        }
+        let csv = [header, line("tx_1", "14/08/2026", "Faster payment", "Alex Example", "transfers", "-50.00"),
+                   line("tx_2", "15/08/2026", "Faster payment", "Other Bank", "transfers", "500.00"),
+                   line("tx_3", "16/08/2026", "Pot transfer", "Savings", "savings", "-100.00"),
+                   line("tx_4", "17/08/2026", "Faster payment", "Example Ltd", "transfers", "-300.00")].joined(separator: "\n")
+        var doc = empty()
+        OwnerPayments.setTransferCounterparty("Example Ltd", enabled: true, in: &doc)
+        var draft = try batch(csv, name: "Monzo")
+        let source = draft.sources[0].id
+        #expect(draft.transferCategoryRows(source).count == 3 && !draft.transfersAreOwn(source))
+        let review = ImportBatchProcessor.evaluate(draft, document: doc)
+        let saved = try #require(review.document)
+        #expect(saved.entries.map(\.kind) == [.expense, .income, .transfer, .transfer] && review.transfersCounted == 2)
+        let totals = try #require(MonthlyLedger.nativeTotals(MonthKey("2026-08")!, document: saved).first?.totals)
+        #expect(totals.moneyOut == 50 && totals.moneyIn == 500)
+        draft.setTransfersAreOwn(true, source: source)
+        #expect(draft.transfersAreOwn(source))
+        let own = ImportBatchProcessor.evaluate(draft, document: doc)
+        #expect(try #require(own.document).entries.allSatisfy { $0.kind == .transfer } && own.transfersCounted == 0)
+        draft.setTransfersAreOwn(false, source: source)
+        #expect(try #require(ImportBatchProcessor.evaluate(draft, document: doc).document).entries.map(\.kind) == [.expense, .income, .transfer, .transfer])
+    }
+    @Test("A rate typed in counts for its whole month; a fetched one only from the month's last week; the latest wins")
+    func manualRates() throws {
+        var doc = empty()
+        let july = MonthKey("2026-07")!, now = try ImportDateFormat.iso.date("2026-09-01")
+        func rate(_ value: String, _ day: String, _ provider: String) throws -> FXObservation {
+            FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(Decimal(string: value)!), providerTime: try ImportDateFormat.iso.date(day), fetchedAt: now, provider: provider)
+        }
+        doc.fx = [try rate("1.20", "2026-07-05", "Frankfurter")]
+        #expect(MonthlyLedger.rate(currency: "GBP", month: july, document: doc, now: now) == nil)
+        doc.fx.append(try rate("1.25", "2026-07-05", "Manual"))
+        #expect(MonthlyLedger.rate(currency: "GBP", month: july, document: doc, now: now) == Decimal(string: "1.25"))
+        doc.fx.append(try rate("1.30", "2026-07-28", "Frankfurter"))
+        #expect(MonthlyLedger.rate(currency: "GBP", month: july, document: doc, now: now) == Decimal(string: "1.30"))
+        // A manual rate from another month doesn't price this one.
+        doc.fx = [try rate("1.25", "2026-06-10", "Manual")]
+        #expect(MonthlyLedger.rate(currency: "GBP", month: july, document: doc, now: now) == nil)
+    }
+    @Test("Descriptions are saved without control or bidi characters, and still match rows saved with them")
+    func cleanDescriptions() throws {
+        #expect(ImportBatchProcessor.cleanLabel(" Coffee\u{202E}eeffoc\u{2066}x\u{2069}\u{200F}\nshop\t\u{0007}") == "Coffeeeeffocx shop")
+        #expect(ImportBatchProcessor.cleanLabel("Family 👨‍👩‍👧 dinner") == "Family 👨‍👩‍👧 dinner")
+        let csv = "Date,Description,Amount,Currency\n2026-01-02,\"Pay\u{202E}ment\",-4,USD"
+        let saved = try #require(ImportBatchProcessor.evaluate(try batch(csv), document: empty()).document)
+        #expect(saved.entries[0].label == "Payment")
+        #expect(saved.entries[0].importFingerprint == ImportBatchProcessor.fingerprint(date: try ImportDateFormat.iso.date("2026-01-02"), label: "Pay\u{202E}ment", signedAmount: -4, currency: "USD"))
+        var again = try batch(csv)
+        choose(saved.accounts[0], in: &again)
+        #expect(ImportBatchProcessor.evaluate(again, document: saved).duplicates == 1)
+    }
+    @Test("The biggest movements rank dollars against dollars, with rows that have no rate after them")
+    func evidenceOrder() {
+        var doc = empty()
+        let august = MonthKey("2026-08")!, now = Date(timeIntervalSince1970: 1_787_000_000)
+        doc.fx = [FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(2), providerTime: now, fetchedAt: now, provider: "test")]
+        doc.entries = [Entry(month: august, kind: .expense, amount: 1_000_000, currency: "JPY", label: "Yen"),
+                       Entry(month: august, kind: .expense, amount: 150, currency: "USD", label: "Dollars"),
+                       Entry(month: august, kind: .expense, amount: 5000, currency: "EUR", label: "Euros"),
+                       Entry(month: august, kind: .expense, amount: 100, currency: "GBP", label: "Pounds")]
+        let evidence = MonthEvidence.build(august, document: doc, now: now)
+        #expect(evidence.largest.map(\.entry.label) == ["Pounds", "Dollars", "Euros", "Yen"])
+    }
+    @Test("Merging accounting tolerates a company saved twice")
+    func duplicateCompanies() {
+        let old = BusinessBook(id: "studio", name: "Studio", ownership: [], firstMonth: "2026-01", sourceURL: "", basis: "Test", fetchedAt: Date(timeIntervalSince1970: 1), transferCounterparties: nil)
+        var new = old; new.fetchedAt = Date(timeIntervalSince1970: 2)
+        let merged = AccountingHistory.merging([], into: [old, new])
+        #expect(merged.count == 1 && merged[0].fetchedAt == new.fetchedAt)
+    }
+    @Test("A number with two decimal marks is flagged without repeating the amount")
+    func numberMessage() {
+        do { _ = try ImportNumberFormat.point.decimal("1.234.56"); Issue.record("Two decimal points were read.") }
+        catch { #expect(error.localizedDescription == "Check the number format: this amount has more than one decimal point.") }
+    }
+    @Test("Deleting saved statement files keeps their transactions and still skips them when imported again")
+    func deleteOriginals() throws {
+        var draft = try batch("TransactionID,Date,Description,Amount,Currency\na,2026-01-02,Coffee,-4,USD")
+        var saved = try #require(ImportBatchProcessor.evaluate(draft, document: empty()).document)
+        #expect(saved.statementOriginals.files == 1 && saved.statementOriginals.bytes == draft.sources[0].bytes.count)
+        let before = saved.importedStatements
+        saved.deleteStatementOriginals()
+        #expect(saved.statementOriginals.files == 0 && saved.entries.count == 1)
+        #expect(saved.importedStatements.map(\.digest) == before.map(\.digest) && saved.importedStatements.map(\.accountID) == before.map(\.accountID))
+        choose(saved.accounts[0], in: &draft)
+        let again = ImportBatchProcessor.evaluate(draft, document: saved)
+        #expect(again.duplicates == 1 && again.added == 0 && again.document?.importedStatements == saved.importedStatements)
     }
 }
 
