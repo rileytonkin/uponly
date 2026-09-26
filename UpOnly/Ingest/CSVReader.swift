@@ -526,7 +526,10 @@ nonisolated enum ImportParser {
         var replaced = 0, letters = 0
         for scalar in text.unicodeScalars where scalar.value > 0x7F { if scalar == "\u{FFFD}" { replaced += 1 } else { letters += 1 } }
         // A � written in the file is a good letter, not a bad byte.
-        let written = bytes.count < 3 ? 0 : zip(bytes, zip(bytes.dropFirst(), bytes.dropFirst(2))).filter { $0 == 0xEF && $1.0 == 0xBF && $1.1 == 0xBD }.count
+        // A plain loop: the zip-and-filter form took older compilers too long to type-check.
+        let raw = [UInt8](bytes)
+        var written = 0
+        for i in raw.indices.dropLast(2) where raw[i] == 0xEF && raw[i + 1] == 0xBF && raw[i + 2] == 0xBD { written += 1 }
         let bad = replaced - written
         return bad * 1000 <= bytes.count && letters + written >= max(bad, 1) ? text : nil
     }
