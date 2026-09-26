@@ -286,6 +286,25 @@ struct UpOnlyImportView: View {
                                 }
                             }
                         }
+                        if batch.mode == .statements, !review.flows.isEmpty {
+                            // What the new transactions add up to, so a statement read with its signs the wrong way round
+                            // (purchases as money in) shows before it's saved.
+                            ManageCard {
+                                ForEach(review.flows.keys.sorted(), id: \.self) { code in
+                                    let flow = review.flows[code] ?? ImportEvaluation.MoneyFlow(), suffix = review.flows.count > 1 ? " · " + code : ""
+                                    UpOnlyFormRow(label: "Money in" + suffix) {
+                                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(flow.moneyIn, currency: code)).font(UpOnlyType.row.monospacedDigit())
+                                    }
+                                    UpOnlyFormRow(label: "Money out" + suffix) {
+                                        UpOnlyPrivateText(UpOnlyFormat.currencyMoney(flow.moneyOut, currency: code)).font(UpOnlyType.row.monospacedDigit())
+                                    }
+                                }
+                            }
+                        }
+                        if review.transfersCounted > 0 {
+                            UpOnlyNotice((review.transfersCounted == 1 ? "1 transaction Monzo files" : "\(review.transfersCounted.formatted()) transactions Monzo files")
+                                         + " under Transfers " + (review.transfersCounted == 1 ? "counts" : "count") + " as spending or income. If they moved money between your own accounts, switch on “Transfers are to my own accounts” above.")
+                        }
                         let excluded = batch.rows.filter { !$0.included }.count
                         let skipped = [review.duplicates > 0 ? "\(review.duplicates.formatted()) " + (batch.mode == .statements ? "already imported" : "unchanged") : nil,
                                        excluded > 0 ? "\(excluded.formatted()) excluded" : nil].compactMap { $0 }.joined(separator: " · ")
@@ -537,7 +556,8 @@ struct UpOnlyImportView: View {
         }
         if all || source.unconfirmedNumber != nil {
             if let example = source.unconfirmedNumber {
-                UpOnlyNotice("Amounts like " + example + " read differently in each number format. Choose the one this file uses.").padding(.top, 9)
+                // The example is one of the file's amounts, so privacy mode leaves it out.
+                UpOnlyNotice((session.privacyMode ? "Some amounts" : "Amounts like " + example) + " read differently in each number format. Choose the one this file uses.").padding(.top, 9)
             }
             UpOnlyFormRow(label: "Numbers") {
                 UpOnlyFormMenu(value: source.numberFormat.rawValue, label: "Number format for " + source.filename) {
@@ -545,13 +565,25 @@ struct UpOnlyImportView: View {
                 }
             }
         }
-        // The summary asks only when it's on (a card export) or nothing in the file is negative; known banks write
-        // money out as negative. The details always show it.
-        if mode == .statements, source.hasSignedAmount, all || source.positiveIsOutflow || !ImportParser.signsKnown(source.grid) && !source.hasNegativeAmount {
+        // Asked for every file whose bank isn't known: a card export's refunds and payments are negative too, so a
+        // negative amount doesn't say which way purchases go. Known banks write money out as negative. The details
+        // always show it.
+        if mode == .statements, source.hasSignedAmount, all || source.positiveIsOutflow || !ImportParser.signsKnown(source.grid) {
             UpOnlyFormRow(label: "Positive amounts are money out") {
                 Toggle("Positive amounts are money out", isOn: Binding(get: { source.positiveIsOutflow }, set: { value in updateSource(source) { $0.positiveIsOutflow = value } }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(UpOnlyTint.brand)
             }.help("Card exports often list purchases as positive amounts and payments as negative.")
+        }
+        // Monzo's Transfers are payments to other people as well as moves between your own accounts, so they count as
+        // spending and income until you say this file's are your own.
+        if mode == .statements, session.importDraft?.transferCategoryRows(source.id).isEmpty == false {
+            UpOnlyFormRow(label: "Transfers are to my own accounts") {
+                Toggle("Transfers are to my own accounts", isOn: Binding(get: { session.importDraft?.transfersAreOwn(source.id) ?? false }, set: { value in
+                    guard var batch = session.importDraft else { return }
+                    invalidateReview(); batch.setTransfersAreOwn(value, source: source.id); session.importDraft = batch
+                    if usesSummary(batch), !importDetails { beginReview() }
+                })).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(UpOnlyTint.brand)
+            }.help("Monzo files payments to friends and bills paid by bank transfer under Transfers too. Off, they count as spending and income. A payee marked as always a transfer stays one.")
         }
     }
     /// "03/04/2025 could be 3 April 2025 or 4 March 2025."
@@ -667,10 +699,11 @@ struct UpOnlyImportView: View {
             let evaluated = ImportBatchProcessor.evaluate(batch, document: document, catalog: catalog)
             var months = Set<String>()
             if batch.mode == .statements {
-                let sources = Dictionary(uniqueKeysWithValues: batch.sources.map { ($0.id, $0) })
+                let sources = Dictionary(batch.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 for row in batch.rows where row.included {
                     if Task.isCancelled { break }
-                    if let source = sources[row.sourceID], let date = try? source.dateFormat.date(row.statement.date) { months.insert(String(ImportDateFormat.today(date).prefix(7))) }
+                    // The months rows are filed under, as review files them: a time with a zone falls on this Mac's day.
+                    if let source = sources[row.sourceID], let date = try? source.dateFormat.date(row.statement.date, in: .current) { months.insert(String(ImportDateFormat.today(date).prefix(7))) }
                 }
             }
             return (evaluated, months.sorted())

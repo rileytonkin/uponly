@@ -8,7 +8,8 @@ extension UpOnlyManagement {
         let groups = Dictionary(grouping: visible, by: \.month)
         let imported = importedEntryAccounts
         // Rows name their account only when statements came from more than one.
-        let accountNames: [UUID: String] = imported.count > 1 ? Dictionary(uniqueKeysWithValues: imported.map { ($0.id, $0.name) }) : [:]
+        // A damaged vault may hold two accounts with one ID; the first names it rather than the page crashing.
+        let accountNames: [UUID: String] = imported.count > 1 ? Dictionary(imported.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }) : [:]
         let searching = !entrySearch.isEmpty || !entryProfile.isEmpty || !entryAccount.isEmpty
         return VStack(alignment: .leading, spacing: 12) {
             // Adding is the + beside the title; search sits alone, like a list's own search field.
@@ -59,6 +60,7 @@ extension UpOnlyManagement {
                 }
                 if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.upOnlySecondary) }
             }
+            if !searching, entryMonth.isEmpty, (session.document?.statementOriginals.files ?? 0) > 0 { StatementOriginalsCard() }
         }
     }
     /// A transaction: what it was, when and in what, and the amount. Clicking it opens its options underneath.
@@ -167,5 +169,37 @@ extension UpOnlyManagement {
         guard let doc = session.document else { return [] }
         let used = Set(doc.entries.compactMap(\.accountID))
         return doc.accounts.filter { used.contains($0.id) }
+    }
+}
+
+/// The statement files kept in the vault, and in every backup, since they were imported: deleting them keeps their
+/// transactions and what recognises them if they're imported again.
+struct StatementOriginalsCard: View {
+    @Environment(UpOnlySession.self) private var session
+    @State private var confirming = false
+    var body: some View {
+        let kept = session.document?.statementOriginals ?? (files: 0, bytes: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Statement files").font(UpOnlyType.section)
+            VStack(alignment: .leading, spacing: 10) {
+                Text((kept.files == 1 ? "1 original file" : "\(kept.files.formatted()) original files") + " · "
+                     + ByteCountFormatter.string(fromByteCount: Int64(kept.bytes), countStyle: .file) + ", encrypted in your vault and its backups.")
+                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if confirming {
+                    Text("Delete the saved statement files? Their transactions stay, and importing a file again still skips what’s already saved. This can’t be undone.")
+                        .font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button("Cancel") { confirming = false }.keyboardShortcut(.cancelAction)
+                        Spacer(minLength: 0)
+                        Button("Delete files", role: .destructive) {
+                            confirming = false
+                            Task { await session.perform { $0.deleteStatementOriginals() } }
+                        }
+                    }
+                } else {
+                    Button("Delete saved files…", role: .destructive) { confirming = true }.disabled(session.isBusy)
+                }
+            }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity, alignment: .leading).modifier(UpOnlyContentSurface())
+        }
     }
 }

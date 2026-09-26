@@ -68,7 +68,8 @@ extension BusinessBook {
 /// Successful source updates cannot erase a different company's cached history.
 nonisolated enum AccountingHistory {
     static func merging(_ incoming: [BusinessBook], into existing: [BusinessBook]) -> [BusinessBook] {
-        var result = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        // A vault holding one company twice keeps its newer copy rather than crashing.
+        var result = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { first, second in second.fetchedAt > first.fetchedAt ? second : first })
         for var book in incoming {
             if let saved = result[book.id] {
                 guard book.fetchedAt >= saved.fetchedAt else { continue }

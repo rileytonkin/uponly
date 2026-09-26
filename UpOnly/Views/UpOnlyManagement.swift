@@ -153,7 +153,7 @@ struct UpOnlyManagement: View {
                 UpOnlyConfirmation(title: "Archive " + portfolio.name + "?", detail: "It leaves net worth and this page, and its history is kept. You can restore it from Archived at the bottom of the page.", confirmTitle: "Archive portfolio",
                     confirm: { Task { await session.perform { doc in doc = try HoldingMutations.archivePortfolio(id: portfolio.id, at: Date(), document: doc) } }; archive = nil }, cancel: { archive = nil }).padding(UpOnlyLayout.inset)
             } else if let entry = entryToRemove {
-                UpOnlyConfirmation(title: "Remove this transaction?", detail: entry.source == .csv ? "This can’t be undone. Importing the same statement again won’t bring it back." : "This can’t be undone.", confirmTitle: "Remove transaction",
+                UpOnlyConfirmation(title: "Remove this transaction?", detail: entry.source == .csv ? "This can’t be undone, though importing its statement again brings it back." : "This can’t be undone.", confirmTitle: "Remove transaction",
                     confirm: { Task { await session.perform { $0.entries.removeAll { $0.id == entry.id } } }; entryToRemove = nil }, cancel: { entryToRemove = nil }).padding(UpOnlyLayout.inset)
             } else if confirmingRestore {
                 UpOnlyConfirmation(title: "Replace everything in Up Only with this backup?",

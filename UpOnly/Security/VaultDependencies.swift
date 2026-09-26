@@ -637,3 +637,20 @@ final class LiveAuthenticator: VaultAuthenticating, @unchecked Sendable {
         return context
     }
 }
+
+/// Reads a regular file of at most `limit` bytes. It never follows a symlink or waits on a pipe, and the type and size
+/// are checked on the open descriptor, so the file can't be swapped between the check and the read.
+nonisolated enum BoundedFile {
+    static func read(_ url: URL, limit: Int) throws -> Data {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw CocoaError(errno == ENOENT ? .fileReadNoSuchFile : .fileReadNoPermission) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw CocoaError(.fileReadUnknown) }
+        guard info.st_size <= off_t(limit) else { throw CocoaError(.fileReadTooLarge) }
+        let data = try handle.read(upToCount: limit + 1) ?? Data()
+        guard data.count <= limit else { throw CocoaError(.fileReadTooLarge) }
+        return data
+    }
+}
