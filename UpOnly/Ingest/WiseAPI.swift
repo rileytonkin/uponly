@@ -14,12 +14,10 @@ nonisolated struct WiseConnection: Codable, Sendable {
     var token: String
     var profiles: [WiseConfiguredProfile]
     static let keychainService = "org.uponly.personal.wise"
-    static func load() throws -> WiseConnection {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                  kSecAttrService as String: keychainService, kSecAttrAccount as String: "connection",
-                                  kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne, kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else {
+    /// Kept in the data-protection Keychain, on this Mac only; one provisioned into the login keychain is moved there
+    /// (`KeychainItem.provisioned`). Reading never asks for authentication, so background work can't prompt.
+    static func load(from keychain: KeychainItemStore = KeychainItem(service: WiseConnection.keychainService, account: "connection", label: "Up Only Wise connection")) throws -> WiseConnection {
+        guard let data = try? KeychainItem.provisioned(from: keychain) else {
             throw ImportFailure("Your private Wise connection is not available in this Mac’s Keychain.")
         }
         let connection = try JSONDecoder().decode(WiseConnection.self, from: data)

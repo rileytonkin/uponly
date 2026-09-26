@@ -2582,6 +2582,7 @@ struct BackgroundRefreshTests {
         #expect(applied.fx.count == 1 && applied.backgroundAppliedAt?["fx"] == now)
         #expect(try BackgroundRefresh.applying(packet, to: applied) == applied)
     }
+    #if UPONLY_PERSONAL
     @Test("Older accounting prefetch cannot replace a newer foreground snapshot")
     func newerAccountingPreserved() throws {
         var (doc, _) = pair()
@@ -2592,6 +2593,14 @@ struct BackgroundRefreshTests {
         let updated = try BackgroundRefresh.applying(BackgroundPacket(source: "accounting", fetchedAt: old.fetchedAt, books: [old]), to: doc)
         #expect(updated.businessAccounting?.first?.warning == "Latest snapshot")
     }
+    #else
+    @Test("The public build ignores an accounting packet: it has no accounting connection")
+    func publicBuildIgnoresAccounting() throws {
+        let (doc, _) = pair()
+        let book = BusinessBook(id: "company", name: "Company", ownership: [OwnershipPeriod(fromMonth: "2025-01", numerator: 1, denominator: 1)], firstMonth: "2025-01", sourceURL: "", basis: "", months: [BusinessMonth(month: "2025-01", profitUSD: 100, sourceRange: "Synthetic")], fetchedAt: Date())
+        #expect(try BackgroundRefresh.applying(BackgroundPacket(source: "accounting", fetchedAt: Date(), books: [book]), to: doc) == doc)
+    }
+    #endif
     @Test("Prefetched prices never require access to the vault key")
     func noVaultKeyInConfiguration() throws {
         let (_, config) = pair()
@@ -2599,6 +2608,214 @@ struct BackgroundRefreshTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String:Any])
         #expect(object["inboxPrivateKey"] == nil && object["vaultKey"] == nil)
         #expect(BackgroundRefresh.interval == 900)
+    }
+}
+
+/// Networking stays opt-in: nothing is asked during setup or of a source that's off, the background configuration
+/// fetches only for the vault on disk, credentials leave the login keychain, and what's sealed is checked again as applied.
+struct NetworkOptInTests {
+    private func temporaryRoot() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("uponly-network-" + UUID().uuidString) }
+    private func configuration(vaultID: UUID) -> BackgroundConfiguration {
+        let inbox = VaultCrypto.makeInboxKeyPair(), signing = VaultCrypto.makeSigningKeyPair()
+        return BackgroundConfiguration(vaultID: vaultID, inboxPublicKey: inbox.publicX963, signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR"], metals: [], pricesEnabled: true, fxEnabled: true, metalsEnabled: false, coinGeckoKey: "")
+    }
+    private func empty() -> VaultDocument {
+        let inbox = VaultCrypto.makeInboxKeyPair()
+        return VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
+    }
+    @Test("Nothing is looked up before setup completes, and each source only with its own switch on")
+    func lookupsFollowSwitches() async throws {
+        var settings = AppSettings()
+        settings.automaticPrices = true; settings.automaticFX = true; settings.automaticMetals = true
+        let sources: [PriceHistoryRequest.Source] = [.crypto, .metal, .fx]
+        let duringSetup = sources.map { settings.allowsLookups($0) }
+        #expect(duringSetup == [false, false, false])
+        settings.setupComplete = true
+        let afterSetup = sources.map { settings.allowsLookups($0) }
+        #expect(afterSetup == [true, true, true])
+        settings.automaticPrices = false; settings.automaticMetals = false
+        let fxOnly = sources.map { settings.allowsLookups($0) }
+        #expect(fxOnly == [false, false, true])
+        // A refresh while setup runs returns before any request, whatever its switches say.
+        var doc = empty()
+        doc.settings.automaticPrices = true; doc.settings.automaticFX = true; doc.settings.automaticMetals = true
+        let portfolio = Portfolio(name: "Ledger", createdAt: Date().addingTimeInterval(-30 * 86400)); doc.portfolios = [portfolio]
+        doc.holdings = [Holding(portfolioID: portfolio.id, assetID: try CanonicalAssetID("bitcoin"), assetName: "Bitcoin", createdAt: portfolio.createdAt)]
+        doc.accounts = [Account(name: "Sample", currency: "EUR")]
+        let update = try await PublicPrices.update(document: doc)
+        #expect(update.quotes.isEmpty && update.rates.isEmpty && update.coverage.isEmpty && update.messages.isEmpty)
+    }
+    @Test("Background sources fetch only for the vault in the folder, named by its file's plain-text header")
+    func configurationBelongsToVaultOnDisk() throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let layout = VaultLayout(root: root.appendingPathComponent("Vault", isDirectory: true))
+        let vaultID = UUID(), keychain = MemoryBackgroundStore(), config = configuration(vaultID: vaultID)
+        try config.save(to: keychain)
+        func header(_ id: UUID) throws -> Data { try JSONSerialization.data(withJSONObject: ["format": 1, "vaultID": id.uuidString, "generation": 3, "nonce": "", "ciphertext": "", "tag": ""]) }
+        // No vault (deleted, or setup stopped after its recovery file): nothing is fetched.
+        #expect(try BackgroundConfiguration.load(for: layout, keychain: keychain) == nil)
+        try FileManager.default.createDirectory(at: layout.root, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: layout.recovery)
+        #expect(try BackgroundConfiguration.load(for: layout, keychain: keychain) == nil)
+        try header(vaultID).write(to: layout.current)
+        #expect(try BackgroundConfiguration.load(for: layout, keychain: keychain) == config)
+        // Another vault in its place (a restore, or setup after Start over): this configuration fetches nothing.
+        try header(UUID()).write(to: layout.current)
+        #expect(try BackgroundConfiguration.load(for: layout, keychain: keychain) == nil)
+        // A current file that can't be read falls back to the previous copy's header; a link is never followed.
+        try FileManager.default.removeItem(at: layout.current)
+        let elsewhere = root.appendingPathComponent("elsewhere.uponly")
+        try header(UUID()).write(to: elsewhere); try header(vaultID).write(to: layout.previous)
+        try FileManager.default.createSymbolicLink(at: layout.current, withDestinationURL: elsewhere)
+        #expect(layout.storedVaultID() == vaultID)
+        #expect(try BackgroundConfiguration.load(for: layout, keychain: keychain) == config)
+    }
+    @Test("Start over, a new vault or another vault's restore deletes the configuration and what it left; the same vault keeps them")
+    func forgetOtherVaults() throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let vaultID = UUID(), keychain = MemoryBackgroundStore()
+        try configuration(vaultID: vaultID).save(to: keychain)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let left = [BackgroundRefresh.path("crypto", root: root), BackgroundRefreshSchedule.path(root, source: "crypto"), BackgroundRefreshSchedule.path(root, source: "history")]
+        for url in left { try Data("x".utf8).write(to: url) }
+        #expect(!BackgroundRefresh.forget(unless: vaultID, root: root, keychain: keychain))
+        #expect(keychain.current != nil && left.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        #expect(BackgroundRefresh.forget(unless: UUID(), root: root, keychain: keychain))
+        #expect(keychain.current == nil && !left.contains { FileManager.default.fileExists(atPath: $0.path) })
+        // With no vault left, whatever is saved goes.
+        try configuration(vaultID: vaultID).save(to: keychain)
+        #expect(BackgroundRefresh.forget(unless: nil, root: root, keychain: keychain) && keychain.current == nil)
+    }
+    @Test("A credential provisioned into the login keychain moves to the data-protection Keychain, the login item going only once it's saved")
+    func provisionedCredentialsMove() throws {
+        let store = MemoryBackgroundStore(), first = Data("first".utf8), second = Data("second".utf8)
+        #expect(try KeychainItem.provisioned(from: store) == nil)
+        store.legacy = first
+        // A move that fails leaves the login item where it is, still used.
+        store.saveFails = true
+        #expect(try KeychainItem.provisioned(from: store) == first)
+        #expect(store.legacy == first && store.current == nil && !store.changes.contains("delete old"))
+        store.saveFails = false
+        #expect(try KeychainItem.provisioned(from: store) == first)
+        #expect(store.current == first && store.legacy == nil && store.changes == ["save", "save", "delete old"])
+        // Once moved, it's read from its new place.
+        #expect(try KeychainItem.provisioned(from: store) == first && store.changes.count == 3)
+        // Provisioned again, say with a new token: the login item wins and is moved.
+        store.legacy = second
+        #expect(try KeychainItem.provisioned(from: store) == second && store.current == second && store.legacy == nil)
+        // A login item that can't be read now doesn't hide the moved one; with none moved, loading fails.
+        store.legacy = first; store.unreadable = [true]
+        #expect(try KeychainItem.provisioned(from: store) == second)
+        store.current = nil
+        #expect(throws: VaultError.unavailable) { _ = try KeychainItem.provisioned(from: store) }
+        #expect(store.legacy == first)
+    }
+    @Test("A sealed packet is checked again as it's applied, and refused whole if anything in it is out of bounds")
+    func sealedPacketsRevalidated() throws {
+        var enabled = empty(); enabled.settings.automaticPrices = true; enabled.settings.automaticFX = true
+        let doc = enabled, now = Date()
+        func quote(_ id: String = "bitcoin", price: Decimal = 100, at time: Date? = nil) -> QuoteObservation {
+            QuoteObservation(assetID: CanonicalAssetID(rawValue: id), priceUSD: PreciseDecimal(price), providerTime: time ?? now.addingTimeInterval(-60), fetchedAt: now, provider: "Synthetic")
+        }
+        func rate(_ currency: String = "EUR", _ value: Decimal = 2, at time: Date? = nil) -> FXObservation {
+            FXObservation(sourceCurrency: currency, targetCurrency: "USD", rate: PreciseDecimal(value), providerTime: time ?? now.addingTimeInterval(-60), fetchedAt: now, provider: "Synthetic")
+        }
+        func crypto(_ quotes: [QuoteObservation]) throws -> VaultDocument { try BackgroundRefresh.applying(BackgroundPacket(source: "crypto", fetchedAt: now, prices: PriceUpdate(quotes: quotes)), to: doc, now: now) }
+        func fx(_ update: PriceUpdate, fetchedAt: Date? = nil) throws -> VaultDocument { try BackgroundRefresh.applying(BackgroundPacket(source: "fx", fetchedAt: fetchedAt ?? now, prices: update), to: doc, now: now) }
+        #expect(try crypto([quote()]).quotes.count == 1)
+        for bad in [quote(price: 0), quote(price: -5), quote("Bit/coin"), quote(at: now.addingTimeInterval(600)), quote(at: Date(timeIntervalSince1970: 1_000_000_000))] {
+            #expect(throws: (any Error).self) { try crypto([quote(), bad]) }
+        }
+        #expect(try fx(PriceUpdate(rates: [rate()])).fx.count == 1)
+        for bad in [rate("eu"), rate("ZZZ"), rate("USD"), rate("EUR", 0), rate(at: now.addingTimeInterval(3600))] {
+            #expect(throws: (any Error).self) { try fx(PriceUpdate(rates: [bad])) }
+        }
+        let backwards = PriceHistoryCoverage(key: "fx:EUR", start: now, end: now.addingTimeInterval(-86400), checkedAt: now, complete: true)
+        #expect(throws: (any Error).self) { try fx(PriceUpdate(rates: [rate()], coverage: [backwards])) }
+        // A packet dated ahead of this Mac's clock is refused too.
+        #expect(throws: (any Error).self) { try fx(PriceUpdate(rates: [rate()]), fetchedAt: now.addingTimeInterval(3600)) }
+    }
+    @Test("Schedule and cache files are read only as plain files within their size, never through a link")
+    func boundedCacheReads() async throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let vaultID = UUID(), now = Date(timeIntervalSince1970: 1_800_000_000), schedule = BackgroundRefreshSchedule()
+        #expect(try await schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now))
+        #expect(try await !schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now.addingTimeInterval(60)))
+        // Padded past 4 KiB, the record is no record, so the slot is free.
+        let record = BackgroundRefreshSchedule.path(root, source: "crypto")
+        var padded = try Data(contentsOf: record); padded.append(Data(repeating: 0x20, count: 5000))
+        try padded.write(to: record)
+        #expect(try await schedule.claim(vaultID: vaultID, root: root, source: "crypto", now: now.addingTimeInterval(120)))
+        // A cache file that's a link, or too big, is reported and never read.
+        var doc = empty(); let config = configuration(vaultID: doc.vaultID)
+        doc.backgroundSignerPublicKey = config.signingPublicKey
+        let elsewhere = root.appendingPathComponent("elsewhere")
+        try BackgroundRefresh.save(BackgroundPacket(source: "fx", fetchedAt: Date(), prices: PriceUpdate()), configuration: config, root: elsewhere)
+        try FileManager.default.createSymbolicLink(at: BackgroundRefresh.path("fx", root: root), withDestinationURL: BackgroundRefresh.path("fx", root: elsewhere))
+        try Data(repeating: 0x20, count: 8 * 1024 * 1024 + 1).write(to: BackgroundRefresh.path("crypto", root: root))
+        let result = BackgroundRefresh.cachedPackets(document: doc, root: root)
+        #expect(result.packets.isEmpty && Set(result.issues) == ["Fx cached data", "Crypto cached data"])
+    }
+    @Test("Accounting refreshes hourly, and a company left out counts as a failed attempt")
+    func accountingSchedule() async throws {
+        #expect(BackgroundRefreshSchedule.interval(for: "accounting") == 3600)
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let config = configuration(vaultID: UUID()), schedule = BackgroundRefreshSchedule()
+        let missing = BusinessBook(id: "company", name: "Company", ownership: [], firstMonth: "2025-01", sourceURL: "", basis: "", fetchedAt: .distantPast)
+        let ok = await BackgroundRefresh.scheduled("accounting", configuration: config, root: root, schedule: schedule, incomplete: { $0.books?.contains { $0.fetchedAt == .distantPast } == true }) {
+            BackgroundPacket(source: "accounting", fetchedAt: Date(), books: [missing])
+        }
+        #expect(!ok && FileManager.default.fileExists(atPath: BackgroundRefresh.path("accounting", root: root).path))
+        #expect(await schedule.failed(vaultID: config.vaultID, root: root, source: "accounting"))
+    }
+    @Test("History is asked for only while a coin or metal was held, never after it was sold, nor for an invalid coin ID")
+    func historyOnlyWhileHeld() throws {
+        let now = try ImportDateFormat.iso.date("2026-09-20"), start = now.addingTimeInterval(-200 * 86400), sold = now.addingTimeInterval(-100 * 86400 + 3600)
+        var doc = empty(); doc.settings.automaticPrices = true; doc.settings.automaticMetals = true
+        let ledger = Portfolio(name: "Ledger", createdAt: start), safe = Portfolio(name: "Safe", createdAt: start, kind: .metals)
+        doc.portfolios = [ledger, safe]
+        let bitcoin = try CanonicalAssetID("bitcoin")
+        doc.holdings = [Holding(portfolioID: ledger.id, assetID: bitcoin, assetName: "Bitcoin", createdAt: start), Holding(portfolioID: safe.id, assetID: PreciousMetal.gold.assetID, assetName: "Gold", createdAt: start)]
+        func requests(_ source: PriceHistoryRequest.Source) -> [PriceHistoryRequest] { PriceHistory.requests(document: doc, now: now).filter { $0.source == source } }
+        #expect(requests(.crypto).map(\.end).max() == now && requests(.metal).map(\.end).max() == now)
+        // Sold: the coin's holding archived, and the gold's whole portfolio. Each is asked for through its last day.
+        let lastDay = UTCDay.start(of: sold).addingTimeInterval(86400)
+        doc.holdings[0].archivedAt = sold; doc.portfolios[1].archivedAt = sold
+        #expect(requests(.crypto).map(\.start).min() == start && requests(.crypto).map(\.end).max() == lastDay)
+        #expect(requests(.metal).map(\.end).max() == lastDay)
+        // Bought again later: only that stretch is added, not the days in between.
+        let again = now.addingTimeInterval(-10 * 86400)
+        doc.holdings.append(Holding(portfolioID: ledger.id, assetID: bitcoin, assetName: "Bitcoin", createdAt: again))
+        #expect(requests(.crypto).map(\.end).max() == now && !requests(.crypto).contains { $0.start < again && $0.end > lastDay })
+        // An ID that isn't a valid coin ID is never asked for.
+        doc.holdings.append(Holding(portfolioID: ledger.id, assetID: CanonicalAssetID(rawValue: "../markets"), assetName: "Bad", createdAt: start))
+        #expect(!PriceHistory.requests(document: doc, now: now).contains { $0.identifier == "../markets" })
+    }
+    @Test("Coin IDs reach request paths only valid and percent-encoded, and a bad one can't cost the others their prices")
+    func coinIDsInRequests() async throws {
+        #expect(try PublicPrices.pathSegment("usd-coin") == "usd-coin")
+        for bad in ["../markets", "bit/coin", "coin?x=1", "Bitcoin", "", "a%2Fb"] {
+            #expect(throws: (any Error).self) { try PublicPrices.pathSegment(bad) }
+        }
+        // Refused before anything is sent.
+        await #expect(throws: PriceError.invalidResponse) { try await PublicPrices.request(host: "api.coingecko.com", path: "/api/v3/coins/a b/market_chart/range", query: []) }
+        await #expect(throws: PriceError.invalidResponse) { try await PublicPrices.request(host: "api.coingecko.com", path: "/api/v3/coins/%zz", query: []) }
+        // Only invalid IDs: nothing to ask for, and no error.
+        #expect(try await PublicPrices.marketQuotes(ids: ["bad id", "../x"], key: "").quotes.isEmpty)
+    }
+    @Test("Several buys are saved only under a valid coin ID")
+    @MainActor func buysNeedValidCoinID() async throws {
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-network-test-" + UUID().uuidString))
+        let session = UpOnlySession(testing: VaultStore(layout: layout, io: MemoryFileIO(), keys: MemoryKeyStore(), authenticator: FixtureAuthenticator()), layout: layout)
+        await session.create(recovery: .random())
+        let buy = UpOnlySession.Buy(quantity: 1, date: Date().addingTimeInterval(-86400), cost: 100)
+        await #expect(throws: ImportFailure.self) {
+            try await session.commitBuys(portfolioID: nil, portfolioName: "Ledger", owner: nil, assetID: "../markets", assetName: "Bad", kind: .crypto, buys: [buy])
+        }
+        #expect(session.document?.holdings.isEmpty == true)
+        try await session.commitBuys(portfolioID: nil, portfolioName: "Ledger", owner: nil, assetID: "bitcoin", assetName: "Bitcoin", kind: .crypto, buys: [buy])
+        #expect(session.document?.holdings.map(\.assetID.rawValue) == ["bitcoin"])
     }
 }
 

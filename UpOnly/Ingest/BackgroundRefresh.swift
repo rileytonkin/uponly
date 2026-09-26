@@ -18,68 +18,113 @@ nonisolated struct BackgroundConfiguration: Codable, Sendable, Equatable {
     var wiseEnabled: Bool = false
     var accountingEnabled: Bool = false
     static var service: String { (Bundle.main.bundleIdentifier ?? "org.uponly") + ".background" }
-    /// Moved once from the login keychain, where earlier builds kept it, and only when nothing is saved in its new place.
-    /// The old item is deleted only after the new one is saved, and keeps working until then. An item that can't be read
-    /// now, old or new, is never taken for none: loading fails and tries again next time, so nothing is replaced or orphaned.
-    static func load(from keychain: BackgroundConfigurationStore = BackgroundKeychain()) throws -> Self? {
-        if let data = try keychain.read(legacy: false) { return try JSONDecoder().decode(Self.self, from: data) }
-        guard let data = try keychain.read(legacy: true) else { return nil }
-        let legacy = try JSONDecoder().decode(Self.self, from: data)
-        // Saved as it was read, so nothing in it is lost on the way.
-        if (try? keychain.save(data)) != nil { keychain.deleteLegacy() }
-        return legacy
+    /// Read only from the data-protection Keychain. Earlier builds kept it in the login keychain, where any process
+    /// running as you could have put one, so an item there is never read, only deleted: the next unlock saves the
+    /// configuration again. An item that can't be read now is never taken for none: loading fails and tries again next time.
+    static func load(from keychain: KeychainItemStore = KeychainItem.backgroundSources) throws -> Self? {
+        keychain.deleteLegacy()
+        guard let data = try keychain.read(legacy: false) else { return nil }
+        return try JSONDecoder().decode(Self.self, from: data)
     }
-    func save(to keychain: BackgroundConfigurationStore = BackgroundKeychain()) throws {
+    /// The saved configuration, only when it belongs to the vault in `layout`: the folder holds a vault, and its file's
+    /// plain-text header, or its previous copy's, names the configuration's vault. One left by a vault that was deleted,
+    /// started over or replaced fetches nothing.
+    static func load(for layout: VaultLayout, keychain: KeychainItemStore = KeychainItem.backgroundSources) throws -> Self? {
+        guard layout.holdsVault(DiskFileIO()), let stored = layout.storedVaultID(), let saved = try load(from: keychain), saved.vaultID == stored else { return nil }
+        return saved
+    }
+    func save(to keychain: KeychainItemStore = KeychainItem.backgroundSources) throws {
         try keychain.save(JSONEncoder().encode(self))
     }
 }
-/// Where the background configuration is kept: the Keychain in the app, a stand-in in tests.
-protocol BackgroundConfigurationStore: Sendable {
+/// A Keychain item the app keeps in the data-protection Keychain, and the login keychain's item of the same service and
+/// account that came before it: the Keychain in the app, a stand-in in tests.
+protocol KeychainItemStore: Sendable {
     /// The saved bytes, or nil if there are none. Throws when there may be some that can't be read now.
     nonisolated func read(legacy: Bool) throws -> Data?
-    /// Saves to the current item, replacing what's there.
+    /// Saves to the data-protection item, replacing what's there.
     nonisolated func save(_ data: Data) throws
-    /// Deletes the item earlier builds saved.
+    /// Deletes the data-protection item; none there is nothing to do.
+    nonisolated func delete() throws
+    /// Deletes the login keychain's item.
     nonisolated func deleteLegacy()
 }
-nonisolated struct BackgroundKeychain: BackgroundConfigurationStore {
+nonisolated struct KeychainItem: KeychainItemStore {
+    var service: String
+    var account: String
+    var label: String
+    /// The background sources' configuration.
+    static var backgroundSources: Self { Self(service: BackgroundConfiguration.service, account: "sources", label: "Up Only background sources") }
     /// In the data-protection Keychain, like the vault key, in the app's default access group (the first of its
     /// keychain-access-groups), on this Mac only. Readable from the Mac's first unlock, so refreshes run while the vault is locked.
     var item: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: BackgroundConfiguration.service, kSecAttrAccount as String: "sources",
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
          kSecAttrSynchronizable as String: kCFBooleanFalse as Any, kSecUseDataProtectionKeychain as String: true]
     }
-    /// Where earlier builds kept it: the login keychain, with the same service and account.
+    /// The login keychain's item with the same service and account.
     var legacyItem: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: BackgroundConfiguration.service, kSecAttrAccount as String: "sources",
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account,
          kSecUseDataProtectionKeychain as String: false]
     }
     /// A new item's attributes: the item, its label and its protection class.
     func addition(_ data: Data) -> [String: Any] {
         var add = item
         add[kSecValueData as String] = data
-        add[kSecAttrLabel as String] = "Up Only background sources"
+        add[kSecAttrLabel as String] = label
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return add
     }
     func read(legacy: Bool) throws -> Data? {
         var query = legacy ? legacyItem : item
         query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else { throw ImportFailure("Background source configuration is unavailable.") }
+        guard status == errSecSuccess, let data = result as? Data else { throw ImportFailure(label + " can’t be read from the Keychain now.") }
         return data
     }
     func save(_ data: Data) throws {
         let status = SecItemUpdate(item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
-            guard SecItemAdd(addition(data) as CFDictionary, nil) == errSecSuccess else { throw ImportFailure("Background sources could not be saved.") }
-        } else if status != errSecSuccess { throw ImportFailure("Background sources could not be updated.") }
+            guard SecItemAdd(addition(data) as CFDictionary, nil) == errSecSuccess else { throw ImportFailure(label + " could not be saved.") }
+        } else if status != errSecSuccess { throw ImportFailure(label + " could not be updated.") }
+    }
+    func delete() throws {
+        let status = SecItemDelete(item as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw ImportFailure(label + " could not be deleted.") }
     }
     func deleteLegacy() {
-        _ = SecItemDelete(legacyItem as CFDictionary)
+        var query = legacyItem
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        _ = SecItemDelete(query as CFDictionary)
+    }
+    /// A credential set up outside the app (the Wise and accounting connections), which writes it to the login keychain,
+    /// where any process running as you can ask for it. It's moved: saved to the data-protection item, and the login item
+    /// deleted only once that's saved. A newly provisioned login item always wins and is moved the same way; with none,
+    /// the data-protection item is read. A login item that can't be read now doesn't hide one already moved.
+    static func provisioned(from store: KeychainItemStore) throws -> Data? {
+        let provisioned: Data?
+        do { provisioned = try store.read(legacy: true) }
+        catch {
+            if let moved = try store.read(legacy: false) { return moved }
+            throw error
+        }
+        guard let provisioned else { return try store.read(legacy: false) }
+        if (try? store.save(provisioned)) != nil { store.deleteLegacy() }
+        return provisioned
+    }
+}
+extension VaultLayout {
+    /// The vault ID in the plain-text header of the vault file, or of its previous copy when that can't be read: only
+    /// the header's ID is decoded, no key is needed, and the file is read within the vault's size limit.
+    nonisolated func storedVaultID() -> UUID? {
+        struct Header: Decodable { var vaultID: UUID }
+        for url in [current, previous] {
+            if let data = try? BoundedFile.read(url, limit: VaultLimits.maxVaultFileBytes), let header = try? JSONDecoder().decode(Header.self, from: data) { return header.vaultID }
+        }
+        return nil
     }
 }
 // In an extension, so the memberwise initializer stays.
@@ -114,7 +159,7 @@ nonisolated struct BackgroundBankProfile: Codable, Sendable {
 actor BackgroundRefreshSchedule {
     static let shared = BackgroundRefreshSchedule()
     nonisolated static func interval(for source: String) -> TimeInterval {
-        source == "banks" ? 12 * 60 * 60 : ["crypto", "metals", "history"].contains(source) ? 60 * 60 : 15 * 60
+        source == "banks" ? 12 * 60 * 60 : ["crypto", "metals", "history", "accounting"].contains(source) ? 60 * 60 : 15 * 60
     }
     nonisolated private struct Record: Codable {
         var vaultID: UUID
@@ -123,9 +168,10 @@ actor BackgroundRefreshSchedule {
         /// Consecutive failures; each doubles the retry delay.
         var failures: Int?
     }
-    private func path(_ root: URL, source: String) -> URL { root.appendingPathComponent("Background-" + source + ".schedule") }
+    nonisolated static func path(_ root: URL, source: String) -> URL { root.appendingPathComponent("Background-" + source + ".schedule") }
     private func record(vaultID: UUID, root: URL, source: String) -> Record? {
-        guard let data = try? Data(contentsOf: path(root, source: source)),
+        // A record is a few dozen bytes; anything bigger, or not a plain file, is no record.
+        guard let data = try? BoundedFile.read(Self.path(root, source: source), limit: 4096),
               var record = try? VaultJSON.decode(Record.self, from: data), record.vaultID == vaultID else { return nil }
         // The file is plain text: an edited count mustn't overflow the back-off arithmetic and crash the app.
         record.failures = record.failures.map { min(max($0, 0), 64) }
@@ -149,13 +195,13 @@ actor BackgroundRefreshSchedule {
     }
     private func write(_ record: Record, root: URL, source: String) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try DiskFileIO().write(VaultJSON.encode(record), to: path(root, source: source), sync: false)
+        try DiskFileIO().write(VaultJSON.encode(record), to: Self.path(root, source: source), sync: false)
     }
     func failed(vaultID: UUID, root: URL, source: String = "banks") -> Bool { record(vaultID: vaultID, root: root, source: source)?.failed == true }
     /// Forgets the last attempt so a changed key, a newly enabled source or an attempt cut short by going offline is tried straight away.
     func reset(vaultID: UUID, root: URL, sources: [String]) {
         for source in sources where record(vaultID: vaultID, root: root, source: source) != nil {
-            try? FileManager.default.removeItem(at: path(root, source: source))
+            try? FileManager.default.removeItem(at: Self.path(root, source: source))
         }
     }
 }
@@ -209,23 +255,37 @@ nonisolated enum BackgroundRefresh {
         var packets: [BackgroundPacket] = [], issues: [String] = []
         for source in sources {
             if Task.isCancelled { return ([], []) }
-            let url = path(source, root: root)
-            guard FileManager.default.fileExists(atPath: url.path) else { continue }
             do {
-                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                guard ((attributes[.size] as? NSNumber)?.intValue ?? Int.max) <= 8 * 1024 * 1024 else { continue }
-                let envelope = try VaultJSON.decode(BackgroundEnvelope.self, from: Data(contentsOf: url))
+                // Within the size a packet is saved at, and only a plain file: never through a link or from a pipe.
+                let envelope = try VaultJSON.decode(BackgroundEnvelope.self, from: BoundedFile.read(path(source, root: root), limit: 8 * 1024 * 1024))
                 let packet = try envelope.open(document: document)
                 guard packet.source == source else { throw VaultError.corrupt }
                 if packet.fetchedAt > (document.backgroundAppliedAt?[source] ?? .distantPast) { packets.append(packet) }
-            } catch { issues.append(source.capitalized + " cached data") }
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile { continue }
+            catch { issues.append(source.capitalized + " cached data") }
         }
         return Task.isCancelled ? ([], []) : (packets, issues)
     }
+    /// Deletes the background configuration, with the packets and schedule it left, unless it belongs to `vaultID` (nil
+    /// when no vault is left): a vault that was started over or replaced by another keeps no sources fetched, and no coin
+    /// IDs or keys saved, on this Mac. One that can't be read is deleted too; the next unlock saves it again. Returns
+    /// whether it deleted it.
+    @discardableResult static func forget(unless vaultID: UUID?, root: URL, keychain: KeychainItemStore = KeychainItem.backgroundSources) -> Bool {
+        if let vaultID, (try? BackgroundConfiguration.load(from: keychain))?.vaultID == vaultID { return false }
+        try? keychain.delete()
+        deleteSealed(root: root)
+        for source in sources + ["history"] { try? FileManager.default.removeItem(at: BackgroundRefreshSchedule.path(root, source: source)) }
+        return true
+    }
+    /// Deletes every source's sealed packet: after a new signing key or vault they could never be opened.
+    static func deleteSealed(root: URL) {
+        for source in sources { try? FileManager.default.removeItem(at: path(source, root: root)) }
+    }
     /// Claims the source's slot, fetches and seals its packet, and records the outcome. Returns false if the
     /// source is failing. Going offline or being cancelled isn't a failed attempt: the slot is freed for the reconnect.
+    /// A packet saved with a part missing (`incomplete`) counts as failing, so it's retried and reported as a failure is.
     static func scheduled(_ source: String, configuration: BackgroundConfiguration, root: URL, schedule: BackgroundRefreshSchedule = .shared,
-                          fetch: () async throws -> BackgroundPacket) async -> Bool {
+                          incomplete: (BackgroundPacket) -> Bool = { _ in false }, fetch: () async throws -> BackgroundPacket) async -> Bool {
         let vaultID = configuration.vaultID
         do {
             guard try await schedule.claim(vaultID: vaultID, root: root, source: source) else {
@@ -233,9 +293,11 @@ nonisolated enum BackgroundRefresh {
             }
         } catch { return false }
         do {
-            try save(try await fetch(), configuration: configuration, root: root)
-            try await schedule.finish(vaultID: vaultID, root: root, failed: false, source: source)
-            return true
+            let packet = try await fetch()
+            try save(packet, configuration: configuration, root: root)
+            let failed = incomplete(packet)
+            try await schedule.finish(vaultID: vaultID, root: root, failed: failed, source: source)
+            return !failed
         } catch {
             if PublicPrices.isOffline(error) { await schedule.reset(vaultID: vaultID, root: root, sources: [source]) }
             else { try? await schedule.finish(vaultID: vaultID, root: root, failed: true, source: source) }
@@ -286,37 +348,75 @@ nonisolated enum BackgroundRefresh {
             if !ok { errors.append("Bank balances") }
         }
         if configuration.accountingEnabled {
-            do {
+            // Hourly, like prices. A company that couldn't refresh (kept with no fetch time, `AccountingAPI.collect`) is
+            // reported only as "Accounting", so no company's name reaches the lock screen; the others' results are saved.
+            let ok = await scheduled("accounting", configuration: configuration, root: root, incomplete: { $0.books?.contains { $0.fetchedAt == .distantPast } == true }) {
                 let result = try await AccountingAPI.fetchResult(AccountingConnection.load())
-                if !result.failedSources.isEmpty { errors.append(contentsOf: result.failedSources.map { $0 + " accounting" }) }
-                try save(BackgroundPacket(source: "accounting", fetchedAt: Date(), books: result.books), configuration: configuration, root: root)
-            } catch { errors.append("Accounting") }
+                return BackgroundPacket(source: "accounting", fetchedAt: Date(), books: result.books)
+            }
+            if !ok { errors.append("Accounting") }
         }
         #endif
         return errors
     }
-    static func applying(_ packet: BackgroundPacket, to document: VaultDocument) throws -> VaultDocument {
+    static func applying(_ packet: BackgroundPacket, to document: VaultDocument, now: Date = Date()) throws -> VaultDocument {
         var next = document
         guard packet.fetchedAt > (document.backgroundAppliedAt?[packet.source] ?? .distantPast) else { return next }
         switch packet.source {
         case "crypto", "fx", "metals":
             let enabled = packet.source == "crypto" ? document.settings.automaticPrices : packet.source == "fx" ? document.settings.automaticFX : document.settings.automaticMetals
             guard enabled, let prices = packet.prices else { return next }
-            next = try PriceHistory.applying(prices, to: next, now: Date())
+            try validate(packet, now: now)
+            next = try PriceHistory.applying(prices, to: next, now: now)
+        // Company accounting and bank balances come only from the private build's connections; the public build
+        // ignores such a packet.
+        #if UPONLY_PERSONAL
         case "accounting":
+            try validate(packet, now: now)
             if let books = packet.books {
                 next.businessAccounting = AccountingHistory.merging(books, into: document.businessAccounting ?? [])
                 OwnerPayments.reconcile(in: &next)
                 next.track(.cashFlow)
             }
-        #if UPONLY_PERSONAL
         case "banks":
             guard document.settings.automaticWise, let banks = packet.banks else { return next }
+            try validate(packet, now: now)
             next = try WiseAPI.apply(WiseSnapshot(profiles: banks.map { WiseProfileSnapshot(profile: $0.profile, balances: $0.balances, activities: $0.activities ?? []) }, fetchedAt: packet.fetchedAt), to: next)
         #endif
         default: return next
         }
         var applied = next.backgroundAppliedAt ?? [:]; applied[packet.source] = packet.fetchedAt; next.backgroundAppliedAt = applied
         return next
+    }
+    /// A sealed packet is checked again as it's applied, as its fetch checked it: the key that signs it sits in the
+    /// Keychain configuration, readable without the vault, so nothing in it is taken on trust. Prices and rates must be
+    /// positive, asset IDs and currencies well formed, times no earlier than 2009 and no more than five minutes ahead, and
+    /// covered ranges within those days. Anything else rejects the whole packet.
+    static func validate(_ packet: BackgroundPacket, now: Date) throws {
+        let earliest = Date(timeIntervalSince1970: 1_230_768_000), latest = now.addingTimeInterval(300)
+        func check(_ time: Date) throws { guard time >= earliest, time <= latest else { throw VaultError.corrupt } }
+        try check(packet.fetchedAt)
+        if let prices = packet.prices {
+            for quote in prices.quotes {
+                guard (try? MoneyInput.canonicalAssetID(quote.assetID.rawValue)) == quote.assetID.rawValue else { throw VaultError.corrupt }
+                try MoneyInput.requirePositiveFinite(quote.priceUSD.value)
+                try check(quote.providerTime); try check(quote.fetchedAt)
+            }
+            for rate in prices.rates {
+                guard (try? MoneyInput.normalizeCurrency(rate.sourceCurrency)) == rate.sourceCurrency, rate.sourceCurrency != "USD", rate.targetCurrency == "USD" else { throw VaultError.corrupt }
+                try MoneyInput.requirePositiveFinite(rate.rate.value)
+                try check(rate.providerTime); try check(rate.fetchedAt)
+            }
+            for range in prices.coverage {
+                guard range.start < range.end, range.start >= earliest, range.end <= UTCDay.start(of: now).addingTimeInterval(86400) else { throw VaultError.corrupt }
+                try check(range.checkedAt)
+            }
+        }
+        // A company that couldn't refresh is kept with no fetch time (`AccountingAPI.collect`).
+        for book in packet.books ?? [] {
+            guard book.fetchedAt <= latest, MonthKey(book.firstMonth) != nil,
+                  book.ownership.allSatisfy({ MonthKey($0.fromMonth) != nil && $0.numerator >= 0 && $0.denominator > 0 && $0.numerator <= $0.denominator }),
+                  book.months.allSatisfy({ MonthKey($0.month) != nil && MoneyInput.isFinite($0.profitUSD) && ($0.revenueUSD.map(MoneyInput.isFinite) ?? true) && ($0.expensesUSD.map(MoneyInput.isFinite) ?? true) }) else { throw VaultError.corrupt }
+        }
     }
 }

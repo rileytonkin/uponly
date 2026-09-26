@@ -215,11 +215,10 @@ nonisolated struct AccountingConnection: Codable, Sendable {
     var privateKeyDER: Data
     var sources: [Source]
     static let service = "org.uponly.personal.accounting"
-    static func load() throws -> Self {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                   kSecAttrAccount as String: "connection", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne, kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { throw ImportFailure("The private accounting connection is unavailable in Keychain.") }
+    /// Kept in the data-protection Keychain, on this Mac only; one provisioned into the login keychain is moved there
+    /// (`KeychainItem.provisioned`). Reading never asks for authentication, so background work can't prompt.
+    static func load(from keychain: KeychainItemStore = KeychainItem(service: AccountingConnection.service, account: "connection", label: "Up Only accounting connection")) throws -> Self {
+        guard let data = try? KeychainItem.provisioned(from: keychain) else { throw ImportFailure("The private accounting connection is unavailable in Keychain.") }
         let value = try JSONDecoder().decode(Self.self, from: data)
         guard !value.email.isEmpty, value.sources.count > 0, value.sources.count <= 10,
               Set(value.sources.map(\.id)).count == value.sources.count else { throw ImportFailure("Check the accounting connection configuration.") }
