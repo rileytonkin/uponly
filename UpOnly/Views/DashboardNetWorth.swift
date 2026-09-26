@@ -67,7 +67,7 @@ extension UpOnlyUnlockedPanel {
                         Text("Last complete value · " + UpOnlyFormat.utcDate(last.at)).font(UpOnlyType.body).foregroundStyle(.secondary)
                     } else {
                         // How the total moved over the chart's range, beside how the holdings stand against what was paid.
-                        let stats = [snapshot.change.map(changeStat), snapshot.allTime.map(allTimeStat)].compactMap { $0 }
+                        let stats = [snapshot.change.map { changeStat($0) }, snapshot.allTime.map(allTimeStat)].compactMap { $0 }
                         if !stats.isEmpty { headlineStats(stats) }
                     }
                     if let stale = staleNote(valuation) {

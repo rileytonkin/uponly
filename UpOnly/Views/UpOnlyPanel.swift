@@ -250,8 +250,10 @@ struct UpOnlyUnlockedPanel: View {
     var body: some View {
         let group = showingSwitcher ? nil : selectedGroupID
         let home = session.dashboardSelection == .all && !showingSwitcher
-        // The banner only shows on the overview and cash flow, so it is only worked out there.
-        let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil ? attentionItems : []
+        // The banner only shows on the overview and cash flow, so it is only worked out there. The overview asks for a
+        // missing balance, quantity, price or rate itself, right under the total, so the banner leaves those to it.
+        let onWorth = hasData && !(session.destination == 0 && shows(.cashFlow)) && showsNetWorth
+        let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil ? attentionItems(valueFixes: !onWorth) : []
         return VStack(spacing: 0) {
             navigationHeader.padding(.top, 14).padding(.bottom, 16)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
@@ -338,13 +340,15 @@ struct UpOnlyUnlockedPanel: View {
         return false
         #endif
     }
-    var attentionItems: [String] {
+    func attentionItems(valueFixes: Bool = true) -> [String] {
         guard hasData, let document = session.document else { return syncNeedsAttention ? ["A source couldn’t refresh"] : [] }
         let report = model.attention(in: document, includePerformance: true)
         var items: [String] = []
-        if !report.balances.isEmpty { items.append(report.balances.count == 1 ? "Balance needed for " + report.balances[0].name : "\(report.balances.count) balances needed") }
-        if !report.quantities.isEmpty { items.append(report.quantities.count == 1 ? "Quantity needed for " + report.quantities[0].assetName : "\(report.quantities.count) quantities needed") }
-        if report.pricesNeeded { items.append("Prices or exchange rates missing") }
+        if valueFixes {
+            if !report.balances.isEmpty { items.append(report.balances.count == 1 ? "Balance needed for " + report.balances[0].name : "\(report.balances.count) balances needed") }
+            if !report.quantities.isEmpty { items.append(report.quantities.count == 1 ? "Quantity needed for " + report.quantities[0].assetName : "\(report.quantities.count) quantities needed") }
+            if report.pricesNeeded { items.append("Prices or exchange rates missing") }
+        }
         let months = report.spendingMonths
         if !months.isEmpty { items.append(months.count == 1 ? "Check " + months[0].title : "\(months.count) months to check") }
         if !report.accountingNames.isEmpty { items.append("Accounting incomplete") }
@@ -420,24 +424,24 @@ struct UpOnlyUnlockedPanel: View {
             return nil
         }
     }
+    /// "CHF rate needed for September 2026", with the two ways to fix it side by side.
     func exchangeRateAction(_ currencies: [String], month: MonthKey) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Exchange rate missing").font(UpOnlyType.section)
-            Text("To show this in USD, Up Only needs " + currencies.joined(separator: ", ") + " rates for " + month.title + ".")
-                .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(currencies.joined(separator: ", ") + (currencies.count == 1 ? " rate" : " rates") + " needed for " + month.title)
+                .font(UpOnlyType.section).fixedSize(horizontal: false, vertical: true)
             if let issue = currencies.compactMap({ session.fxIssues[$0] }).first {
                 Text(issue).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Menu("Exchange rates") {
-                Button(session.document?.settings.automaticFX == true ? "Get " + month.shortName + " rates" : "Enable exchange rates") {
+            HStack(spacing: 8) {
+                Button(session.document?.settings.automaticFX == true ? "Get " + month.shortName + " rates" : "Turn on exchange rates") {
                     Task { await session.repairExchangeRates(month: month, currencies: currencies) }
-                }.disabled(session.isBusy || session.refreshing).accessibilityIdentifier("RepairExchangeRates")
-                Button("Add rate manually") {
+                }.buttonStyle(.glassProminent).disabled(session.isBusy || session.refreshing).accessibilityIdentifier("RepairExchangeRates")
+                Button("Add manually") {
                     session.entryMonthForManagement = month.description
                     session.requestedRateCurrency = currencies.first
                     session.managementSection = "Entries"; session.managementInMenu = true
-                }.disabled(session.isBusy)
-            }.modifier(UpOnlyPillMenu()).accessibilityLabel("Resolve exchange rates")
+                }.buttonStyle(.bordered).disabled(session.isBusy)
+            }.controlSize(.small)
         }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity, alignment: .leading).modifier(UpOnlyContentSurface())
     }
     func nativeMonthContent(_ gap: (MonthKey, [String])) -> some View {
@@ -732,8 +736,9 @@ struct UpOnlyUnlockedPanel: View {
         }
     }
     /// "Past 7 days  ▲ 13.3%  +$4,036.90": the change over the range. The percentage stays in privacy mode; the
-    /// amounts become stand-ins. What it's measured against ("vs $30,245.08 prev 7D") is the tooltip.
-    func changeStat(_ range: RangeChange) -> HeadlineStat {
+    /// amounts become stand-ins. What it's measured against ("vs $30,245.08 prev 7D") is the tooltip. Bank and company
+    /// pages give the amount alone: cash moves with deposits and spending, so a percentage says little.
+    func changeStat(_ range: RangeChange, percent: Bool = true) -> HeadlineStat {
         let change = range.change
         let scale = session.privacyMode ? session.standInFactor : 1
         let previous = scale.map { UpOnlyFormat.exactMoney(change.previous * $0) } ?? "••••"
@@ -741,7 +746,7 @@ struct UpOnlyUnlockedPanel: View {
         let label = worthRange == .all ? "Since start" : worthRange.spokenTitle
         let spoken = [session.privacyMode ? "amount hidden" : moved, change.fraction.map(UpOnlyFormat.percent), session.privacyMode ? nil : "from " + previous]
             .compactMap { $0 }.joined(separator: ", ")
-        guard let fraction = change.fraction else {
+        guard percent, let fraction = change.fraction else {
             return HeadlineStat(label: label, value: moved, tint: UpOnlyTint.signed(change.amount), help: session.privacyMode ? "" : "vs " + previous + " " + range.since, spoken: spoken)
         }
         return HeadlineStat(label: label, value: UpOnlyFormat.arrowPercent(fraction), tint: UpOnlyTint.signed(UpOnlyFormat.roundedPercent(fraction)), detail: moved,

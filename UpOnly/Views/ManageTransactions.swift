@@ -83,20 +83,11 @@ extension UpOnlyManagement {
                             .foregroundStyle(entry.kind == .income ? UpOnlyTint.gain : .primary)
                             .fixedSize(horizontal: false, vertical: true).layoutPriority(1)
                     }
-                    HStack(spacing: 4) {
-                        Text(caption(entry))
-                        if let id = entry.accountID, let name = accountNames[id] {
-                            Text("·")
-                            Text(name).lineLimit(1).help(name)
-                        }
-                        #if UPONLY_PERSONAL
-                        if entry.source == .wise, let profileID = entry.sourceRef?.split(separator: ":").dropFirst().first,
-                           let profile = session.wiseProfiles.first(where: { String($0.id) == profileID }) {
-                            Text("·")
-                            Text(profile.name).lineLimit(1).help(profile.name)
-                        }
-                        #endif
-                    }.font(UpOnlyType.caption).foregroundStyle(.secondary)
+                    let details = captionParts(entry, accountNames: accountNames)
+                    if !details.isEmpty {
+                        Text(details.joined(separator: " · ")).lineLimit(1).help(details.joined(separator: " · "))
+                            .font(UpOnlyType.caption).foregroundStyle(.secondary)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(editing ? 90 : 0)).padding(.top, 4)
@@ -108,11 +99,21 @@ extension UpOnlyManagement {
             if editing { transactionOptions(entry).padding(.bottom, 10) }
         }
     }
-    /// "Aug 12 · GBP · Refund": the day when the source gave one, then the currency and anything unusual about the row.
+    /// The caption, then the account and (for Wise) the profile it came through, whichever are known.
+    func captionParts(_ entry: Entry, accountNames: [UUID: String]) -> [String] {
+        var parts = [caption(entry)].filter { !$0.isEmpty }
+        if let id = entry.accountID, let name = accountNames[id] { parts.append(name) }
+        #if UPONLY_PERSONAL
+        if entry.source == .wise, let profileID = entry.sourceRef?.split(separator: ":").dropFirst().first,
+           let profile = session.wiseProfiles.first(where: { String($0.id) == profileID }) { parts.append(profile.name) }
+        #endif
+        return parts
+    }
+    /// "Aug 12 · Refund": the day when the source gave one, then anything unusual about the row. The amount already
+    /// says its currency ("£40.00").
     func caption(_ entry: Entry) -> String {
         var parts: [String] = []
         if let day = entry.day.flatMap({ ManageFormat.day($0) }) { parts.append(day) }
-        parts.append(entry.currency)
         if entry.kind == .transfer || entry.kind == .refund { parts.append(kindTitle(entry.kind)) }
         if entry.bucket == .businessCost { parts.append("Paid for " + businessName(entry.businessID)) } else if entry.bucket == .otherBusiness { parts.append("Business") }
         return parts.joined(separator: " · ")

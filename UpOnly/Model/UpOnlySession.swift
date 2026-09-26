@@ -1597,7 +1597,7 @@ extension UpOnlySession {
         do {
             try Data(lines.joined(separator: "\n").utf8).write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            return "Written to " + url.path
+            return "Written to " + url.path + ". It isn’t encrypted, so delete it when you’re done."
         }
         catch { return "Could not write: " + error.localizedDescription }
     }

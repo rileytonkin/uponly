@@ -13,27 +13,27 @@ extension UpOnlyManagement {
     var securityOverview: some View {
         VStack(alignment: .leading, spacing: 14) {
             ManageCard {
-                UpOnlyRow(title: "Lock now", caption: "Touch ID or your Mac password opens it. Locks after five minutes idle, or when your Mac locks or sleeps.",
+                UpOnlyRow(title: "Lock now", caption: "Also locks after 5 idle minutes",
                           action: { session.lockAndClose() }) {
                     UpOnlySymbolBadge(symbol: "lock.fill", size: 24)
                 }
-                UpOnlyRow(title: "New recovery code", caption: "Opens this vault if Touch ID and your password can’t. Replace it if someone may have seen it.",
+                UpOnlyRow(title: "New recovery code", caption: "Replace it if someone may have seen it",
                           divided: true, chevron: true, action: { openSecurityPage(.recoveryCode) }) {
                     UpOnlySymbolBadge(symbol: "key.fill", size: 24)
                 }
             }
             ManageCard {
-                UpOnlyRow(title: "Export encrypted backup", caption: "Restoring it needs your recovery code; keep the two apart.",
+                UpOnlyRow(title: "Export encrypted backup", caption: "Keep it apart from your recovery code",
                           action: { Task { await session.exportBackup() } }) {
                     UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 24)
                 }
-                UpOnlyRow(title: "Restore from a backup", caption: "Replaces everything here; your current vault is kept beside it.",
+                UpOnlyRow(title: "Restore from a backup", caption: "Your current vault is kept beside it",
                           divided: true, chevron: true, action: { openSecurityPage(.restore) }) {
                     UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 24)
                 }
             }
             ManageCard {
-                UpOnlyRow(title: "Write diagnostics file", caption: "An unencrypted list of account and holding names and dates (no amounts), to help find chart gaps. Delete it when you’re done.",
+                UpOnlyRow(title: "Write diagnostics file", caption: "Names and dates, no amounts, unencrypted",
                           action: { diagnosticsMessage = session.writeDiagnostics() }) {
                     UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 24)
                 }
