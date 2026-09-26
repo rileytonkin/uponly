@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import UpOnly
 
@@ -231,3 +232,19 @@ struct PrivacyFormatTests {
     }
 }
 
+@MainActor struct RecoveryCaptureShieldTests {
+    @Test("A window showing a recovery code is kept out of screen capture, and put back once the code is gone")
+    func shieldsWindow() async throws {
+        // Off screen and never ordered in, so nothing appears on this Mac's screen.
+        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 344, height: 300), styleMask: [.borderless], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        #expect(window.sharingType == .readOnly)
+        let host = NSHostingView(rootView: UpOnlyRecoveryCodeCard(code: .random()))
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(window.sharingType == .none)
+        window.contentView = NSView()
+        #expect(window.sharingType == .readOnly)
+    }
+}
