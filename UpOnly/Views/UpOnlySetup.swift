@@ -407,7 +407,12 @@ struct UpOnlySources: View {
                 ManageCard {
                     ForEach(Array(kinds.enumerated()), id: \.element) { index, kind in UpOnlySourceRow(kind: kind, isOn: binding(kind), divided: index > 0) }
                 }
-                Button(action: updateNow) { Label("Update now", systemImage: "arrow.clockwise").frame(maxWidth: .infinity) }
+                // The arrow turns while anything is updating.
+                Button(action: updateNow) {
+                    Label { Text(session.refreshing ? "Updating…" : "Update now") } icon: {
+                        Image(systemName: "arrow.clockwise").symbolEffect(.rotate, options: .repeat(.continuous), isActive: session.refreshing)
+                    }.frame(maxWidth: .infinity)
+                }
                     .buttonStyle(.bordered).controlSize(.large).disabled(session.isBusy || session.refreshing)
             }
             if let failure { UpOnlyNotice(failure, style: .error) }

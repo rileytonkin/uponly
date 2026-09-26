@@ -16,6 +16,10 @@ struct UpOnlyPanel: View {
                     .frame(minHeight: session.dashboardHeight, alignment: .top)
             } else if session.state != .unlocked {
                 panelContent.fixedSize(horizontal: false, vertical: true)
+            } else if session.document?.settings.setupComplete == true, !session.addingInMenu, let model = session.monthModel {
+                // The dashboard scrolls itself, so its title row stays pinned over the page.
+                UpOnlyUnlockedPanel(model: model, maxHeight: menuHeight).id(session.sessionToken)
+                    .frame(width: 344).fixedSize(horizontal: false, vertical: true)
             } else {
                 // Starts at the dashboard's last height rather than a guess, so unlocking doesn't settle in two steps.
                 UpOnlyMenuScroll(contentHeight: session.dashboardHeight ?? 360, maxHeight: menuHeight) { panelContent }
@@ -134,6 +138,8 @@ private struct UpOnlyPanelKeyboard: NSViewRepresentable {
 struct UpOnlyUnlockedPanel: View {
     @Environment(UpOnlySession.self) var session
     var model: PopoverModel
+    /// How tall the menu may be before the page scrolls, header included.
+    var maxHeight: CGFloat = 600
     @State var detail: String?
     var showingSwitcher: Bool {
         get { session.showingSwitcher }
@@ -258,9 +264,12 @@ struct UpOnlyUnlockedPanel: View {
         // missing balance, quantity, price or rate itself, right under the total, so the banner leaves those to it.
         let onWorth = hasData && !(session.destination == 0 && shows(.cashFlow)) && showsNetWorth
         let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil ? attentionItems(valueFixes: !onWorth) : []
-        return VStack(spacing: 0) {
-            navigationHeader.padding(.top, 14).padding(.bottom, 16)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+        // The title row is pinned over the page as the scroll's top bar, so the page passes beneath it under the
+        // system's soft blur, as on Manage.
+        let header = navigationHeader.padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 16)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+        return UpOnlyMenuScroll(contentHeight: max(0, (session.dashboardHeight ?? 360) - headerHeight), maxHeight: max(0, maxHeight - headerHeight)) {
+        VStack(spacing: 0) {
             if showingSwitcher { switcherPage }
             else {
                 if !attention.isEmpty { attentionBanner(attention).padding(.bottom, 16) }
@@ -278,14 +287,18 @@ struct UpOnlyUnlockedPanel: View {
         // A shorter page gives what's left of the height to its chart, rather than leaving it empty at the foot.
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
             let natural = height - (home ? 0 : chartRoom)
-            let room = home ? 0 : min(140, max(0, (session.dashboardHeight ?? 0) - natural))
+            let room = home ? 0 : min(140, max(0, (session.dashboardHeight ?? 0) - headerHeight - natural))
             if abs(room - chartRoom) > 1 { chartRoom = room }
         }
-        // All assets sets the height every other page opens at (the session checks the selection still exists).
-        .frame(minHeight: home ? nil : session.dashboardHeight, alignment: .top)
+        // All assets sets the height every other page opens at, its title included (the session checks the selection
+        // still exists).
+        .frame(minHeight: home ? nil : session.dashboardHeight.map { max(0, $0 - headerHeight) }, alignment: .top)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            if home, height > 0, session.dashboardHeight != ceil(height) { session.dashboardHeight = ceil(height) }
+            let page = ceil(height + headerHeight)
+            if home, height > 0, headerHeight > 0, session.dashboardHeight != page { session.dashboardHeight = page }
         }
+        }
+        .environment(\.upOnlyScrollHeader, AnyView(header))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
         // However the page changed (switcher, a row, Back, Esc), its drill-ins and focus start fresh.
@@ -302,14 +315,13 @@ struct UpOnlyUnlockedPanel: View {
             if worthRange.intradayStep != nil, isWorthPage { await session.loadIntraday([worthRange]) }
         }
     }
-    /// One title for every page: the switcher box and the name of what's showing. Cash flow's drill-ins keep a Back.
+    /// One title for every page: the name of what's showing, which opens the switcher. Cash flow's drill-ins keep a Back.
     @ViewBuilder var navigationHeader: some View {
         if let detail, !showingSwitcher {
             UpOnlyPageHeader(title: detail == "personal" ? "Personal" : selectedBusiness?.book.name ?? "Company",
                              backLabel: "Back to income & spending") { self.detail = nil }
         } else {
-            // The eye sits by the title, so it's in the same place on every page. A page opened from another page's row
-            // has a back box first.
+            // A page opened from another page's row has a back box first.
             HStack(spacing: 4) {
                 if let backTitle, !showingSwitcher {
                     Button { session.dashboardBack() } label: {
@@ -318,22 +330,24 @@ struct UpOnlyUnlockedPanel: View {
                     }.buttonStyle(.plain).padding(.trailing, 4).help("Back to " + backTitle + " (Esc)").accessibilityLabel("Back to " + backTitle)
                 }
                 switcherTitle.layoutPriority(1)
-                UpOnlyPrivacyButton(size: 26)
                 Spacer(minLength: 8)
-                HStack(spacing: 8) { addButton; dashboardActions }
+                // Hiding values is its own round button, with the page's other actions.
+                HStack(spacing: 8) { UpOnlyPrivacyButton(glass: true); addButton; dashboardActions }
             }.frame(minHeight: 32)
         }
     }
     /// The page's name is the switcher: a quiet chevron after it opens every page, and turns over while it's open.
     var switcherTitle: some View {
         Button { showingSwitcher.toggle() } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                // Whose a same-named portfolio is goes beside its name, smaller, so the name itself keeps the room.
-                let title: (name: String, owner: String?) = if case .portfolio(let id) = session.dashboardSelection { portfolioTitleParts(id) } else { (selectionTitle, nil) }
-                Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
-                if let owner = title.owner { Text(owner).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
-                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
+            // Whose a same-named portfolio is sits under its name, as a window's subtitle does, so the name keeps the room.
+            let title: (name: String, owner: String?) = if case .portfolio(let id) = session.dashboardSelection { portfolioTitleParts(id) } else { (selectionTitle, nil) }
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
+                }
+                if let owner = title.owner { Text(owner).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
@@ -701,7 +715,11 @@ struct UpOnlyUnlockedPanel: View {
                     }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(stat.value).font(UpOnlyType.body.weight(.semibold).monospacedDigit()).foregroundStyle(stat.tint)
-                        if let detail = stat.detail { Text(detail).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary) }
+                            .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: stat.value)
+                        if let detail = stat.detail {
+                            Text(detail).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary)
+                                .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: detail)
+                        }
                     }.lineLimit(1).minimumScaleFactor(0.8)
                 }.frame(maxWidth: .infinity, alignment: .leading).help(stat.help)
                     .accessibilityElement(children: .ignore).accessibilityLabel(stat.label).accessibilityValue(stat.spoken)

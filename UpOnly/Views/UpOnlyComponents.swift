@@ -24,6 +24,9 @@ struct UpOnlyAmount: View {
                         Text(parts.fraction).font(.system(size: 40, weight: .semibold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
                     }
                 }.fixedSize()
+                    // The digits roll to a new figure as prices update or the page changes, as the system's do.
+                    .contentTransition(.numericText(value: NSDecimalNumber(decimal: shown).doubleValue))
+                    .animation(.snappy(duration: 0.4), value: shown)
                 Text(parts.sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .semibold).monospacedDigit())
             }.foregroundStyle(tint)
                 .accessibilityElement(children: .ignore)
@@ -202,9 +205,12 @@ struct UpOnlyValueRow: View {
 struct UpOnlyPrivacyButton: View {
     var inMenu = false
     var size: CGFloat = 32
+    /// A round glass button of its own, beside the page's + and "…", rather than a small icon by the title.
+    var glass = false
     @Environment(UpOnlySession.self) private var session
     var body: some View {
         if inMenu { button }
+        else if glass { button.buttonStyle(.plain).glassEffect(.regular, in: .circle) }
         else { button.buttonStyle(UpOnlyToolbarButtonStyle(size: size)) }
     }
     // Never disabled while a save runs: hiding values has to work at once, even during a history rebuild.
@@ -221,7 +227,12 @@ struct UpOnlyPrivacyButton: View {
             }
         } label: {
             if inMenu { Label(session.privacyMode ? "Show values" : "Hide values", systemImage: session.privacyMode ? "eye.slash" : "eye") }
-            else { Image(systemName: session.privacyMode ? "eye.slash" : "eye").font(.system(size: 13, weight: .medium)).frame(width: 16, height: 16) }
+            else {
+                // The eye closes and opens as the system draws it.
+                Image(systemName: session.privacyMode ? "eye.slash" : "eye").font(.system(size: glass ? 14 : 13, weight: glass ? .semibold : .medium))
+                    .contentTransition(.symbolEffect(.replace)).animation(.snappy, value: session.privacyMode)
+                    .frame(width: glass ? 32 : 16, height: glass ? 32 : 16).contentShape(Circle())
+            }
         }.foregroundStyle(session.privacyMode ? Color.accentColor : inMenu ? Color.primary : Color.secondary)
             .accessibilityLabel(session.privacyMode ? "Show values" : "Hide values")
             .accessibilityValue(session.privacyMode ? "Privacy mode on" : "Privacy mode off")
@@ -459,6 +470,7 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                             VStack(alignment: .trailing, spacing: 1) {
                                 // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
                                 UpOnlyPrivateText(value).font(UpOnlyType.row.monospacedDigit()).foregroundStyle(.primary).lineLimit(1)
+                                    .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: value)
                                     .minimumScaleFactor(value.count > 13 ? 0.7 : 1)
                                 // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
                                 if let change {
