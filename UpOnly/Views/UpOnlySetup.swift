@@ -96,15 +96,22 @@ struct UpOnlyContentSurface: ViewModifier {
         content.background(Self.fill, in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius, style: .continuous))
     }
 }
-/// Every page's background: near-black, with Up Only's green glowing softly down from the top edge.
+/// Every page's background: near-black, with Up Only's green glowing softly down from the top edge. The glow drifts
+/// slowly from side to side and breathes a little, on cycles long enough that it never draws the eye; it holds still
+/// with Reduce Motion.
 struct UpOnlyBackdrop: View {
     static let base = Color(red: 0.035, green: 0.035, blue: 0.04)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
             Self.base
-            EllipticalGradient(colors: [UpOnlyTint.brand.opacity(0.22), UpOnlyTint.brand.opacity(0.07), .clear],
-                               center: UnitPoint(x: 0.5, y: -0.08), startRadiusFraction: 0, endRadiusFraction: 0.62)
-                .frame(height: 300).frame(maxHeight: .infinity, alignment: .top)
+            TimelineView(.animation(minimumInterval: 1 / 20, paused: reduceMotion)) { timeline in
+                let t = reduceMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+                let wave = { (period: Double) in sin(t * 2 * .pi / period) }
+                EllipticalGradient(colors: [UpOnlyTint.brand.opacity(0.22 + 0.03 * wave(9)), UpOnlyTint.brand.opacity(0.07), .clear],
+                                   center: UnitPoint(x: 0.5 + 0.14 * wave(17), y: -0.08 + 0.03 * wave(11)),
+                                   startRadiusFraction: 0, endRadiusFraction: 0.62 + 0.05 * wave(13))
+            }.frame(height: 300).frame(maxHeight: .infinity, alignment: .top)
         }.ignoresSafeArea().allowsHitTesting(false)
     }
 }
