@@ -402,7 +402,6 @@ struct UpOnlyUnlockedPanel: View {
             }
             Button { manage("Manage") } label: { Label("Manage", systemImage: "slider.horizontal.3") }
                 .accessibilityIdentifier("ManageUpOnly")
-            UpOnlyPrivacyButton(inMenu: true)
             Divider()
             Button { session.lockAndClose() } label: { Label("Lock", systemImage: "lock") }
                 .keyboardShortcut("l", modifiers: .command).accessibilityLabel("Lock Up Only")
@@ -412,7 +411,7 @@ struct UpOnlyUnlockedPanel: View {
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .frame(width: 32, height: 32).glassEffect(.regular, in: .circle)
         .accessibilityLabel("More").accessibilityIdentifier("DashboardActions")
-        .help("Manage, privacy and lock")
+        .help("Manage and lock")
     }
     // The title above already names the page, so the empty state is just the invitation.
     var addFirstData: some View {
@@ -540,25 +539,6 @@ struct UpOnlyUnlockedPanel: View {
     // A plain menu reads better than a cycling control: the current choice is
     // the label, and every alternative is one click away. A long name truncates in the middle rather than
     // pushing the pill past the panel's edges.
-    func scopeControl<Selection: Hashable>(_ options: [(Selection, String)], selection: Binding<Selection>, label: String, item: String) -> some View {
-        let index = options.firstIndex { $0.0 == selection.wrappedValue } ?? 0
-        return Menu {
-            ForEach(Array(options.enumerated()), id: \.offset) { offset, option in
-                Toggle(option.1, isOn: Binding(get: { offset == index }, set: { _ in selection.wrappedValue = option.0 }))
-            }
-        } label: {
-            // One Text keeps the chevron after the title inside a native menu label.
-            Text("\(options[index].1)  \(Text(Image(systemName: "chevron.down")).font(.system(size: 7, weight: .bold)))")
-                .font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-        }.modifier(UpOnlyPillMenu(height: 22))
-            .accessibilityLabel(label).accessibilityValue(options[index].1).help("Choose " + item)
-    }
-    var performanceScopeSelector: some View {
-        scopeControl([(.all, "All accounts"), (.personal, "Personal")] + model.books.map { (.business($0.id), $0.name) },
-                     selection: Binding(get: { model.scope }, set: { model.selectScope($0) }), label: "Cash flow accounts", item: "account")
-            .help(performanceBasis)
-            .accessibilityHint(performanceBasis)
-    }
     /// One point per chart stop from the start of the range to the last sample, ending at `live`, the figure shown
     /// above the chart, so the line finishes where the headline says. `value` returns a sample's figure and, when
     /// it's an estimate, a note saying what was estimated.

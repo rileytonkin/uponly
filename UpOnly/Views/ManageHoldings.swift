@@ -50,15 +50,13 @@ extension UpOnlyManagement {
         let title = plainName ? owner ?? "Personal" : portfolio.name + (owner.map { " · " + $0 } ?? "")
         return VStack(alignment: .leading, spacing: 6) {
             manageSubheader(title, total: total) {
-                ManageRowMenu(label: "More options for " + portfolio.name) {
-                    Button(addTitle + "…") { session.startImport(mode, portfolioID: portfolio.id) }
-                    if holdings.count > 1 { Button(mode == .metals ? "Update all weights…" : "Update all holdings…") { session.startImport(mode, prefill: true, portfolioID: portfolio.id) } }
-                    Button("Rename…") { editor = .renamePortfolio(portfolio) }
-                    ownerMenu(current: portfolio.ownerBusinessID?.nilIfEmpty) { setPortfolioOwner(portfolio, owner: $0) }
-                    Button("Show on dashboard") { showOnDashboard(.portfolio(portfolio.id)) }
-                    Divider()
-                    Button("Archive portfolio…", role: .destructive) { archive = portfolio }
-                }
+                Button(addTitle + "…") { session.startImport(mode, portfolioID: portfolio.id) }
+                if holdings.count > 1 { Button(mode == .metals ? "Update all weights…" : "Update all holdings…") { session.startImport(mode, prefill: true, portfolioID: portfolio.id) } }
+                Button("Rename…") { editor = .renamePortfolio(portfolio) }
+                ownerMenu(current: portfolio.ownerBusinessID?.nilIfEmpty) { setPortfolioOwner(portfolio, owner: $0) }
+                Button("Show on dashboard") { showOnDashboard(.portfolio(portfolio.id)) }
+                Divider()
+                Button("Archive portfolio…", role: .destructive) { archive = portfolio }
             }
             ManageCard {
                 if holdings.isEmpty {

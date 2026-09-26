@@ -291,27 +291,10 @@ struct UpOnlyManagement: View {
                     Text("Bank accounts, crypto, gold and silver, and transactions appear here once you add them with the plus button.")
                         .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if banks {
-                    manageGroup("Bank accounts") {
-                        ManageRowMenu(label: "Bank account options") {
-                            Button("Add a bank account…") { session.startImport(.bankBalances, newAccount: true) }
-                            if (doc?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1 {
-                                Button("Update all balances…") { session.startImport(.bankBalances, prefill: true) }
-                            }
-                            Button("Import a statement…") { session.startImport(.statements) }
-                        }
-                    } content: { accounts }.id("Accounts")
-                }
-                if crypto {
-                    manageGroup("Crypto") {
-                        ManageRowMenu(label: "Crypto options") { Button("Add a coin…") { session.startImport(.holdings) } }
-                    } content: { holdings(.crypto) }.id("Portfolios")
-                }
-                if metals {
-                    manageGroup("Metals") {
-                        ManageRowMenu(label: "Metal options") { Button("Add gold or silver…") { session.startImport(.metals) } }
-                    } content: { holdings(.metals) }.id("Precious metals")
-                }
+                // Adding, updating all and importing are the + above, so the groups carry no menus of their own.
+                if banks { manageGroup("Bank accounts") { accounts }.id("Accounts") }
+                if crypto { manageGroup("Crypto") { holdings(.crypto) }.id("Portfolios") }
+                if metals { manageGroup("Metals") { holdings(.metals) }.id("Precious metals") }
                 ManageCard {
                     if hasData(.cashFlow) {
                         UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
@@ -334,25 +317,37 @@ struct UpOnlyManagement: View {
         guard section != "Manage", Self.manageGroups.contains(section) else { return }
         Task { @MainActor in proxy.scrollTo(section, anchor: .top) }
     }
-    /// One of Manage's groups: its name, its options lined up with the rows' own "…", then its cards.
-    func manageGroup<Options: View, Content: View>(_ title: String, @ViewBuilder options: () -> Options, @ViewBuilder content: () -> Content) -> some View {
+    /// One of Manage's groups: its name, then its cards.
+    func manageGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(title).font(UpOnlyType.group)
-                Spacer(minLength: 8)
-                options().padding(.trailing, UpOnlyLayout.cardInset)
-            }
+            Text(title).font(UpOnlyType.group)
             content()
         }
     }
     /// A heading inside a group: whose it is, or a portfolio's name, and its total, lined up with the rows below.
-    func manageSubheader<Options: View>(_ title: String, total: Decimal?, @ViewBuilder options: () -> Options) -> some View {
+    func manageSubheader(_ title: String, total: Decimal?) -> some View {
         HStack(alignment: .center, spacing: 6) {
             Text(title).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 8)
-            if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
-            options()
+            subheaderTotal(total)
         }.padding(.horizontal, UpOnlyLayout.cardInset)
+    }
+    /// The same heading whose name opens its actions ("Personal ⌄"), for a portfolio, instead of another "…".
+    func manageSubheader<Actions: View>(_ title: String, total: Decimal?, @ViewBuilder actions: () -> Actions) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            Menu { actions() } label: {
+                HStack(spacing: 4) {
+                    Text(title).font(UpOnlyType.body.weight(.medium)).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                }.foregroundStyle(.secondary).contentShape(Rectangle())
+            }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityLabel(title + " options")
+            Spacer(minLength: 8)
+            subheaderTotal(total)
+        }.padding(.horizontal, UpOnlyLayout.cardInset)
+    }
+    /// Lined up with the row values below, which sit left of each row's "…" (22 pt wide, 6 pt away).
+    @ViewBuilder private func subheaderTotal(_ total: Decimal?) -> some View {
+        if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).padding(.trailing, 28) }
     }
     /// Settings: where prices and rates come from, then locking, the recovery code and backups, on one page.
     @ViewBuilder var settings: some View {

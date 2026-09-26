@@ -107,15 +107,16 @@ struct UpOnlyImportView: View {
                 }
                 if !mappingChanged.isEmpty { Text("Apply your column mapping before reviewing.").fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.secondary) }
             } else {
-                // Several at once, as lists in the home style: bring something in, or update what's tracked.
+                // Several at once, as lists in the home style: bring something in, or update what's tracked. Statements
+                // are Add's own row, so they aren't repeated here.
                 if let message = session.importMessage {
                     Label(message, systemImage: "checkmark.circle.fill").font(UpOnlyType.body).foregroundStyle(UpOnlyTint.cashFlow).fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Bring in").font(UpOnlyType.section)
                     ManageCard {
-                        ForEach(Array(orderedModes.enumerated()), id: \.element) { index, mode in
-                            UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), divided: index > 0, chevron: true, action: { openMode(mode, bulk: mode != .statements) }) {
+                        ForEach(Array(orderedModes.filter { $0 != .statements }.enumerated()), id: \.element) { index, mode in
+                            UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), divided: index > 0, chevron: true, action: { openMode(mode, bulk: true) }) {
                                 UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 28)
                             }
                         }
