@@ -483,24 +483,10 @@ struct UpOnlyUnlockedPanel: View {
             if !isWorthPage { periodSelector.layoutPriority(1) }
         }.frame(minHeight: 26)
     }
-    /// 1W 1M 3M 1Y All above the chart: one track with the chosen segment raised, as market apps do.
+    /// 24H 7D 30D 1Y All above the chart.
     var rangeControl: some View {
-        HStack(spacing: 2) {
-            ForEach(WorthRange.allCases, id: \.self) { range in
-                let chosen = worthRange == range
-                Button { worthRange = range } label: {
-                    Text(range.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
-                        .foregroundStyle(chosen ? Color.primary : Color.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 22)
-                        .background {
-                            if chosen { Capsule().fill(Color(nsColor: .controlBackgroundColor)).shadow(color: .black.opacity(0.12), radius: 1, y: 0.5) }
-                        }
-                        .contentShape(Capsule())
-                }.buttonStyle(.plain)
-                    .accessibilityLabel(range.spokenTitle).accessibilityAddTraits(chosen ? .isSelected : [])
-            }
-        }.padding(2).background(Color.primary.opacity(0.06), in: Capsule())
-            .accessibilityElement(children: .contain).accessibilityLabel("Chart range")
+        UpOnlySegments(options: WorthRange.allCases.map { ($0, $0.title, $0.spokenTitle) },
+                       selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range")
     }
     func eyebrow(_ title: String) -> some View {
         Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)

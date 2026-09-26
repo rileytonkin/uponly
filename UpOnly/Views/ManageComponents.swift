@@ -124,8 +124,7 @@ struct UpOnlyMetalHistory: View {
         let points = chartPoints(observations)
         VStack(alignment: .leading, spacing: 12) {
             Text("USD per troy ounce").font(UpOnlyType.caption).foregroundStyle(.secondary)
-            Picker("Period", selection: $days) { Text("1 month").tag(30); Text("3 months").tag(90); Text("1 year").tag(365); Text("All").tag(0) }
-                .pickerStyle(.segmented).labelsHidden().accessibilityLabel("Metal chart period")
+            UpOnlySegments(options: [(30, "1M", "1 month"), (90, "3M", "3 months"), (365, "1Y", "1 year"), (0, "All", "All")], selection: $days, label: "Metal chart period")
             if let quote = observations.last, let price = try? MoneyInput.multiply(quote.priceUSD.value, PreciousMetal.gramsPerTroyOunce) {
                 UpOnlyPrivateText(UpOnlyFormat.money(price)).font(.system(size: 24, weight: .medium).monospacedDigit()).fixedSize(horizontal: false, vertical: true)
                 Text(quote.provider + " · " + quote.providerTime.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)))
