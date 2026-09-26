@@ -42,6 +42,8 @@ struct VaultDocument: Codable, Sendable, Equatable {
     /// A history rebuild still in progress: days from `from` up to `cursor` have yet to be recomputed.
     /// Kept in the vault so a relaunch resumes instead of leaving old days valued without newer assets.
     var pendingHistoryRebuild: PendingHistoryRebuild?
+    /// `VaultSchema.revision` of the build that saved it: which fields it knew. Absent from documents saved earlier.
+    var writerRevision: Int?
 
     static func empty(
         vaultID: UUID = UUID(),
@@ -178,6 +180,7 @@ extension VaultDocument {
         purchases = try c.decodeIfPresent([PurchaseLot].self, forKey: .purchases)
         transferCounterparties = try c.decodeIfPresent([String].self, forKey: .transferCounterparties)
         pendingHistoryRebuild = try c.decodeIfPresent(PendingHistoryRebuild.self, forKey: .pendingHistoryRebuild)
+        writerRevision = try c.decodeIfPresent(Int.self, forKey: .writerRevision)
     }
 }
 
@@ -245,8 +248,13 @@ struct VaultLayout: Sendable, Equatable {
         return names.allSatisfy { name in
             name == recovery.lastPathComponent || name == ".DS_Store"
                 || (name.hasPrefix(wrapperTemp) && UUID(uuidString: String(name.dropFirst(wrapperTemp.count))) != nil)
-                || (name == inbox.lastPathComponent && (try? io.contentsOfDirectory(at: inbox))?.isEmpty == true)
+                || (name == inbox.lastPathComponent && inboxIsEmpty(io))
         }
+    }
+
+    /// Whether the Inbox holds no pending import: nothing, or only hidden files such as Finder's `.DS_Store`.
+    func inboxIsEmpty(_ io: VaultFileIO) -> Bool {
+        (try? io.contentsOfDirectory(at: inbox))?.allSatisfy { $0.lastPathComponent.hasPrefix(".") } == true
     }
 
     /// Where Start over moves a wrapper left without a vault: beside the folder, “Vault recovery.wrapper.unused”,
@@ -273,15 +281,29 @@ struct VaultLayout: Sendable, Equatable {
 
     /// The folder a vault replaced by a restored backup is moved to, beside it: “Vault (replaced 2026-09-24 1432)”.
     func replacedName(at date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HHmm"
-        return root.lastPathComponent + " (replaced " + formatter.string(from: date) + ")"
+        besideName("replaced", at: date)
     }
 
     /// `replacedName`, numbered when a folder of that name already exists.
     func replacedRoot(at date: Date, io: VaultFileIO) -> URL {
-        let parent = root.deletingLastPathComponent(), name = replacedName(at: date)
+        besideRoot(besideName("replaced", at: date), io: io)
+    }
+
+    /// Where a welcome-screen restore moves a folder holding hidden leftovers, such as a crash's temporary file, beside it:
+    /// “Vault (set aside 2026-09-24 1432)”, numbered like `replacedRoot`.
+    func setAsideRoot(at date: Date, io: VaultFileIO) -> URL {
+        besideRoot(besideName("set aside", at: date), io: io)
+    }
+
+    private func besideName(_ label: String, at date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HHmm"
+        return root.lastPathComponent + " (" + label + " " + formatter.string(from: date) + ")"
+    }
+
+    private func besideRoot(_ name: String, io: VaultFileIO) -> URL {
+        let parent = root.deletingLastPathComponent()
         var candidate = parent.appendingPathComponent(name, isDirectory: true), number = 2
         while io.fileExists(at: candidate) {
             candidate = parent.appendingPathComponent(String(name.dropLast()) + " \(number))", isDirectory: true)

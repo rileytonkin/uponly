@@ -96,8 +96,12 @@ nonisolated enum VaultCrypto {
         }
     }
 
+    /// Seals `document` for saving, once it's known to read back: a value no build could decode (a number past what
+    /// the reader takes, say) is refused here as `overflow`, so nothing is saved that can't be opened again.
     static func persist(_ document: VaultDocument, key: SymmetricKey) throws -> PersistedVaultFile {
         let plaintext = try VaultJSON.encode(document)
+        // Decoded, not compared: saved dates keep milliseconds, so an equal read-back isn't expected.
+        guard (try? VaultJSON.decode(VaultDocument.self, from: plaintext)) != nil else { throw VaultError.overflow }
         let sealed = try seal(
             plaintext,
             key: key,
@@ -134,10 +138,18 @@ nonisolated enum VaultCrypto {
             ) { found = (plaintext: plaintext, schema: schema) }
         }
         guard let opened = found else { throw VaultError.wrongKey }
-        // The ciphertext authenticated, so a document this build can't decode was written by a newer version, not damaged.
-        // An older schema opens as it is; migrating it is up to the build that raises the schema.
+        // The document says which fields its writer knew. A later revision is a newer version's, refused even when it
+        // decodes, since saving it here would drop what this build doesn't know. A body that doesn't decode from this
+        // revision or earlier (or from before revisions were saved) was written by a build that knew every field in
+        // it, so it's damage, and the previous copy may open instead. An older schema opens as it is; migrating it is
+        // up to the build that raises the schema.
         let document: VaultDocument
-        do { document = try VaultJSON.decode(VaultDocument.self, from: opened.plaintext) } catch { throw VaultError.unknownSchema }
+        do { document = try VaultJSON.decode(VaultDocument.self, from: opened.plaintext) } catch {
+            if let revision = (try? VaultJSON.decode(RevisionProbe.self, from: opened.plaintext))?.writerRevision,
+               revision > VaultSchema.revision { throw VaultError.unknownSchema }
+            throw VaultError.corrupt
+        }
+        if let revision = document.writerRevision, revision > VaultSchema.revision { throw VaultError.unknownSchema }
         guard document.schema == opened.schema else { throw VaultError.unknownSchema }
         guard document.vaultID == file.vaultID, document.generation == file.generation else {
             throw VaultError.corrupt
@@ -219,4 +231,9 @@ nonisolated enum VaultCrypto {
         }
         return key
     }
+}
+
+/// Only the field that says which build's fields a document holds, read when the rest of it doesn't decode.
+private struct RevisionProbe: Decodable {
+    var writerRevision: Int?
 }
