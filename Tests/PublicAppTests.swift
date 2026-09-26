@@ -381,62 +381,62 @@ struct BulkInputTests {
     func personalTransferCounterparties() throws {
         var doc = empty()
         let bank = Account(name: "Monzo", currency: "GBP"); doc.accounts = [bank]
-        let paid = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 2500, currency: "GBP", label: "Sample Co Ltd", source: .csv, sourceRef: bank.id.uuidString + ":a")
-        var edited = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 10, currency: "GBP", label: "sample co ltd", source: .csv, sourceRef: bank.id.uuidString + ":b"); edited.kindIsUserEdited = true
-        let manual = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 5, currency: "GBP", label: "Sample Co Ltd")
+        let paid = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 1200, currency: "GBP", label: "Sample Ltd", source: .csv, sourceRef: bank.id.uuidString + ":a")
+        var edited = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 10, currency: "GBP", label: "sample ltd", source: .csv, sourceRef: bank.id.uuidString + ":b"); edited.kindIsUserEdited = true
+        let manual = Entry(month: MonthKey("2026-05")!, kind: .expense, amount: 5, currency: "GBP", label: "Sample Ltd")
         doc.entries = [paid, edited, manual]
-        OwnerPayments.setTransferCounterparty(" Sample Co Ltd ", enabled: true, in: &doc)
-        #expect(doc.transferCounterparties == ["Sample Co Ltd"])
+        OwnerPayments.setTransferCounterparty(" Sample Ltd ", enabled: true, in: &doc)
+        #expect(doc.transferCounterparties == ["Sample Ltd"])
         #expect(doc.entries.map(\.kind) == [.transfer, .expense, .expense])
-        #expect(OwnerPayments.isPersonalTransferCounterparty("SAMPLE CO LTD", document: doc))
+        #expect(OwnerPayments.isPersonalTransferCounterparty("SAMPLE LTD", document: doc))
         #expect(try MonthlyLedger.nativeTotals(MonthKey("2026-05")!, document: doc).first?.totals.moneyOut == 15)
-        let draft = try batch("Date,Description,Amount,Currency\n2026-06-01,Sample Co Ltd,-300,GBP\n2026-06-02,Sample Cafe,-3,GBP", mode: .statements)
+        let draft = try batch("Date,Description,Amount,Currency\n2026-06-01,Sample Ltd,-300,GBP\n2026-06-02,Sample Cafe,-3,GBP", mode: .statements)
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
         #expect(saved.entries.suffix(2).map(\.kind) == [.transfer, .expense])
         doc.entries[0].kind = .expense
         OwnerPayments.reconcile(in: &doc)
         #expect(doc.entries[0].kind == .transfer)
-        OwnerPayments.setTransferCounterparty("Sample Co Ltd", enabled: false, in: &doc)
+        OwnerPayments.setTransferCounterparty("Sample Ltd", enabled: false, in: &doc)
         #expect(doc.transferCounterparties == nil && doc.entries[0].kind == .transfer)
     }
     @Test("Monzo refunds and cashback reduce spending instead of counting as income")
     func monzoRefunds() throws {
         let doc = empty()
-        let csv = "id,created,title,subtitle,amount,currency,categories\ntx1,\"15/07/26, 10:00\",Airbnb,,-1000,GBP,Holidays\ntx2,\"29/07/26, 10:00\",Festival,,150.00,GBP,Entertainment\ntx3,\"23/07/26, 10:00\",Monzo Premium cashback,,0.05,GBP,Income\ntx4,\"30/07/26, 10:00\",APPLE INC,,500.00,GBP,Income\ntx5,\"11/07/26, 10:00\",agoda.com,Declined,,,Holidays"
+        let csv = "id,created,title,subtitle,amount,currency,categories\ntx1,\"15/07/26, 10:00\",Airbnb,,-1000,GBP,Holidays\ntx2,\"29/07/26, 10:00\",Festival,,150.00,GBP,Entertainment\ntx3,\"23/07/26, 10:00\",Monzo Premium cashback,,0.05,GBP,Income\ntx4,\"30/07/26, 10:00\",ACME INC,,500.00,GBP,Income\ntx5,\"11/07/26, 10:00\",agoda.com,Declined,,,Holidays"
         let draft = try batch(csv, mode: .statements)
         #expect(draft.rows.map(\.included) == [true, true, true, true, false])
         let saved = try #require(ImportBatchProcessor.evaluate(draft, document: doc).document)
         #expect(saved.entries.map(\.kind) == [.expense, .refund, .refund, .income])
         let totals = try #require(MonthlyLedger.nativeTotals(MonthKey("2026-07")!, document: saved).first?.totals)
-        #expect(totals.moneyIn == 500.00 && totals.moneyOut == Decimal(string: "840.89"))
+        #expect(totals.moneyIn == 500 && totals.moneyOut == Decimal(string: "849.95"))
         let typed = try batch("Date,Description,Amount,Currency,Type\n2026-07-01,Shop,20,USD,refund", mode: .statements)
         #expect(try #require(ImportBatchProcessor.evaluate(typed, document: doc).document).entries.first?.kind == .refund)
     }
     @Test("Month evidence gives one USD line per source, the biggest movements of any kind, and accounts that went quiet")
     func monthEvidence() {
         var doc = empty()
-        let monzo = Account(name: "Monzo", currency: "GBP"), cardCo = Account(name: "Card Co", currency: "USD")
+        let monzo = Account(name: "Monzo", currency: "GBP"), card = Account(name: "Travel card", currency: "USD")
         var wise = Account(name: "Alex · GBP", currency: "GBP"); wise.externalProfileID = "7"
-        doc.accounts = [monzo, cardCo, wise]
+        doc.accounts = [monzo, card, wise]
         let july = MonthKey("2026-07")!, august = MonthKey("2026-08")!
         doc.fx = [FXObservation(sourceCurrency: "GBP", targetCurrency: "USD", rate: PreciseDecimal(2), providerTime: Date(timeIntervalSince1970: 1_787_000_000), fetchedAt: Date(timeIntervalSince1970: 1_787_000_000), provider: "test")]
         doc.entries = [
-            Entry(month: august, kind: .income, amount: 4000, currency: "GBP", label: "Northwind", source: .csv, sourceRef: monzo.id.uuidString + ":1"),
+            Entry(month: august, kind: .income, amount: 3000, currency: "GBP", label: "Example Studio Ltd", source: .csv, sourceRef: monzo.id.uuidString + ":1"),
             Entry(month: august, kind: .expense, amount: 1000, currency: "GBP", label: "Airbnb", source: .csv, sourceRef: monzo.id.uuidString + ":2"),
             Entry(month: august, kind: .refund, amount: 10, currency: "GBP", label: "Airbnb refund", source: .csv, sourceRef: monzo.id.uuidString + ":3"),
-            Entry(month: august, kind: .transfer, amount: 2500, currency: "GBP", label: "Example Studio", source: .csv, sourceRef: monzo.id.uuidString + ":4"),
+            Entry(month: august, kind: .transfer, amount: 2000, currency: "GBP", label: "Sample Co", source: .csv, sourceRef: monzo.id.uuidString + ":4"),
             Entry(month: august, kind: .expense, amount: 40, currency: "GBP", label: "Cafe", source: .wise, sourceRef: "wise:7:a"),
             Entry(month: august, kind: .expense, amount: 5, currency: "USD", label: "Cash"),
-            Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: cardCo.id.uuidString + ":9")
+            Entry(month: july, kind: .expense, amount: 9, currency: "USD", label: "Old", source: .csv, sourceRef: card.id.uuidString + ":9")
         ]
         let evidence = MonthEvidence.build(august, document: doc, now: Date(timeIntervalSince1970: 1_787_000_000))
         #expect(evidence.sources.map(\.name) == ["Monzo", "Wise · Alex", "Added by hand"])
         #expect(MonthEvidence.sourceName(for: doc.entries[4], accounts: [Account(name: "Personal · GBP", currency: "GBP", externalProfileID: "7")]).name == "Wise")
-        #expect(evidence.sources[0].count == 3 && evidence.sources[0].moneyIn == 8000 && evidence.sources[0].moneyOut == 1980)
+        #expect(evidence.sources[0].count == 3 && evidence.sources[0].moneyIn == 6000 && evidence.sources[0].moneyOut == 1980)
         #expect(evidence.sources[2].moneyIn == 0 && evidence.sources[2].moneyOut == 5)
-        #expect(evidence.largest.map(\.entry.label) == ["Northwind", "Example Studio", "Airbnb", "Cafe", "Airbnb refund", "Cash"])
-        #expect(evidence.largest[1].usd == 5000)
-        #expect(evidence.silent == ["Card Co"])
+        #expect(evidence.largest.map(\.entry.label) == ["Example Studio Ltd", "Sample Co", "Airbnb", "Cafe", "Airbnb refund", "Cash"])
+        #expect(evidence.largest[1].usd == 4000)
+        #expect(evidence.silent == ["Travel card"])
     }
     @Test("A business cost paid personally leaves personal spending and month evidence")
     func businessCostPaidPersonally() {

@@ -327,7 +327,7 @@ struct UpOnlyGuidedEntry: View {
     @ViewBuilder private var portfolioBadge: some View {
         if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 28) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 28) }
     }
-    /// "Northwind · 3 holdings": whose it is, when a company's, and what's in it.
+    /// "Studio · 3 holdings": whose it is, when a company's, and what's in it.
     private func portfolioCaption(_ portfolio: Portfolio) -> String {
         let count = session.document?.holdings.filter { $0.portfolioID == portfolio.id && $0.archivedAt == nil }.count ?? 0
         return [ownerName(portfolio), count == 1 ? "1 holding" : "\(count) holdings"].joined(separator: " · ")
@@ -336,7 +336,7 @@ struct UpOnlyGuidedEntry: View {
     private func ownerName(_ portfolio: Portfolio) -> String {
         session.document.map { AssetOwnership.ownerName(portfolio.ownerBusinessID, in: $0) } ?? "Personal"
     }
-    /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Northwind").
+    /// A portfolio's name, with whose it is when another of the same kind has the same name ("Crypto · Studio").
     private func portfolioLabel(_ portfolio: Portfolio) -> String {
         let clash = portfolios.contains { $0.id != portfolio.id && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
         return clash ? portfolio.name + " · " + ownerName(portfolio) : portfolio.name
