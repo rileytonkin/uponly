@@ -111,7 +111,7 @@ extension UpOnlyUnlockedPanel {
                 VStack(alignment: .leading, spacing: 10) {
                     rangeControl
                     if snapshot.points.contains(where: { $0.value != nil }) {
-                        UpOnlyChart(points: snapshot.points, tint: trendTint(snapshot.points), bridgesGaps: true)
+                        UpOnlyChart(points: snapshot.points, tint: trendTint(snapshot.points), plotHeight: chartPlotHeight, bridgesGaps: true)
                     } else {
                         Text("No saved values" + worthRange.within + ".").font(UpOnlyType.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)

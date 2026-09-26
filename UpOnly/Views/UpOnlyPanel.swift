@@ -159,6 +159,10 @@ struct UpOnlyUnlockedPanel: View {
     @State var companyFocus: CompanyFocus = .all
     /// The header's and the switcher list's heights, so the switcher's breakdown can fill the page rather than leave a gap.
     @State var headerHeight: CGFloat = 0
+    /// The dashboard charts' plot height: the usual 120 pt, plus any room the page has spare.
+    var chartPlotHeight: CGFloat { session.dashboardSelection == .all && !showingSwitcher ? 120 : 120 + chartRoom }
+    /// Height a page other than All assets has spare below its content, given to its chart (at most 140 pt more).
+    @State var chartRoom: CGFloat = 0
     @State var switcherListHeight: CGFloat = 0
     enum CompanyChart { case balance, profit }
     /// The net worth scope of the current selection: a portfolio, or everything (bank groups have their own page).
@@ -271,6 +275,12 @@ struct UpOnlyUnlockedPanel: View {
                 }
             }
         }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 16)
+        // A shorter page gives what's left of the height to its chart, rather than leaving it empty at the foot.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            let natural = height - (home ? 0 : chartRoom)
+            let room = home ? 0 : min(140, max(0, (session.dashboardHeight ?? 0) - natural))
+            if abs(room - chartRoom) > 1 { chartRoom = room }
+        }
         // All assets sets the height every other page opens at (the session checks the selection still exists).
         .frame(minHeight: home ? nil : session.dashboardHeight, alignment: .top)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in

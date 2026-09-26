@@ -1276,6 +1276,8 @@ final class UpOnlySession {
             fixture.generation = opened.document.generation + 1
             try await vault.commit(fixture, expectedGeneration: opened.document.generation, sessionID: opened.sessionID)
             publish(fixture, freshUnlock: true)
+            // Every page at the height All assets would give it, as when the menu has been opened there first.
+            if let height = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_HEIGHT"].flatMap(Double.init) { dashboardHeight = CGFloat(height) }
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_TWIN_PORTFOLIO"] == "1", let personal = fixture.portfolios.first(where: { $0.name == "Crypto" && $0.ownerBusinessID == nil }) {
                 dashboardSelection = .portfolio(personal.id)
             }

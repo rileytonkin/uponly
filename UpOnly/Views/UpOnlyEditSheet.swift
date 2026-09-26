@@ -2,6 +2,8 @@ import SwiftUI
 
 struct UpOnlyEditSheet: View {
     @Environment(UpOnlySession.self) private var session
+    /// The room Manage gives its pages, so the form can fill it with its button at the foot.
+    @Environment(\.upOnlyScrollHeight) private var pageHeight
     let editor: UpOnlyEditor
     let onCancel: () -> Void
     let onSave: () -> Void
@@ -39,6 +41,12 @@ struct UpOnlyEditSheet: View {
     }
     // In Manage, Back lives top-left like every other page; the Add flow's own form keeps its header.
     private var showsOwnHeader: Bool { !session.managementInMenu || session.entryEditorInMenu }
+    /// How tall the form stands: Manage's scrolling room less its bottom margin, or the Add page's height less its
+    /// margins. Nil before the dashboard has been measured.
+    private var fillHeight: CGFloat? {
+        guard let height = session.dashboardHeight else { return nil }
+        return max(0, showsOwnHeader ? height - 2 * UpOnlyLayout.inset : pageHeight - UpOnlyLayout.inset)
+    }
     /// The latest a manual rate can be dated and still price the month it was opened for. Nil when no month was given.
     private var rateCutoff: Date? {
         guard let month = MonthKey(session.entryMonthForManagement) else { return nil }
@@ -55,11 +63,13 @@ struct UpOnlyEditSheet: View {
             } else {
                 VStack(alignment: .leading, spacing: 16) { form }.disabled(saving)
                 if let error { UpOnlyNotice(error) }
+                // The button sits at the foot of the page, as on every other form, not wherever the form ends.
+                Spacer(minLength: 0)
                 Button { Task { await save() } } label: {
                     Text(saving ? "Saving…" : actionTitle).frame(maxWidth: .infinity).frame(minHeight: 24)
                 }.buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(.defaultAction).disabled(saving)
             }
-        }.fixedSize(horizontal: false, vertical: true)
+        }.frame(minHeight: fillHeight, alignment: .top)
         .onAppear {
             guard !configured else { return }
             configured = true

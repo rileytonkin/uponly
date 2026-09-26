@@ -84,12 +84,12 @@ extension UpOnlyUnlockedPanel {
                                 companyFigure("Expenses", totals.expenses.map { -$0 })
                                 companyFigure(partOwner ? "Your profit" : "Profit / loss", partOwner ? totals.share : totals.profit, signed: true)
                             }.padding(.top, 4)
-                            UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow)
+                            UpOnlyChart(points: rangeMonthPoints(book), includesZero: true, showsAllMarkers: true, tint: UpOnlyTint.cashFlow, plotHeight: chartPlotHeight)
                             // Which months the figures cover, when some are missing.
                             if let caption = totals.caption { Text(caption).font(UpOnlyType.caption).foregroundStyle(.secondary) }
                         } else { Text("Accounting unavailable for this period").font(UpOnlyType.body).foregroundStyle(.secondary) }
                     } else if hasAssetChart {
-                        UpOnlyChart(points: series, tint: trendTint(series), bridgesGaps: true)
+                        UpOnlyChart(points: series, tint: trendTint(series), plotHeight: chartPlotHeight, bridgesGaps: true)
                     } else { Text("No history yet for this selection.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
                 }.padding(.top, 6)
             }
