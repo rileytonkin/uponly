@@ -27,6 +27,11 @@
 #     workers keep running from the directory they started in.
 #   - Any failure exits 0 with no output: a hook must never block a prompt
 #     because GitHub was slow.
+#   - This file is itself checked (2026-09-26): each hook command in
+#     settings.json runs it only if its SHA-256 matches the one written in that
+#     command. Claude Code reads the commands once, when a session starts, so a
+#     branch checked out later can't swap in its own copy of this file. Any
+#     change here must update that hash in settings.json in the same commit.
 #
 # BUMPING THE PIN. Read the Amora diff between PIN and the new commit for every
 # file in SUMS first (gh api repos/Tonkin-Apps/amora/compare/<PIN>...<new> or
@@ -112,4 +117,13 @@ fi
 
 SNAP="$(cd "${SNAPSHOT}/scripts" 2>/dev/null && pwd -P)" || exit 0
 [ -f "${SNAP}/${HOOK}" ] || exit 0
+# The guard and failover run a deployed copy of the bump script at a fixed path, ~/.claude/claude-bump.sh, that the
+# account hook copies from the snapshot (claude-switch on the Mac runs it there too). A copy that no longer matches the
+# pinned file is put back from the snapshot, the same atomic way, so only reviewed code runs; if that fails it's removed.
+BUMP="${HOME}/.claude/claude-bump.sh"
+if [ -e "$BUMP" ] && ! cmp -s "$BUMP" "${SNAP}/conductor_cloud_claude_bump.sh"; then
+  BUMP_TMP="${HOME}/.claude/.claude-bump.sh.$$"
+  { cp "${SNAP}/conductor_cloud_claude_bump.sh" "$BUMP_TMP" && chmod 0755 "$BUMP_TMP" && mv -f "$BUMP_TMP" "$BUMP"; } 2>/dev/null \
+    || rm -f "$BUMP_TMP" "$BUMP" 2>/dev/null
+fi
 exec bash "${SNAP}/${HOOK}" "$@"
