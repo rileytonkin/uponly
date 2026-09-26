@@ -13,8 +13,8 @@ nonisolated enum PriceError: LocalizedError {
         switch self {
         case .unavailable: "The price provider is unavailable. Saved observations are unchanged."
         case .invalidResponse: "The provider returned an invalid response. Saved observations are unchanged."
-        case .credentials: "Check your CoinGecko Demo API key in Sources."
-        case .metalCredentials: "Add or check your free Gold API history key in Sources."
+        case .credentials: "CoinGecko refused the saved API key. Saved observations are unchanged."
+        case .metalCredentials: "Gold API refused the saved history key. Saved observations are unchanged."
         case .rateLimited: "The provider’s request limit was reached. Up Only will retry at the next refresh."
         }
     }
@@ -52,11 +52,15 @@ nonisolated enum PublicPrices {
         // A timeout is one slow request, not a lost connection; it fails that item alone.
         return [.cancelled, .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains(error.code)
     }
+    /// `path` comes percent-encoded: fixed text, with any segment built from an asset ID made by `pathSegment`.
     static func request(host: String, path: String, query: [URLQueryItem], key: String = "", limit: Int = 2 * 1024 * 1024) async throws -> Data {
         guard ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com", "api.binance.com", "forex-data-feed.swissquote.com"].contains(host), key.utf8.count <= 512,
               !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PriceError.invalidResponse }
+        // Checked first: URLComponents stops the app on a path that isn't properly percent-encoded.
+        guard path.hasPrefix("/"), path.removingPercentEncoding != nil,
+              path.unicodeScalars.allSatisfy({ $0 == "%" || CharacterSet.urlPathAllowed.contains($0) }) else { throw PriceError.invalidResponse }
         guard !pauses.isPaused(host) else { throw PriceError.rateLimited }
-        var components = URLComponents(); components.scheme = "https"; components.host = host; components.path = path; components.queryItems = query.isEmpty ? nil : query
+        var components = URLComponents(); components.scheme = "https"; components.host = host; components.percentEncodedPath = path; components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw PriceError.invalidResponse }
         var request = URLRequest(url: url); request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("UpOnly/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
@@ -85,6 +89,13 @@ nonisolated enum PublicPrices {
         try Task.checkCancellation()
         return Data(body)
     }
+    /// A URL path segment for an asset ID: a valid ID only (`MoneyInput.canonicalAssetID`), percent-encoded, so it can
+    /// never add a segment, climb out of one, or start a query.
+    static func pathSegment(_ assetID: String) throws -> String {
+        guard try MoneyInput.canonicalAssetID(assetID) == assetID,
+              let segment = assetID.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/.;"))) else { throw PriceError.invalidResponse }
+        return segment
+    }
     /// CoinGecko's search endpoint: a few hundred kilobytes at most, ranked by market cap, instead of the whole 16 MB coin list.
     static func searchCoins(_ query: String, key: String) async throws -> [CatalogCoin] {
         struct Hit: Decodable { var id: String; var name: String; var symbol: String; var market_cap_rank: Int? }
@@ -107,6 +118,18 @@ nonisolated struct PriceHistoryCoverage: Codable, Sendable, Equatable {
     var checkedAt: Date
     var complete: Bool
 }
+extension AppSettings {
+    /// Whether a source's providers may be asked anything, a lookup while adding something included: only once setup
+    /// is complete, and only with that source switched on. A lookup that's skipped leaves the value to be typed.
+    func allowsLookups(_ source: PriceHistoryRequest.Source) -> Bool {
+        guard setupComplete else { return false }
+        switch source {
+        case .crypto: return automaticPrices
+        case .metal: return automaticMetals
+        case .fx: return automaticFX
+        }
+    }
+}
 nonisolated struct PriceHistoryRequest: Sendable {
     enum Source: Sendable { case crypto, metal, fx }
     var source: Source
@@ -127,6 +150,8 @@ nonisolated struct PriceUpdate: Codable, Sendable {
 extension PublicPrices {
     static func update(document: VaultDocument, now: Date = Date(), reconnected: Bool = false, includeCurrent: Bool = true) async throws -> PriceUpdate {
         var result = PriceUpdate()
+        // Nothing is asked of any provider until setup is complete; draft choices don't switch sources on.
+        guard document.settings.setupComplete else { return result }
         // Wise's rates come first in the private build, when its connection is set up.
         #if UPONLY_PERSONAL
         let wiseToken = document.settings.automaticWise ? (try? WiseConnection.load())?.token : nil
@@ -251,7 +276,7 @@ extension PublicPrices {
                 case .crypto:
                     // Spaced out to stay inside CoinGecko's limits: 30 calls a minute with a key, a handful without.
                     try await Task.sleep(for: .seconds(document.settings.coinGeckoKey.isEmpty ? 6 : 2))
-                    let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + item.identifier + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(item.start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(item.end.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: document.settings.coinGeckoKey)
+                    let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + pathSegment(item.identifier) + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(item.start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(item.end.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: document.settings.coinGeckoKey)
                     let quotes = try PriceHistory.decodeCrypto(data, request: item, fetchedAt: now)
                     result.quotes += quotes; observations = quotes.map(\.providerTime)
                 case .metal where document.settings.metalHistoryKey.isEmpty:

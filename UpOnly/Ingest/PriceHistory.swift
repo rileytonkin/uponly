@@ -3,16 +3,24 @@ import Foundation
 nonisolated enum PriceHistory {
     static func requests(document: VaultDocument, now: Date, reconnected: Bool = false) -> [PriceHistoryRequest] {
         let end = UTCDay.start(of: now)
-        var targets: [(PriceHistoryRequest.Source, String, Date)] = []
+        // Each target's stretches: an asset only while held, so a coin or metal that was sold (its holding or portfolio
+        // archived) isn't asked for again after its last day.
+        var targets: [(PriceHistoryRequest.Source, String, [(start: Date, end: Date)])] = []
         for group in Dictionary(grouping: document.holdings, by: { $0.assetID.rawValue }) {
-            guard let first = group.value.map(\.createdAt).min() else { continue }
+            let held = group.value.compactMap { holding -> (start: Date, end: Date)? in
+                guard let portfolio = document.portfolio(id: holding.portfolioID) else { return nil }
+                let until = [holding.archivedAt, portfolio.archivedAt].compactMap { $0 }.min().map { UTCDay.start(of: $0).addingTimeInterval(86400) } ?? end
+                return (UTCDay.start(of: holding.createdAt), min(until, end))
+            }
+            guard !held.isEmpty else { continue }
             let isMetal = PreciousMetal.asset(CanonicalAssetID(rawValue: group.key)) != nil
             // Gold's history needs no key (Binance's PAXG); other metals need Gold API's, else gaps are filled between saved prices.
             if isMetal && document.settings.automaticMetals && (!document.settings.metalHistoryKey.isEmpty || group.key == PreciousMetal.gold.assetID.rawValue) {
-                targets.append((.metal, group.key, first))
-            } else if !isMetal && document.settings.automaticPrices {
-                // CoinGecko's free plan covers the past 365 days; older days come from Binance's daily closes.
-                targets.append((.crypto, group.key, first))
+                targets.append((.metal, group.key, held))
+            } else if !isMetal && document.settings.automaticPrices && (try? MoneyInput.canonicalAssetID(group.key)) == group.key {
+                // CoinGecko's free plan covers the past 365 days; older days come from Binance's daily closes. An ID that
+                // isn't a valid coin ID is never asked for.
+                targets.append((.crypto, group.key, held))
             }
         }
         if document.settings.automaticFX {
@@ -20,21 +28,28 @@ nonisolated enum PriceHistory {
             for currency in currencies {
                 let balances = document.bankBalances.filter { $0.currency == currency }.map(\.observedAt)
                 let entries = document.entries.filter { $0.currency == currency }.compactMap { try? ImportDateFormat.iso.date($0.month + "-01") }
-                if let first = (balances + entries).min() { targets.append((.fx, currency, first)) }
+                if let first = (balances + entries).min() { targets.append((.fx, currency, [(UTCDay.start(of: first), end)])) }
             }
         }
         var result: [PriceHistoryRequest] = []
         let accountCurrencies = Set(document.accounts.map(\.currency))
-        for (source, identifier, first) in targets {
+        for (source, identifier, stretches) in targets {
             let key = (source == .fx ? "fx:" : "asset:") + identifier
             let coverage = (document.priceHistoryCoverage ?? []).filter { $0.key == key && ($0.complete || (!reconnected && now.timeIntervalSince($0.checkedAt) < 6 * 3600)) }.sorted { $0.start < $1.start }
-            // Every uncovered stretch, split into 90-day chunks.
-            var cursor = UTCDay.start(of: first)
-            while cursor < end {
-                if let covering = coverage.first(where: { $0.start <= cursor && $0.end > cursor }) { cursor = covering.end; continue }
-                let gapEnd = min(end, coverage.first { $0.start > cursor }?.start ?? end, cursor.addingTimeInterval(90 * 86400))
-                result.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: cursor, end: gapEnd))
-                cursor = gapEnd
+            // Held stretches that overlap (two portfolios holding the same coin) are merged, so no day is asked for twice.
+            var merged: [(start: Date, end: Date)] = []
+            for stretch in stretches.sorted(by: { $0.start < $1.start }) where stretch.start < stretch.end {
+                if let last = merged.last, stretch.start <= last.end { merged[merged.count - 1].end = max(last.end, stretch.end) } else { merged.append(stretch) }
+            }
+            for stretch in merged {
+                // Every uncovered stretch, split into 90-day chunks.
+                var cursor = stretch.start
+                while cursor < stretch.end {
+                    if let covering = coverage.first(where: { $0.start <= cursor && $0.end > cursor }) { cursor = covering.end; continue }
+                    let gapEnd = min(stretch.end, coverage.first { $0.start > cursor }?.start ?? stretch.end, cursor.addingTimeInterval(90 * 86400))
+                    result.append(PriceHistoryRequest(source: source, key: key, identifier: identifier, start: cursor, end: gapEnd))
+                    cursor = gapEnd
+                }
             }
         }
         // Recent days are what the chart shows first, so newest chunks go first. Currencies of real accounts

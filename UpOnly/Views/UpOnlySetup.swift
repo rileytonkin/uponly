@@ -314,7 +314,7 @@ struct UpOnlySetup: View {
                 Toggle("Automatic prices and exchange rates", isOn: $automatic).labelsHidden().toggleStyle(.switch).controlSize(.small).tint(UpOnlyTint.brand)
                     .accessibilityIdentifier("AutomaticSources")
             }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
-            Text("Prices and rates come from Binance, CoinGecko, Gold API and Frankfurter. They see coin tickers and currency codes, never your amounts.")
+            Text("Prices and rates come from Binance, CoinGecko, Gold API, Swissquote and Frankfurter. They see which coins, metals and currencies are looked up, and for which dates, never your amounts.")
                 .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 9) {
                 Button { Task { await finish(addData: true) } } label: {
@@ -539,7 +539,7 @@ struct UpOnlySources: View {
         #else
         let rates = "Frankfurter"
         #endif
-        return "Prices come from Binance, CoinGecko and Gold API, and exchange rates from " + rates + ". They see coin tickers and currency codes, never your amounts."
+        return "Prices come from Binance, CoinGecko, Gold API and Swissquote, and exchange rates from " + rates + ". They see which coins, metals and currencies are looked up, and for which dates, never your amounts."
     }
     /// The one save path. A key saved by an earlier version is kept as it was; nothing here asks for one.
     private func save() {

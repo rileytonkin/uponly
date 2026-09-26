@@ -17,8 +17,9 @@ extension PublicPrices {
         }
     }
     static func quotes(ids: [String], key: String) async throws -> [QuoteObservation] { try await cryptoQuotes(ids: ids, key: key).quotes }
-    /// Every price Binance trades against USDT, from one request (so it can't tell which coins you hold), kept for a
-    /// minute so the refresh, the charts and the Add form share it.
+    /// Every price Binance trades against USDT, from one request that names no coin, kept for a minute so the refresh,
+    /// the charts and the Add form share it. Binance's other requests (history, charts, a day's price, a single price)
+    /// name the coin's trading pair.
     static func binanceBook() async throws -> [String: Decimal] {
         if let cached = await BinanceBook.shared.fresh() { return cached }
         let data = try await request(host: "api.binance.com", path: "/api/v3/ticker/price", query: [], limit: 4 * 1024 * 1024)
@@ -58,11 +59,12 @@ extension PublicPrices {
         }
         return (quotes, symbols)
     }
-    /// Current prices without naming the coins you hold: the 250 largest by market cap in one request, then the next
-    /// 250 if a coin is still missing, and only a coin outside those is asked for by name. Also returns each listed
-    /// coin's ticker, for finding its long history on an exchange.
+    /// Current prices, naming as few of your coins as it can: the 250 largest by market cap in one request, then the
+    /// next 250 if a coin is still missing, and a coin outside those is asked for by name (history requests always name
+    /// the coin). Also returns each listed coin's ticker, for finding its long history on an exchange. An ID that isn't
+    /// valid is left out, so it can't cost the others their prices.
     static func marketQuotes(ids: [String], key: String) async throws -> (quotes: [QuoteObservation], symbols: [String: String]) {
-        var wanted = Set(try ids.map(MoneyInput.canonicalAssetID))
+        var wanted = Set(ids.compactMap { try? MoneyInput.canonicalAssetID($0) })
         var result: [QuoteObservation] = [], symbols: [String: String] = [:]
         // Each request stands alone: one that fails (a rate limit, a timeout) keeps what the others priced.
         var failure: Error?
@@ -127,8 +129,8 @@ extension PublicPrices {
             if let today { checks = await binanceMatches(pair: pair, reference: today, now: now) }
             if checks, let average = await binanceAverage(pair) { return average }
         }
-        if now.timeIntervalSince(start) < 364 * 86400,
-           let data = try? await request(host: "api.coingecko.com", path: "/api/v3/coins/" + assetID + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(end.timeIntervalSince1970)))], key: key),
+        if now.timeIntervalSince(start) < 364 * 86400, let segment = try? pathSegment(assetID),
+           let data = try? await request(host: "api.coingecko.com", path: "/api/v3/coins/" + segment + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(end.timeIntervalSince1970)))], key: key),
            let history = try? JSONDecoder().decode(PriceHistory.CryptoHistory.self, from: data) {
             let prices = history.prices.compactMap { pair -> Decimal? in
                 guard pair.count == 2, let millis = pair[0], let price = pair[1], price > 0 else { return nil }
@@ -198,7 +200,7 @@ extension PublicPrices {
             let ratio = NSDecimalNumber(decimal: last / reference).doubleValue
             if ratio > 0.85 && ratio < 1.15 { return series }
         }
-        let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + asset.rawValue + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(now.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: coinGeckoKey)
+        let data = try await request(host: "api.coingecko.com", path: "/api/v3/coins/" + pathSegment(asset.rawValue) + "/market_chart/range", query: [URLQueryItem(name: "vs_currency", value: "usd"), URLQueryItem(name: "from", value: String(Int(start.timeIntervalSince1970))), URLQueryItem(name: "to", value: String(Int(now.timeIntervalSince1970))), URLQueryItem(name: "precision", value: "full")], key: coinGeckoKey)
         return try decodeChartPrices(data, now: now)
     }
     /// Binance candles as prices through time: each candle's open at its start, and the last one's latest close now.

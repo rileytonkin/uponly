@@ -275,6 +275,10 @@ struct ImportRowEditor: View {
                 }
             }.scrollEdgeEffectStyle(.soft, for: .vertical).frame(height: min(280, CGFloat(max(matches.count, 1)) * 64))
             }
+            // The search is only sent to CoinGecko with crypto prices on (`UpOnlySession.searchCatalog`).
+            if session.document?.settings.allowsLookups(.crypto) != true {
+                Text("Crypto prices are off, so only coins Up Only already knows are searched. For another, enter its exact coin ID.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Text("Select the exact asset; tickers can be shared.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 310)
     }
