@@ -8,105 +8,108 @@
 # login, hit its limit, and sat dead while acc3 had room. Nothing reached it:
 # no hooks here, and the Mac's switcher had no SSH route to the sandbox.
 #
-# HOW. This file stays tiny on purpose. It downloads the hook scripts from
-# Amora's main branch into ~/.cache/amora-switch and runs the one it is asked
-# for, so every fix merged in Amora reaches UpOnly with no change here.
+# HOW. This file stays tiny on purpose. It downloads the hook scripts of one
+# reviewed Amora commit (PIN) into ~/.cache/amora-switch/<PIN> and runs the
+# one it is asked for.
 #   - Cloud only: a hard no-op unless CONDUCTOR_IS_LOCAL=0.
-#   - A snapshot is complete or absent: files land in a temp dir, are
-#     syntax-checked, then renamed into place and pointed at by `current`.
-#   - Stale snapshots (older than 10 minutes) are refreshed in the background;
-#     the hook runs on the existing one, so a prompt never waits on GitHub.
-#     Only the very first run of a sandbox downloads in the foreground.
-#   - A downloaded file must start with "#" and pass bash -n, so a GitHub
-#     error page saved as a script is refused (gh can exit 0 on failure).
+#   - Pinned (2026-09-26, security audit H2). Files are fetched at ?ref=$PIN,
+#     never from main, and each must match its SHA-256 in SUMS before the
+#     snapshot is installed; one mismatch refuses the whole snapshot. The
+#     snapshot is checked against SUMS again before every run, so a copy that
+#     doesn't match (say, one an older unpinned copy of this file left) never
+#     runs. What Amora merges later does not reach UpOnly until the pin moves.
+#   - A snapshot is complete or absent: files land in a temp dir, are checked,
+#     then renamed into place.
+#   - A pinned snapshot never goes stale, so nothing refreshes in the
+#     background. Only the first run in a sandbox downloads, in the foreground.
+#     `--refresh`, which older copies of this file started, does nothing.
 #   - Old snapshots are kept for a day, because the rescue's background
 #     workers keep running from the directory they started in.
 #   - Any failure exits 0 with no output: a hook must never block a prompt
 #     because GitHub was slow.
+#
+# BUMPING THE PIN. Read the Amora diff between PIN and the new commit for every
+# file in SUMS first (gh api repos/Tonkin-Apps/amora/compare/<PIN>...<new> or
+# GitHub's compare page). Then set PIN to the new commit's full SHA and replace
+# SUMS with that commit's hashes, from a clean download:
+#   for f in <each path in SUMS>; do
+#     gh api -H "Accept: application/vnd.github.raw" \
+#       "repos/Tonkin-Apps/amora/contents/$f?ref=<new>" | sha256sum | sed "s#-\$#$f#"
+#   done
+# A hook file Amora adds or drops is added to or removed from SUMS (and the
+# case list below) in the same change.
 set -uo pipefail
 
 [ "${CONDUCTOR_IS_LOCAL:-}" = "0" ] || exit 0
 HOOK="${1:-}"; shift || true
-REFRESH_ONLY=0
-[ "$HOOK" = "--refresh" ] && { REFRESH_ONLY=1; HOOK=conductor_cloud_claude_guard.sh; }
 case "$HOOK" in
   conductor_cloud_claude_account.sh|conductor_cloud_claude_guard.sh|\
   conductor_cloud_claude_failover.sh|conductor_cloud_codex_failover.sh|\
   conductor_cloud_claude_bump.sh|conductor_cloud_claude_tick.sh) ;;
-  *) exit 0 ;;
+  *) exit 0 ;;   # includes --refresh: there is nothing to refresh
 esac
 
 export PATH="/conductor/bin:${PATH}"
 # Amora's long-lived ticker re-execs through this file when it restarts, so it
-# moves to the newest snapshot instead of running its first one forever.
+# moves to a new pin instead of running its first snapshot forever.
 AMORA_ACCOUNT_HOOK_LAUNCHER="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 export AMORA_ACCOUNT_HOOK_LAUNCHER
 REPO="Tonkin-Apps/amora"
 BASE="${HOME}/.cache/amora-switch"
-FILES="scripts/conductor_cloud_claude_account.sh
-scripts/conductor_cloud_claude_guard.sh
-scripts/conductor_cloud_claude_failover.sh
-scripts/conductor_cloud_codex_failover.sh
-scripts/conductor_cloud_claude_bump.sh
-scripts/conductor_cloud_claude_tick.sh
-scripts/claude_session_rescue.sh
-scripts/claude_account_meters.sh
-scripts/lib/claude_account_common.sh
-scripts/lib/codex_account_common.sh"
-STALE_AFTER=600
+PIN=1f8ba9048cb59df69b0fc9a67203a2bc47f492f3
+# sha256sum --check format: "<SHA-256>  <path in Amora>", one line per file.
+SUMS="181e528ae95d483c2cfc9efb84de873da6635849e1c88371425cff734e9e5b06  scripts/conductor_cloud_claude_account.sh
+0309b46461c2e4f046e3ad7b6911b84713385acb097210465dfa3e647de9fa5f  scripts/conductor_cloud_claude_guard.sh
+acb6fae2c695f359d58017ff95f7e7cb33dccb9e56f7a3d910908c8b93e073ed  scripts/conductor_cloud_claude_failover.sh
+70c8f239ff8b13ff3eb72ff779a3374335e7261c8258259417cdf348d727937f  scripts/conductor_cloud_codex_failover.sh
+6336e5a0491fba7466c44c244f64c8ee6dc1fd25b59d1c4fbda476f10da9e5f2  scripts/conductor_cloud_claude_bump.sh
+d7183f3dd5090de14c35d37f438e4b96334f4314262ba3bad66f903dac45b61a  scripts/conductor_cloud_claude_tick.sh
+efce247c8140f9fea9ef2cd2dfb77aed4f5d1a95f8d69cebf689e5a5d60fbc8c  scripts/claude_session_rescue.sh
+4a66cec45a63b2a8130d0206fdb07950d7eb2ffd8ac21cb15a397c8efcdce8b3  scripts/claude_account_meters.sh
+145bde1d0acb3078d5a08f2cd033869d9e1e5459003398a176cdc4b60f681277  scripts/lib/claude_account_common.sh
+4c30b9d973ed35832da6e043109c36bccf802325801b5f1021e3a0ce144ecf34  scripts/lib/codex_account_common.sh"
+SNAPSHOT="${BASE}/${PIN}"
 
 mkdir -p "$BASE" 2>/dev/null || exit 0
 
-fetch() {  # $1 seconds to wait for another fetch. Download main's copy, make it current.
-  local sha tmp f
+verified() {  # $1 a snapshot dir: true only if every file in SUMS is there with its pinned hash.
+  [ -d "$1" ] && (cd "$1" && printf '%s\n' "$SUMS" | sha256sum --check --strict --status) 2>/dev/null
+}
+
+fetch() {  # Download PIN's files, check them against SUMS, then install them as SNAPSHOT.
+  local tmp _sum f d
   exec 9>"${BASE}/.fetch.lock" || return 1
-  flock -w "${1:-0}" 9 || return 1            # another hook is already fetching
-  [ "${1:-0}" -gt 0 ] && [ -f "${BASE}/current/scripts/${HOOK}" ] && return 0
-  sha=$(timeout 10 gh api "repos/${REPO}/commits/main" --jq .sha 2>/dev/null) || return 1
-  case "$sha" in *[!0-9a-f]*|'') return 1 ;; esac
-  [ ${#sha} -eq 40 ] || return 1
-  if [ -d "${BASE}/${sha}" ]; then
-    ln -sfn "$sha" "${BASE}/current.new" && mv -Tf "${BASE}/current.new" "${BASE}/current"
-    touch "${BASE}/${sha}"
-    return 0
-  fi
+  flock -w 20 9 || return 1                   # another hook is already fetching
+  verified "$SNAPSHOT" && return 0            # ... and it finished
   tmp=$(mktemp -d "${BASE}/.tmp.XXXXXX") || return 1
-  while IFS= read -r f; do
-    mkdir -p "${tmp}/$(dirname "$f")"
-    timeout 15 gh api -H "Accept: application/vnd.github.raw" \
-      "repos/${REPO}/contents/${f}?ref=${sha}" > "${tmp}/${f}" 2>/dev/null \
-      && [ "$(head -c 1 "${tmp}/${f}")" = '#' ] && bash -n "${tmp}/${f}" 2>/dev/null \
-      || { rm -rf "$tmp"; return 1; }
-  done <<< "$FILES"
+  while read -r _sum f; do
+    if ! mkdir -p "${tmp}/$(dirname "$f")" \
+       || ! timeout 15 gh api -H "Accept: application/vnd.github.raw" \
+              "repos/${REPO}/contents/${f}?ref=${PIN}" > "${tmp}/${f}" 2>/dev/null; then
+      rm -rf "$tmp"; return 1
+    fi
+  done <<< "$SUMS"
+  verified "$tmp" || { rm -rf "$tmp"; return 1; }   # any hash mismatch refuses it all
   chmod +x "${tmp}"/scripts/*.sh
-  mv -T "$tmp" "${BASE}/${sha}" 2>/dev/null || { rm -rf "$tmp"; return 1; }
-  ln -sfn "$sha" "${BASE}/current.new" && mv -Tf "${BASE}/current.new" "${BASE}/current"
-  # Prune snapshots older than a day, never the current one and never one a
+  # A copy of this commit that failed the check is moved aside, then pruned below.
+  if [ -e "$SNAPSHOT" ]; then
+    mv -T "$SNAPSHOT" "$(mktemp -u "${BASE}/.tmp.XXXXXX")" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  fi
+  mv -T "$tmp" "$SNAPSHOT" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  # Prune snapshots older than a day, never the pinned one and never one a
   # running rescue worker was started from.
-  local d
   find "$BASE" -mindepth 1 -maxdepth 1 -type d -name '.tmp.*' -mmin +60 -exec rm -rf {} + 2>/dev/null
-  for d in $(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name '[0-9a-f]*' -mmin +1440 ! -name "$sha" 2>/dev/null); do
+  while IFS= read -r d; do
     pgrep -f "${d}/" >/dev/null 2>&1 || rm -rf "$d"
-  done
+  done < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -name '[0-9a-f]*' -mmin +1440 ! -name "$PIN" 2>/dev/null)
   return 0
 }
 
-if [ "$REFRESH_ONLY" = 1 ]; then
-  fetch 0
-  exit 0
+if ! verified "$SNAPSHOT"; then
+  ( fetch ) </dev/null >/dev/null 2>&1
+  verified "$SNAPSHOT" || exit 0
 fi
 
-if [ -f "${BASE}/current/scripts/${HOOK}" ]; then
-  age=$(( $(date +%s) - $(stat -c %Y "${BASE}/current" 2>/dev/null || echo 0) ))
-  if [ "$age" -gt "$STALE_AFTER" ]; then
-    touch -h "${BASE}/current" 2>/dev/null      # one refresher per interval
-    setsid bash "$AMORA_ACCOUNT_HOOK_LAUNCHER" --refresh </dev/null >/dev/null 2>&1 &
-  fi
-else
-  ( fetch 20 ) </dev/null >/dev/null 2>&1 || true
-fi
-
-SNAP="${BASE}/current/scripts"
+SNAP="$(cd "${SNAPSHOT}/scripts" 2>/dev/null && pwd -P)" || exit 0
 [ -f "${SNAP}/${HOOK}" ] || exit 0
-SNAP="$(cd "$SNAP" 2>/dev/null && pwd -P)" || exit 0
 exec bash "${SNAP}/${HOOK}" "$@"
