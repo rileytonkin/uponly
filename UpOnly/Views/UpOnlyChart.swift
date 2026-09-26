@@ -187,10 +187,12 @@ struct UpOnlyChart: View {
     var tint: Color = .accentColor
     var onSelect: ((String) -> Void)?
     var bridgesGaps = false
+    /// How tall the plot is: 120 pt, more where a page has room to spare.
+    var plotHeight: CGFloat = 120
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
-         tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false) {
+         tint: Color = .accentColor, plotHeight: CGFloat = 120, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false) {
         self.points = points; self.includesZero = includesZero; self.showsAllMarkers = showsAllMarkers; self.selected = selected
-        self.tint = tint; self.onSelect = onSelect; self.bridgesGaps = bridgesGaps
+        self.tint = tint; self.onSelect = onSelect; self.bridgesGaps = bridgesGaps; self.plotHeight = plotHeight
     }
     var body: some View {
         let factor = session.privacyMode ? session.standInFactor : nil
@@ -199,7 +201,7 @@ struct UpOnlyChart: View {
             return scaled
         } } ?? points
         UpOnlyChartCanvas(points: shown, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, tint: tint,
-                          onSelect: onSelect, bridgesGaps: bridgesGaps, standIn: factor != nil)
+                          onSelect: onSelect, bridgesGaps: bridgesGaps, standIn: factor != nil, plotHeight: plotHeight)
     }
 }
 
@@ -224,15 +226,15 @@ struct UpOnlyChartCanvas: View {
     @State private var hovered: Int? = nil
     /// Where the pointer is over the chart, so the hover card sits beside it.
     @State private var pointer: CGPoint? = nil
-    private let plotHeight: CGFloat = 120
+    private let plotHeight: CGFloat
     /// Room past the last point for the largest marker, so it isn't clipped at the right edge.
     private let edge: CGFloat = 6
     /// `bridgesGaps` is for daily history: straight segments, running across a few days without a value. Off for
     /// monthly charts, which are gently smoothed and keep a missing month as a gap.
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
-         tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, standIn: Bool = false) {
+         tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, standIn: Bool = false, plotHeight: CGFloat = 120) {
         self.points = points; self.includesZero = includesZero; self.selected = selected; self.tint = tint; self.onSelect = onSelect
-        self.bridgesGaps = bridgesGaps; self.standIn = standIn
+        self.bridgesGaps = bridgesGaps; self.standIn = standIn; self.plotHeight = plotHeight
         let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, bridgesGaps: bridgesGaps)
         self.layout = layout
         let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular), labelFont = NSFont.systemFont(ofSize: 10)

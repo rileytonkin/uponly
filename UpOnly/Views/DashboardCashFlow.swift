@@ -49,7 +49,7 @@ extension UpOnlyUnlockedPanel {
             }
                 let points = monthPoints(model.chartHistory)
                 if gaps.isEmpty || points.contains(where: { $0.value != nil }) {
-                UpOnlyChart(points: points, includesZero: true, showsAllMarkers: true, selected: model.period == .monthly ? model.month.description : nil, tint: UpOnlyTint.cashFlow) { id in
+                UpOnlyChart(points: points, includesZero: true, showsAllMarkers: true, selected: model.period == .monthly ? model.month.description : nil, tint: UpOnlyTint.cashFlow, plotHeight: chartPlotHeight) { id in
                     if let month = MonthKey(id) { model.drillInto(month) }
                 }.padding(.top, 20)
                 }
@@ -189,7 +189,7 @@ extension UpOnlyUnlockedPanel {
             }
             if let gap = gaps.first { exchangeRateAction(gap.1, month: gap.0) }
             if points.contains(where: { $0.value != nil }) {
-                UpOnlyChart(points: points, includesZero: true, showsAllMarkers: true, selected: model.period == .monthly ? model.month.description : nil, tint: UpOnlyTint.cashFlow) { id in
+                UpOnlyChart(points: points, includesZero: true, showsAllMarkers: true, selected: model.period == .monthly ? model.month.description : nil, tint: UpOnlyTint.cashFlow, plotHeight: chartPlotHeight) { id in
                     if let month = MonthKey(id) { model.drillInto(month) }
                 }
             }
