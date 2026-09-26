@@ -1846,7 +1846,8 @@ struct VaultStoreTests {
         #expect(try BackgroundConfiguration.load(from: keychain) == config)
         keychain.unreadable = [false]
         #expect(throws: VaultError.unavailable) { _ = try BackgroundConfiguration.load(from: keychain) }
-        #expect(keychain.current == saved)
+        // Compared decoded: JSONEncoder doesn't promise the same key order twice.
+        #expect(try keychain.current.map { try JSONDecoder().decode(BackgroundConfiguration.self, from: $0) } == config)
     }
 
     @Test("The background configuration is kept on this Mac only and readable after its first unlock; the old item is the login keychain's")
