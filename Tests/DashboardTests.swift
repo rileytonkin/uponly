@@ -197,36 +197,15 @@ struct PrivacyFormatTests {
     }
 }
 
-struct StandInTests {
-    @Test("Stand-in figures scale amounts and quantities, and leave percentages, dates and counts alone")
-    func scaling() {
-        #expect(UpOnlyStandIn.scale("$1,234.56", by: Decimal(string: "0.01")!) == "$12.35")
-        #expect(UpOnlyStandIn.scale("−$3,200.00", by: Decimal(string: "0.5")!) == "−$1,600.00")
-        #expect(UpOnlyStandIn.scale("£20.00", by: 2) == "£40.00")
-        #expect(UpOnlyStandIn.scale("CHF\u{00A0}1,234.00", by: 2) == "CHF\u{00A0}2,468.00")
-        #expect(UpOnlyStandIn.scale("0.1 BTC", by: Decimal(string: "0.5")!) == "0.05 BTC")
-        // Symbols with a country prefix, one-letter and digit tickers, coin names and bare numbers are scaled too.
-        #expect(UpOnlyStandIn.scale("CA$1,000.00", by: 2) == "CA$2,000.00")
-        #expect(UpOnlyStandIn.scale("R$50.00", by: 2) == "R$100.00")
-        #expect(UpOnlyStandIn.scale("1,200 S", by: 2) == "2,400 S")
-        #expect(UpOnlyStandIn.scale("3 1INCH", by: 2) == "6 1INCH")
-        #expect(UpOnlyStandIn.scale("12.5 Arbitrum", by: 2) == "25.0 Arbitrum")
-        #expect(UpOnlyStandIn.scale("25,000,000", by: 2) == "50,000,000")
-        // Short figures are scaled whole, never left showing the real one.
-        #expect(UpOnlyStandIn.scale("3.71B PEPE", by: Decimal(string: "0.001")!) == "3.71M PEPE")
-        #expect(UpOnlyStandIn.scale("$1.25M", by: Decimal(string: "0.001")!) == "$1,250.00")
-        #expect(UpOnlyStandIn.scale("2 ozt", by: Decimal(string: "0.03")!) == "0.06 ozt")
-        #expect(UpOnlyStandIn.scale("Since Mar 2025 · Paid $4,200 · +$1,310 (+31%)", by: Decimal(string: "0.1")!) == "Since Mar 2025 · Paid $420 · +$131 (+31%)")
-        #expect(UpOnlyStandIn.scale("1 of 2 holdings", by: Decimal(string: "0.1")!) == "1 of 2 holdings")
-        #expect(UpOnlyStandIn.scale("Sep 24, 2026", by: Decimal(string: "0.1")!) == "Sep 24, 2026")
+@MainActor struct PrivacyPlaceholderTests {
+    private func points(_ values: [Decimal]) -> [UpOnlyChartPoint] {
+        values.enumerated().map { UpOnlyChartPoint(id: "\($0.offset)", label: "\($0.offset)", value: $0.element) }
     }
-    @Test("The stand-in total is small, the same for a vault every time, and moves with the real one")
-    func factor() {
-        let vault = UUID()
-        let factor = UpOnlyStandIn.factor(total: 245_000, vaultID: vault)
-        #expect(factor == UpOnlyStandIn.factor(total: 245_000, vaultID: vault))
-        let shown = NSDecimalNumber(decimal: 245_000 * factor).doubleValue
-        #expect(shown >= 600 && shown <= 12_000)
-        #expect(UpOnlyStandIn.factor(total: 300_000, vaultID: vault) == factor)   // same power of ten, same scale
+    @Test("A hidden chart's value axis is as wide for a fortune as for pocket change, so its width can't say how much")
+    func hiddenAxisWidth() {
+        let small = points([12, 40]), large = points([12_000_000, 84_000_000])
+        #expect(UpOnlyChartCanvas(points: small, hidden: true).axisWidth == UpOnlyChartCanvas(points: large, hidden: true).axisWidth)
+        // Shown, the axis fits its labels ("$40" against "$100M").
+        #expect(UpOnlyChartCanvas(points: small).axisWidth < UpOnlyChartCanvas(points: large).axisWidth)
     }
 }

@@ -261,7 +261,8 @@ struct UpOnlyGuidedEntry: View {
                         // What it cost, if you like, so the app can show the gain since. Left empty with a past date,
                         // the cost is that day's average price times the amount, shown here until typed over.
                         UpOnlyFormRow(label: "Cost", note: estimatedCost == nil ? "optional" : closeDay + " price") {
-                            UpOnlyValueField(estimatedCost.map { readBack($0, fraction: 2...2) } ?? "0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                            // Privacy mode masks the field, so its placeholder mustn't show the estimate either.
+                            UpOnlyValueField(estimatedCost.map { session.privacyMode ? "••••" : readBack($0, fraction: 2...2) } ?? "0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
                                 .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 110).accessibilityLabel("Amount paid")
                             UpOnlyCurrencyField(code: $row.holding.paidCurrency, label: "Currency paid").textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium))
                                 .foregroundStyle(.secondary).frame(width: 32)

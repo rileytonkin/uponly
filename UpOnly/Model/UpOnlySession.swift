@@ -167,15 +167,6 @@ final class UpOnlySession {
     private(set) var unlockTiming: UnlockTiming? { get { unlocked.unlockTiming } set { unlocked.unlockTiming = newValue } }
     /// Read from the vault's saved setting, so it's as you left it at the next unlock.
     var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
-    /// Privacy mode's stand-in factor: amounts show scaled by it, so they look real but say nothing. Nil when figures
-    /// show as they are. Worked out once per document.
-    var standInFactor: Decimal? {
-        guard privacyMode, let document else { return nil }
-        if let cached = unlocked.standInCache, cached.revision == documentRevision { return cached.factor }
-        let factor = UpOnlyStandIn.factor(total: AssetOwnership.personalValue(at: Date(), scope: .allTracked, document: document).total, vaultID: document.vaultID)
-        unlocked.standInCache = (documentRevision, factor)
-        return factor
-    }
     /// Hiding values takes effect at once, even while another save finishes; the saved setting follows.
     private var privacyOverride: Bool? { get { unlocked.privacyOverride } set { unlocked.privacyOverride = newValue } }
     private var privacyAttempt: UUID { get { unlocked.privacyAttempt } set { unlocked.privacyAttempt = newValue } }
@@ -2099,7 +2090,6 @@ final class UnlockedSession {
     @ObservationIgnored var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] = [:]
     @ObservationIgnored fileprivate var estimatesCache: (revision: Int, value: ChartEstimates)?
     @ObservationIgnored fileprivate var rateCache: (revision: Int, monthly: [String: Decimal?], latest: [String: Decimal?]) = (-1, [:], [:])
-    @ObservationIgnored fileprivate var standInCache: (revision: Int, factor: Decimal)?
     fileprivate(set) var monthModel: PopoverModel?
     fileprivate(set) var intraday: [String: ChartEstimates.Series] = [:]
     @ObservationIgnored fileprivate var intradayFetchedAt: [String: Date] = [:]

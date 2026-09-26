@@ -11,9 +11,13 @@ struct UpOnlyAmount: View {
     /// Shows cents, in secondary colour so the dollars still read first: "$13,710.42".
     var cents = false
     var body: some View {
-        // Privacy mode shows the stand-in figure in the same style, and tells VoiceOver it's hidden.
-        if let shown = session.privacyMode ? session.standInFactor.map({ value * $0 }) : value {
-            let parts = Self.parts(shown, signed: signed, cents: cents)
+        // Privacy mode shows dots in the figure's place, in a neutral colour (a red figure would say it's a loss), and
+        // tells VoiceOver it's hidden.
+        if session.privacyMode {
+            Text("••••").font(.system(size: 40, weight: .bold)).foregroundStyle(.primary)
+                .accessibilityLabel("Hidden value")
+        } else {
+            let parts = Self.parts(value, signed: signed, cents: cents)
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text(parts.sign + "$").fixedSize(horizontal: false, vertical: true)
@@ -25,15 +29,12 @@ struct UpOnlyAmount: View {
                     }
                 }.fixedSize()
                     // The digits roll to a new figure as prices update or the page changes, as the system's do.
-                    .contentTransition(.numericText(value: NSDecimalNumber(decimal: shown).doubleValue))
-                    .animation(.snappy(duration: 0.4), value: shown)
+                    .contentTransition(.numericText(value: NSDecimalNumber(decimal: value).doubleValue))
+                    .animation(.snappy(duration: 0.4), value: value)
                 Text(parts.sign + "$" + parts.whole + parts.fraction).fixedSize(horizontal: false, vertical: true).font(.system(size: 24, weight: .bold).monospacedDigit())
             }.foregroundStyle(tint)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(session.privacyMode ? "Hidden value" : parts.sign + "$" + parts.whole + parts.fraction)
-        } else {
-            Text("••••").font(.system(size: 40, weight: .bold)).foregroundStyle(.primary)
-                .accessibilityLabel("Hidden value")
+                .accessibilityLabel(parts.sign + "$" + parts.whole + parts.fraction)
         }
     }
     /// "−", "13,710" and ".42" (or "" without cents).
@@ -44,54 +45,6 @@ struct UpOnlyAmount: View {
         let text = (cents ? UpOnlyFormat.exactMoney(abs(value)) : UpOnlyFormat.money(abs(value))).replacingOccurrences(of: "$", with: "")
         guard cents, let dot = text.lastIndex(of: ".") else { return (sign, text, "") }
         return (sign, String(text[..<dot]), String(text[dot...]))
-    }
-}
-
-/// Privacy mode's stand-in figures: every amount scaled by one factor, fixed per vault and unknown to anyone looking,
-/// so the figures look real and small, agree with each other, and keep their percentages.
-nonisolated enum UpOnlyStandIn {
-    /// A vault-random base (6,000 to 12,000) over the power of ten just above the real total: the stand-in total lands
-    /// between about 600 and 12,000 and moves as the real one does, without saying what that is.
-    static func factor(total: Decimal?, vaultID: UUID) -> Decimal {
-        let seed = vaultID.uuidString.unicodeScalars.reduce(UInt64(1_469_598_103_934_665_603)) { ($0 ^ UInt64($1.value)) &* 1_099_511_628_211 }
-        let base = Decimal(6000 + Int(seed % 6000))
-        let magnitude = max(abs(NSDecimalNumber(decimal: total ?? 100_000).doubleValue), 1)
-        return base / Decimal(pow(10, ceil(log10(magnitude))))
-    }
-    // Symbols with a country prefix count too ("CA$", "A$", "R$", "HK$", "CN¥"), as do codes before the number ("CHF 1,234").
-    // Either may be short, with a suffix: "$1.25M", "3.71B PEPE".
-    private static let money = try! NSRegularExpression(pattern: #"(?<![\w.,])((?:[A-Z]{1,3})?[$£€¥₹₩₫₱₪₦₴₺₽฿]|[A-Z]{3}[\s\u00A0])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)([MBT](?![A-Za-z]))?"#)
-    // A number before any ticker (one letter, or starting with a digit: "S", "1INCH"), a coin's name ("Arbitrum") or a unit.
-    private static let quantity = try! NSRegularExpression(pattern: #"(?<![\w.,$£€¥₹])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)([MBT])?(?=[\s\u00A0](?:[A-Z0-9][A-Za-z0-9]{0,15}|ozt|kg|g)\b)"#)
-    // A bare number on its own ("25,000,000"), as a form reads back what was typed.
-    private static let bare = try! NSRegularExpression(pattern: #"^[\s\u00A0]*[−-]?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)[\s\u00A0]*$"#)
-    /// The same text with each amount and quantity scaled: "$1,234.56", "£20.00", "CHF 1,234.00", "0.1 BTC", "2 ozt".
-    /// Percentages, dates and counts are left alone.
-    static func scale(_ text: String, by factor: Decimal) -> String {
-        var result = text
-        // A form reading back what was typed keeps it written out; amounts and quantities are shortened like any others.
-        for (expression, group, isQuantity, shortens) in [(money, 2, false, true), (quantity, 1, true, true), (bare, 1, true, false)] {
-            let source = result as NSString
-            for match in expression.matches(in: result, range: NSRange(location: 0, length: source.length)).reversed() {
-                var range = match.range(at: group)
-                let original = source.substring(with: range)
-                guard var value = Decimal(string: original.replacingOccurrences(of: ",", with: ""), locale: Locale(identifier: "en_US_POSIX")) else { continue }
-                // A short figure is scaled whole ("1.25M" is 1,250,000) and written the way any figure that size is.
-                let suffixRange = group + 1 < match.numberOfRanges ? match.range(at: group + 1) : NSRange(location: NSNotFound, length: 0)
-                let suffix = suffixRange.location == NSNotFound ? "" : source.substring(with: suffixRange)
-                if !suffix.isEmpty {
-                    value *= suffix == "T" ? 1_000_000_000_000 : suffix == "B" ? 1_000_000_000 : 1_000_000
-                    range = NSUnionRange(range, suffixRange)
-                }
-                let decimals = suffix.isEmpty ? original.split(separator: ".").dropFirst().first?.count ?? 0 : 2
-                let formatter = NumberFormatter(); formatter.locale = Locale(identifier: "en_US"); formatter.numberStyle = .decimal
-                formatter.minimumFractionDigits = decimals; formatter.maximumFractionDigits = isQuantity ? max(decimals, 4) : decimals
-                let scaled = value * factor
-                let text = (shortens ? UpOnlyFormat.compact(scaled) : nil) ?? formatter.string(from: NSDecimalNumber(decimal: scaled)) ?? original
-                result = (result as NSString).replacingCharacters(in: range, with: text)
-            }
-        }
-        return result
     }
 }
 
@@ -398,16 +351,15 @@ struct UpOnlyBankBadge: View {
     }
 }
 
-/// Replace the text, not merely its pixels, so hidden values are absent from accessibility.
+/// Replace the text, not merely its pixels, so hidden values are absent from accessibility. The whole text becomes
+/// dots, words and all: "No money" or a figure's length would still say how much.
 struct UpOnlyPrivateText: View {
     @Environment(UpOnlySession.self) private var session
     let value: String
     init(_ value: String) { self.value = value }
     var body: some View {
-        if session.privacyMode {
-            // The stand-in figures, or dots before a vault is open.
-            Text(session.standInFactor.map { UpOnlyStandIn.scale(value, by: $0) } ?? "••••").accessibilityLabel("Hidden value")
-        } else { Text(value) }
+        if session.privacyMode { Text("••••").accessibilityLabel("Hidden value") }
+        else { Text(value) }
     }
 }
 

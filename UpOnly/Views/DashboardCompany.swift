@@ -59,8 +59,9 @@ extension UpOnlyUnlockedPanel {
                     } else {
                         // The change over the range, beside your share of a part-owned company.
                         let yourShare = partOwner && companyFocus == .all ? share.map { share -> HeadlineStat in
-                            let shown = session.privacyMode ? session.standInFactor.map { UpOnlyFormat.exactMoney(share * $0) } ?? "••••" : UpOnlyFormat.exactMoney(share)
-                            return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary, spoken: shown)
+                            let shown = session.privacyMode ? "••••" : UpOnlyFormat.exactMoney(share)
+                            return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary,
+                                                spoken: session.privacyMode ? "Hidden value" : shown)
                         } : nil
                         let stats = [assets, yourShare].compactMap { $0 }
                         if !stats.isEmpty { headlineStats(stats).padding(.top, 4) }
@@ -130,7 +131,7 @@ extension UpOnlyUnlockedPanel {
                     Group { if isPrivate { UpOnlyPrivateText(value) } else { Text(value) } }
                         .font(UpOnlyType.body.weight(.semibold).monospacedDigit())
                         // Dots stay neutral; a red "••••" would still say it's a loss.
-                        .foregroundStyle(session.privacyMode && session.standInFactor == nil ? Color.primary : tint)
+                        .foregroundStyle(session.privacyMode ? Color.primary : tint)
                     if let detail { Text(detail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary) }
                 }.lineLimit(1).minimumScaleFactor(0.8)
                 Text(caption).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)

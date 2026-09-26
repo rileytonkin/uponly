@@ -95,8 +95,9 @@ extension UpOnlyUnlockedPanel {
         // empty space under the list (and with a long list it stays at its smallest and the page scrolls).
         let room = (session.dashboardHeight ?? 0) - headerHeight - 16 - switcherListHeight - 14
         return VStack(spacing: 14) {
-            // What your total is made of, first. Its shares are the legend's, so the rows don't repeat them.
-            if slices.count > 1, !session.privacyMode || session.standInFactor != nil {
+            // What your total is made of, first. Its shares are the legend's, so the rows don't repeat them. Hidden in
+            // privacy mode: proportions say how you hold it.
+            if slices.count > 1, !session.privacyMode {
                 UpOnlyBreakdown(slices: slices, diameter: min(112, max(78, room - 32)), height: room > 110 ? min(room, 180) : nil)
             }
             VStack(alignment: .leading, spacing: 14) {

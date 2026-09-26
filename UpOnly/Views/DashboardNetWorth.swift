@@ -131,13 +131,12 @@ extension UpOnlyUnlockedPanel {
     }
     /// "All-time  ▲ 31.2%  +$1,310": profit on cost, which doesn't change with the range. What it's measured on (what
     /// was paid, and how many holdings have a cost) is the tooltip, marked when only some holdings count. Privacy mode
-    /// keeps the percentage and shows a stand-in amount.
+    /// keeps the percentage and hides the amounts.
     func allTimeStat(_ allTime: (gain: Decimal, cost: Decimal, covered: Int, total: Int)) -> HeadlineStat {
         let fraction = allTime.cost > 0 ? allTime.gain / allTime.cost : nil
-        let scale = session.privacyMode ? session.standInFactor : 1
-        let amount = scale.map { UpOnlyFormat.movement(allTime.gain * $0, fraction: nil, cents: false) } ?? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: nil)
+        let amount = session.privacyMode ? UpOnlyFormat.hiddenMovement(allTime.gain, fraction: nil) : UpOnlyFormat.movement(allTime.gain, fraction: nil, cents: false)
         let partial = allTime.covered < allTime.total
-        let note = [scale.map { "On " + UpOnlyFormat.money(allTime.cost * $0) + " paid" }, partial ? "\(allTime.covered) of \(allTime.total) holdings have a cost" : nil]
+        let note = [session.privacyMode ? nil : "On " + UpOnlyFormat.money(allTime.cost) + " paid", partial ? "\(allTime.covered) of \(allTime.total) holdings have a cost" : nil]
             .compactMap { $0 }.joined(separator: " · ")
         let spoken = [session.privacyMode ? "amount hidden" : UpOnlyFormat.movement(allTime.gain, fraction: nil, cents: false), fraction.map(UpOnlyFormat.percent), note.isEmpty ? nil : note]
             .compactMap { $0 }.joined(separator: ", ")

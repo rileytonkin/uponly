@@ -111,8 +111,8 @@ extension UpOnlyUnlockedPanel {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(1)
             UpOnlyPrivateText(value.map(UpOnlyFormat.exactMoney) ?? "—").font(.system(size: 14, weight: .medium).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.8)
-                // Dots stay neutral (a red "••••" would still say it's a loss); stand-in figures keep their sign anyway.
-                .foregroundStyle(signed && (!session.privacyMode || session.standInFactor != nil) ? value.map(UpOnlyTint.signed) ?? Color.primary : Color.primary)
+                // Hidden values stay neutral: a red "••••" would still say it's a loss.
+                .foregroundStyle(signed && !session.privacyMode ? value.map(UpOnlyTint.signed) ?? Color.primary : Color.primary)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     /// Revenue, expenses, profit and your share summed over the months in the selected range, with a caption saying

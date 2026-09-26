@@ -82,7 +82,8 @@ extension UpOnlyUnlockedPanel {
         return Grid(horizontalSpacing: 8, verticalSpacing: 8) {
             GridRow {
                 UpOnlyStatTile(title: "Price", value: price ?? "—", detail: move.map(UpOnlyFormat.arrowPercent), detailTint: move.map { UpOnlyTint.signed(UpOnlyFormat.roundedPercent($0)) })
-                UpOnlyStatTile(title: "Avg. buy price", value: average ?? "—")
+                // What you paid, not a market price, so privacy mode hides it.
+                UpOnlyStatTile(title: "Avg. buy price", value: average ?? "—", isPrivate: true)
             }
             GridRow {
                 UpOnlyStatTile(title: "Cost basis", value: performance.costUSD.map(UpOnlyFormat.exactMoney) ?? "—", isPrivate: true,

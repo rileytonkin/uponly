@@ -741,13 +741,12 @@ struct UpOnlyUnlockedPanel: View {
         }
     }
     /// "Past 7 days  ▲ 13.3%  +$4,036.90": the change over the range. The percentage stays in privacy mode; the
-    /// amounts become stand-ins. What it's measured against ("vs $30,245.08 prev 7D") is the tooltip. Bank and company
+    /// amounts are hidden. What it's measured against ("vs $30,245.08 prev 7D") is the tooltip. Bank and company
     /// pages give the amount alone: cash moves with deposits and spending, so a percentage says little.
     func changeStat(_ range: RangeChange, percent: Bool = true) -> HeadlineStat {
         let change = range.change
-        let scale = session.privacyMode ? session.standInFactor : 1
-        let previous = scale.map { UpOnlyFormat.exactMoney(change.previous * $0) } ?? "••••"
-        let moved = scale.map { UpOnlyFormat.movement(change.amount * $0, fraction: nil, cents: true) } ?? UpOnlyFormat.hiddenMovement(change.amount, fraction: nil)
+        let previous = session.privacyMode ? "••••" : UpOnlyFormat.exactMoney(change.previous)
+        let moved = session.privacyMode ? UpOnlyFormat.hiddenMovement(change.amount, fraction: nil) : UpOnlyFormat.movement(change.amount, fraction: nil, cents: true)
         let label = worthRange == .all ? "Since start" : worthRange.spokenTitle
         let spoken = [session.privacyMode ? "amount hidden" : moved, change.fraction.map(UpOnlyFormat.percent), session.privacyMode ? nil : "from " + previous]
             .compactMap { $0 }.joined(separator: ", ")
