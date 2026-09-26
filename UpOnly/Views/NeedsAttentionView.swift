@@ -82,7 +82,7 @@ struct UpOnlyDataAttention: View {
                         if report.pricesNeeded { note("No price or rate for today: " + report.missingPriceLabels.joined(separator: ", ") + ". Check the source is on, has its key, and has updated.") }
                         if !report.accountingNames.isEmpty { note(report.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)
-                    UpOnlyRow(title: "Open Data sources", divided: true, chevron: true, action: { session.managementSection = "Sources" }) {
+                    UpOnlyRow(title: "Open Settings", divided: true, chevron: true, action: { session.managementSection = "Sources" }) {
                         UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 28)
                     }
                 }
