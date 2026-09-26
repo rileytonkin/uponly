@@ -1515,7 +1515,8 @@ extension UpOnlySession {
             return
         }
         let activeHoldings = doc.holdings.filter { $0.isActive(at: Date()) && doc.portfolio(id: $0.portfolioID)?.isActive(at: Date()) == true }
-        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices) metals=\(doc.settings.automaticMetals) fx=\(doc.settings.automaticFX) keyLength=\(doc.settings.coinGeckoKey.count) holdings=\(doc.holdings.count, privacy: .private) active=\(activeHoldings.count, privacy: .private) portfolios=\(doc.portfolios.count, privacy: .private)")
+        // Nothing about the vault in the public part of the log: not even which sources are on, or whether a key is saved.
+        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices, privacy: .private) metals=\(doc.settings.automaticMetals, privacy: .private) fx=\(doc.settings.automaticFX, privacy: .private) holdings=\(doc.holdings.count, privacy: .private) active=\(activeHoldings.count, privacy: .private) portfolios=\(doc.portfolios.count, privacy: .private)")
         let token = sessionToken, revision = sourceRevision
         if automatic {
             guard priceRequest == nil else { return }
@@ -1569,8 +1570,12 @@ extension UpOnlySession {
             }
         }
     }
+    /// Where `writeDiagnostics` puts its file, beside the vault folder.
+    var diagnosticsURL: URL { Config.supportDirectory.appendingPathComponent("diagnostics.txt") }
+    var hasDiagnosticsFile: Bool { FileManager.default.fileExists(atPath: diagnosticsURL.path) }
     /// A structural summary of the vault for debugging chart gaps, written only when the user asks for it.
-    /// It names accounts and holdings but has no amounts; the file is readable by this user only.
+    /// It names accounts, holdings and companies, with currencies, dates and counts, but no amounts, ownership shares
+    /// or bank profile IDs. The file is created readable by this user only (mode 600), never wider even for a moment.
     func writeDiagnostics() -> String {
         guard let doc = document else { return "Unlock first." }
         let day = BalanceReconstruction.dayFormatter()
@@ -1581,7 +1586,7 @@ extension UpOnlySession {
             let derived = balances.filter { $0.source == BalanceReconstruction.source }
             let entries = doc.entries.filter { $0.accountID == account.id || (account.externalProfileID != nil && $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix("wise:" + account.externalProfileID! + ":") == true) }
             let tracking = doc.bankTracking.filter { $0.accountID == account.id }.sorted { $0.ordinal < $1.ordinal }.map { ($0.tracked ? "on " : "off ") + day.string(from: $0.effectiveAt) }
-            lines.append("  \(account.name) [\(account.currency)] profile=\(account.externalProfileID ?? "-") balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
+            lines.append("  \(account.name) [\(account.currency)] balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
         }
         lines.append("fx:")
         for currency in Set(doc.fx.map(\.sourceCurrency)).sorted() {
@@ -1604,20 +1609,26 @@ extension UpOnlySession {
         // a part with no value even after estimating.
         lines.append("companies:")
         for book in doc.businessAccounting ?? [] {
-            lines.append("  \(book.name) first=\(book.firstMonth) ownership=" + book.ownership.sorted { $0.fromMonth < $1.fromMonth }.map { $0.fromMonth + " " + $0.label }.joined(separator: ", "))
+            // The months a share is recorded from, not the shares themselves.
+            lines.append("  \(book.name) first=\(book.firstMonth) ownership from=" + book.ownership.map(\.fromMonth).sorted().joined(separator: ", "))
         }
         let estimates = ChartEstimates(document: doc)
         let exact = samples.filter { AssetOwnership.personalTotal($0.components, at: $0.utcDay, document: doc) != nil }.count
         let valued = samples.filter { estimates.personalTotal($0.components, day: $0.utcDay) != nil }.count
         lines.append("  chart: \(exact) samples valued as saved, \(valued - exact) estimated, \(samples.count - valued) left out")
         lines.append("pending rebuild: " + (doc.pendingHistoryRebuild.map { day.string(from: $0.from) + " .. " + day.string(from: $0.cursor) } ?? "none"))
-        let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
+        let url = diagnosticsURL
+        // Written as the vault is: a new mode-600 file renamed into place, so it is never readable by anyone else.
         do {
-            try Data(lines.joined(separator: "\n").utf8).write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try DiskFileIO().write(Data(lines.joined(separator: "\n").utf8), to: url, sync: false)
             return "Written to " + url.path + ". It isn’t encrypted, so delete it when you’re done."
         }
-        catch { return "Could not write: " + error.localizedDescription }
+        catch { return "Could not write the diagnostics file." }
+    }
+    /// Backup & security's "Delete diagnostics file".
+    func deleteDiagnostics() -> String {
+        do { try FileManager.default.removeItem(at: diagnosticsURL); return "Diagnostics file deleted." }
+        catch { return hasDiagnosticsFile ? "Could not delete " + diagnosticsURL.path + "." : "Diagnostics file deleted." }
     }
     func commitPriceUpdate(_ update: PriceUpdate) async throws {
         try await mutatePrepared { current in try PriceHistory.applying(update, to: current, now: Date()) }

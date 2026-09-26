@@ -1553,6 +1553,26 @@ struct WiseInputTests {
         for _ in 0..<50 where session.state == .unlocked { try await Task.sleep(for: .milliseconds(100)) }
         #expect(session.state == .locked && session.document == nil)
     }
+    @Test("Diagnostics are created readable by this user only, without profile IDs or ownership shares, and can be deleted")
+    func diagnosticsFile() async throws {
+        let (session, _, _) = harness()
+        await session.create(recovery: .random())
+        try await session.mutate { doc in
+            doc.accounts.append(Account(name: "Synthetic Wise", currency: "EUR", externalProfileID: "90210"))
+            doc.businessAccounting = [BusinessBook(id: "studio", name: "Studio", ownership: [OwnershipPeriod(fromMonth: "2026-01", numerator: 1, denominator: 3)],
+                                                   firstMonth: "2026-01", sourceURL: "", basis: "", fetchedAt: Date())]
+        }
+        try FileManager.default.createDirectory(at: Config.supportDirectory, withIntermediateDirectories: true)
+        defer { _ = session.deleteDiagnostics() }
+        #expect(!session.hasDiagnosticsFile)
+        #expect(session.writeDiagnostics().hasPrefix("Written to "))
+        let text = try String(contentsOf: session.diagnosticsURL, encoding: .utf8)
+        #expect(text.contains("Synthetic Wise [EUR]") && text.contains("Studio first=2026-01 ownership from=2026-01"))
+        #expect(!text.contains("90210") && !text.contains("profile=") && !text.contains("⅓"))
+        let mode = try FileManager.default.attributesOfItem(atPath: session.diagnosticsURL.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600 && session.hasDiagnosticsFile)
+        #expect(session.deleteDiagnostics() == "Diagnostics file deleted." && !session.hasDiagnosticsFile)
+    }
     @Test("Privacy defaults safely and survives an encrypted save and unlock without changing financial data")
     func privacyPersistence() async throws {
         #expect(try VaultJSON.decode(AppSettings.self, from: Data("{}".utf8)).privacyMode == false)
