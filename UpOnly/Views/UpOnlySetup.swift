@@ -196,7 +196,6 @@ struct UpOnlySetup: View {
     @State private var automatic = true
     @State private var error: String?
     @State private var saving = false
-    @State private var showSourceDetails = false
     private var progress: SetupProgress { SetupProgress(step: 1, tracked: TrackedKind.allCases, prices: false, fx: automatic, metals: automatic) }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -212,11 +211,8 @@ struct UpOnlySetup: View {
                 Toggle("Automatic prices and exchange rates", isOn: $automatic).labelsHidden().toggleStyle(.switch).controlSize(.small)
                     .accessibilityIdentifier("AutomaticSources")
             }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity).modifier(UpOnlyContentSurface())
-            DisclosureGroup("What providers receive", isExpanded: $showSourceDetails) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Binance and CoinGecko receive requests for all or the largest coins, so they can’t tell which you hold. Frankfurter receives currency codes and Gold API metal symbols. They see your IP address; none receives balances, quantities or names.")
-                }.font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
-            }.font(UpOnlyType.body).foregroundStyle(.secondary)
+            Text("Prices and rates come from Binance, CoinGecko, Gold API and Frankfurter. They see coin tickers and currency codes, never your amounts.")
+                .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 9) {
                 Button { Task { await finish(addData: true) } } label: {
                     Text("Add your first balance").frame(maxWidth: .infinity)

@@ -42,7 +42,9 @@ extension UpOnlyUnlockedPanel {
                         let shown = session.privacyMode ? session.standInFactor.map { UpOnlyFormat.exactMoney(share * $0) } ?? "••••" : UpOnlyFormat.exactMoney(share)
                         return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary, spoken: shown)
                     } : nil
-                    let stats = [change.map(changeStat), yourShare].compactMap { $0 }
+                    // A portfolio in focus moves with its market, so it keeps its percentage; cash doesn't.
+                    let market = if case .portfolio = companyFocus { true } else { false }
+                    let stats = [change.map { changeStat($0, percent: market) }, yourShare].compactMap { $0 }
                     if !stats.isEmpty { headlineStats(stats).padding(.top, 4) }
                 } else if allParts.isEmpty {
                     Text("Balance needed").font(UpOnlyType.title)
