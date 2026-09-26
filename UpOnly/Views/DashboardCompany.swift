@@ -72,7 +72,8 @@ extension UpOnlyUnlockedPanel {
             }
             // One chart. Assets shows the selected account, portfolio or everything; Profit / loss shows the accounting months.
             if hasAssetChart || companyID != nil {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    rangeControl
                     if showProfit {
                         if let book {
                             let totals = rangeTotals(book)
@@ -84,7 +85,6 @@ extension UpOnlyUnlockedPanel {
                     } else if hasAssetChart {
                         UpOnlyChart(points: series, tint: trendTint(series), plotHeight: chartPlotHeight, bridgesGaps: true)
                     } else { Text("No history yet for this selection.").font(UpOnlyType.caption).foregroundStyle(.secondary) }
-                    rangeControl
                 }.padding(.top, 6)
             }
             // Breakdown: one USD line per bank, with its logo. Choosing a row focuses the chart and headline on it; a

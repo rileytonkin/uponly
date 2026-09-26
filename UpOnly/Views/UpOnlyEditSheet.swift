@@ -244,7 +244,7 @@ struct UpOnlyEditSheet: View {
                         UpOnlyRow(title: lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)),
                                   caption: ManageFormat.amount(lot.quantity.value, of: holding, catalog: session.catalog), captionIsPrivate: true,
                                   value: UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency)) {
-                            UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 32)
+                            UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 28)
                         } menu: {
                             ManageRowMenu(label: "Options for this purchase") { Button("Remove purchase…", role: .destructive) { lotToRemove = lot } }
                         }

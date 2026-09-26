@@ -61,7 +61,7 @@ extension UpOnlyManagement {
             ManageCard {
                 if holdings.isEmpty {
                     UpOnlyRow(title: addTitle, caption: "Nothing in this portfolio yet", action: { session.startImport(mode, portfolioID: portfolio.id) }) {
-                        UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32)
+                        UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
                     }
                 }
                 ForEach(Array(holdings.enumerated()), id: \.element.id) { index, holding in
@@ -78,7 +78,7 @@ extension UpOnlyManagement {
         return UpOnlyRow(title: holding.assetName, caption: quantity, captionIsPrivate: true,
                          value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", change: summary.returnFraction,
                          action: { session.startImport(mode, prefill: true, holdingID: holding.id) }) {
-            UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 32)
+            UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 28)
         } menu: {
             ManageRowMenu(label: "More options for " + holding.assetName) {
                 Button(mode == .metals ? "Update weight…" : "Update quantity…") { session.startImport(mode, prefill: true, holdingID: holding.id) }

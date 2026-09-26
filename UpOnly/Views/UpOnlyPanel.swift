@@ -512,7 +512,7 @@ struct UpOnlyUnlockedPanel: View {
             if !isWorthPage { periodSelector.layoutPriority(1) }
         }.frame(minHeight: 26)
     }
-    /// 24H 7D 30D 1Y All under the chart.
+    /// 24H 7D 30D 1Y All above the chart.
     var rangeControl: some View {
         UpOnlySegments(options: WorthRange.allCases.map { ($0, $0.title, $0.spokenTitle) },
                        selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range")
@@ -804,9 +804,9 @@ struct UpOnlyUnlockedPanel: View {
     }
     /// A row's logo: its bank's, a picture, a coin's or metal's, else its symbol.
     @ViewBuilder func assetBadge(_ row: AssetRow) -> some View {
-        if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 32) }
-        else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 32) }
-        else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 32) }
-        else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 32) }
+        if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 28) }
+        else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 28) }
+        else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 28) }
+        else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 28) }
     }
 }

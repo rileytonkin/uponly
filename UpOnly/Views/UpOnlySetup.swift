@@ -18,15 +18,15 @@ enum UpOnlyType {
     /// Page and empty-state titles ("Which account?", "Nothing here yet").
     static let title = Font.system(size: 18, weight: .bold)
     /// A page's own groups, above the sections inside them ("Accounts", "Crypto" on Manage).
-    static let group = Font.system(size: 16, weight: .semibold)
+    static let group = Font.system(size: 15, weight: .semibold)
     /// Section headings inside a page or card ("Holdings", "Bank accounts", "Transactions").
-    static let section = Font.system(size: 15, weight: .semibold)
+    static let section = Font.system(size: 13, weight: .semibold)
     /// Row names and row amounts.
-    static let row = Font.system(size: 14)
+    static let row = Font.system(size: 13)
     /// Explanations under a title or card.
-    static let body = Font.system(size: 13)
+    static let body = Font.system(size: 12)
     /// Captions, eyebrows and secondary row lines.
-    static let caption = Font.system(size: 12)
+    static let caption = Font.system(size: 11)
 }
 /// The round glass button every header uses: Back, +, and the eye and "…" beside them.
 struct UpOnlyCircleButton: View {
@@ -185,7 +185,7 @@ struct UpOnlySymbolBadge: View {
     var body: some View {
         Image(systemName: symbol).font(.system(size: size * 0.48, weight: .medium))
             .foregroundStyle(tint).frame(width: size, height: size)
-            .background(tint.opacity(0.16), in: Circle())
+            .background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
             .accessibilityHidden(true)
     }
 }
@@ -258,7 +258,7 @@ struct UpOnlySetup: View {
             UpOnlySetupHeader(step: 2, symbol: "arrow.triangle.2.circlepath", title: "Keep values current",
                               subtitle: "Up Only can fetch reference exchange rates and gold and silver prices while it runs. Your balances never leave this Mac.")
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 32)
+                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Automatic prices and exchange rates").font(UpOnlyType.row.weight(.medium))
                     Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(UpOnlyType.caption).foregroundStyle(.secondary)
@@ -378,7 +378,7 @@ struct UpOnlySourceRow: View {
         let status = self.status
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 32)
+                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(UpOnlyType.row.weight(.medium)).lineLimit(1)
                     HStack(spacing: 5) {
@@ -519,6 +519,6 @@ struct UpOnlyProfileImage: View {
         Group {
             if let data, let image = NSImage(data: data) { Image(nsImage: image).resizable().scaledToFill() }
             else { Text(String(name.split(separator: " ").prefix(2).compactMap(\.first))).fixedSize(horizontal: false, vertical: true).font(.system(size: size * 0.36, weight: .semibold)).foregroundStyle(UpOnlyTint.netWorth).frame(maxWidth: .infinity, maxHeight: .infinity).background(UpOnlyTint.netWorth.opacity(0.12)) }
-        }.frame(width: size, height: size).clipShape(Circle()).accessibilityHidden(true)
+        }.frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)).accessibilityHidden(true)
     }
 }

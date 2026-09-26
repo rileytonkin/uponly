@@ -116,7 +116,7 @@ struct UpOnlyImportView: View {
                     ManageCard {
                         ForEach(Array(orderedModes.filter { $0 != .statements }.enumerated()), id: \.element) { index, mode in
                             UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), chevron: true, action: { openMode(mode, bulk: true) }) {
-                                UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 32)
+                                UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 28)
                             }
                         }
                     }
@@ -129,7 +129,7 @@ struct UpOnlyImportView: View {
                             ForEach(Array(tracked.enumerated()), id: \.element) { index, mode in
                                 UpOnlyRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All metals",
                                           caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table", chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
-                                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 32)
+                                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 28)
                                 }
                             }
                         }
@@ -183,7 +183,7 @@ struct UpOnlyImportView: View {
                     let statement = batch.mode == .statements && !batch.rows.isEmpty
                     ManageCard {
                         HStack(spacing: 10) {
-                            UpOnlyBankBadge(name: statement ? source.account.name : source.filename, size: 32)
+                            UpOnlyBankBadge(name: statement ? source.account.name : source.filename, size: 28)
                             if statement {
                                 Menu { accountChoices(source) } label: {
                                     HStack(spacing: 4) {
@@ -275,12 +275,12 @@ struct UpOnlyImportView: View {
                                     if batch.mode == .bankBalances {
                                         UpOnlyRow(title: row.bank.account.name, caption: row.bank.account.currency + " · " + row.bank.date,
                                                   value: balanceText(row, in: batch) + " " + row.bank.account.currency) {
-                                            UpOnlyBankBadge(name: row.bank.account.name, size: 32)
+                                            UpOnlyBankBadge(name: row.bank.account.name, size: 28)
                                         }
                                     } else {
                                         UpOnlyRow(title: row.holding.assetName.isEmpty ? row.holding.portfolioName : row.holding.assetName,
                                                   caption: row.holding.portfolioName + " · " + (review.states[row.id]?.displayText(privacy: session.privacyMode) ?? "")) {
-                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 32)
+                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 28)
                                         }
                                     }
                                 }
@@ -577,10 +577,10 @@ struct UpOnlyImportView: View {
             UpOnlyNotice(count == 1 ? "1 transaction has the same day, description and amount as another." : "\(count.formatted()) transactions have the same day, description and amount as others.")
             ManageCard {
                 UpOnlyRow(title: "Skip all duplicates", caption: "Leave them out of this import", action: busy ? nil : { settleDuplicates(keep: false) }) {
-                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 32)
+                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 28)
                 }
                 UpOnlyRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", action: busy ? nil : { settleDuplicates(keep: true) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 32)
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 28)
                 }
             }
         }
