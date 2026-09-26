@@ -44,6 +44,8 @@ struct UpOnlyDateCalendar: View {
 struct UpOnlyEntryFlow: View {
     @Environment(UpOnlySession.self) private var session
     @State private var saved: UpOnlySavedSummary?
+    /// Flips as the saved page appears, so its check bounces in once.
+    @State private var savedShown = false
     @State private var addingEntry = false
     var body: some View {
         Group {
@@ -122,6 +124,7 @@ struct UpOnlyEntryFlow: View {
                     .overlay(alignment: .bottomTrailing) {
                         Image(systemName: "checkmark.circle.fill").font(.system(size: 22)).symbolRenderingMode(.palette)
                             .foregroundStyle(.white, UpOnlyTint.gain)
+                            .symbolEffect(.bounce, value: savedShown).onAppear { savedShown.toggle() }
                             .background(Circle().fill(Color(nsColor: .windowBackgroundColor)).padding(-2)).offset(x: 7, y: 7)
                     }
                 Text(summary.title).font(UpOnlyType.body.weight(.semibold)).foregroundStyle(UpOnlyTint.gain).padding(.top, 6)
