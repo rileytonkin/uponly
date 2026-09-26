@@ -40,7 +40,8 @@ struct UpOnlyLockView: View {
                         if let code = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_RESTORE_CODE"] { recoveryText = code }
                         #endif
                     }
-                // The code stays in the field after a failed attempt, so one typo doesn't mean typing it all again.
+                // The code stays in the field after a failed attempt, so one typo doesn't mean typing it all again, but
+                // only while the menu stays open (see the end of `body`).
                 Button("Choose encrypted backup…") { Task { await session.restoreBackup(code: recoveryText); if session.state == .unlocked { recoveryText = "" } } }
                     .disabled(session.isBusy || !codeIsComplete)
                 Button("Back") { showRestore = false; recoveryText = "" }.disabled(session.isBusy)
@@ -128,6 +129,14 @@ struct UpOnlyLockView: View {
             if session.state == .newVault, ProcessInfo.processInfo.environment["UPONLY_PREVIEW_DESTINATION"] == "recovery" { recovery = RecoveryCode.random(); showsRecoveryCode = true }
             #endif
         }
+        // A typed recovery code lasts only while it's in use: two minutes without typing clears it, and so does closing
+        // the menu, which keeps this view (and its state) alive. Until then a failed attempt leaves it for another try.
+        .task(id: recoveryText) {
+            guard !recoveryText.isEmpty else { return }
+            try? await Task.sleep(for: .seconds(120))
+            if !Task.isCancelled { recoveryText = "" }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSPopover.didCloseNotification)) { _ in recoveryText = "" }
     }
     /// People copy the code from paper, so they need to see what they type: a monospaced field, not a secure one.
     private func recoveryField(_ title: String) -> some View {

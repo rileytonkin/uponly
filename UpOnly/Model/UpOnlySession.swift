@@ -167,16 +167,8 @@ final class UpOnlySession {
     private(set) var unlockTiming: UnlockTiming? { get { unlocked.unlockTiming } set { unlocked.unlockTiming = newValue } }
     /// Read from the vault's saved setting, so it's as you left it at the next unlock.
     var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
-    /// Privacy mode's stand-in factor: amounts show scaled by it, so they look real but say nothing. Nil when figures
-    /// show as they are. Worked out once per document.
-    var standInFactor: Decimal? {
-        guard privacyMode, let document else { return nil }
-        if let cached = unlocked.standInCache, cached.revision == documentRevision { return cached.factor }
-        let factor = UpOnlyStandIn.factor(total: AssetOwnership.personalValue(at: Date(), scope: .allTracked, document: document).total, vaultID: document.vaultID)
-        unlocked.standInCache = (documentRevision, factor)
-        return factor
-    }
-    /// Hiding values takes effect at once, even while another save finishes; the saved setting follows.
+    /// Hiding values takes effect at once, even while another save finishes; the saved setting follows. If saving
+    /// fails, values stay hidden for the rest of this unlock (`togglePrivacyMode`).
     private var privacyOverride: Bool? { get { unlocked.privacyOverride } set { unlocked.privacyOverride = newValue } }
     private var privacyAttempt: UUID { get { unlocked.privacyAttempt } set { unlocked.privacyAttempt = newValue } }
     /// Edited in place (a statement's rows, one at a time), so it's modified where it's stored rather than copied.
@@ -268,7 +260,8 @@ final class UpOnlySession {
         }
     }
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    @ObservationIgnored private var inactivityTimer: Timer?
+    @ObservationIgnored private var screenLockObserver: ScreenLockObserver?
+    @ObservationIgnored private var inactivityTimer: DispatchSourceTimer?
     @ObservationIgnored private var eventMonitor: Any?
     #if UPONLY_FIXTURE
     @ObservationIgnored private var previewWindow: NSWindow?
@@ -517,7 +510,7 @@ final class UpOnlySession {
         passwordUnlockRequested = false
         authenticationFailed = false
         unlocked.retire(); unlocked = UnlockedSession()
-        inactivityTimer?.invalidate(); inactivityTimer = nil
+        inactivityTimer?.cancel(); inactivityTimer = nil
         if lockingVault { vault.lock() }
         sessionToken = UUID()
         // The lock screen's own state: no note from the unlocked app, and nothing in progress.
@@ -802,17 +795,28 @@ final class UpOnlySession {
         recordActivity(at: date)
     }
     func checkInactivity(at date: Date = Date()) {
-        // Activity inside the out-of-process file dialog isn't seen here, so an open dialog gets longer before locking.
-        guard state == .unlocked, date.timeIntervalSince(lastActivity) >= (filePickerIsOpen ? 3 : 1) * Self.inactivityInterval else { return }
+        // Activity inside the out-of-process file dialog isn't seen here, so a dialog gets no longer than anything
+        // else: past the deadline it's cancelled and closed with the lock (`endSession`).
+        guard state == .unlocked, date.timeIntervalSince(lastActivity) >= Self.inactivityInterval else { return }
         lock()
     }
+    /// The eye button and ⇧⌘P. A choice that can't be saved still leaves values hidden: hiding holds for the rest of
+    /// this unlock, and showing them waits for a save that works. Either way the note says so, and the error is thrown.
     func togglePrivacyMode() async throws {
         recordActivity()
         let hidden = !privacyMode, attempt = UUID()
         privacyOverride = hidden; privacyAttempt = attempt
+        do { try await mutate { $0.settings.privacyMode = hidden } }
+        catch {
+            // Only this unlock's latest toggle speaks for it; a lock in the meantime has already hidden everything.
+            if privacyAttempt == attempt {
+                privacyOverride = true
+                message = hidden ? "Couldn’t save privacy mode. Values stay hidden until Up Only locks." : "Couldn’t save privacy mode, so values stay hidden. Please try again."
+            }
+            throw error
+        }
         // Only the latest toggle hands back to the saved setting, so a quick double toggle doesn't flicker.
-        defer { if privacyAttempt == attempt { privacyOverride = nil } }
-        try await mutate { $0.settings.privacyMode = hidden }
+        if privacyAttempt == attempt { privacyOverride = nil }
     }
 
     func menuOpened() {
@@ -1115,9 +1119,7 @@ final class UpOnlySession {
                 MainActor.assumeIsolated { self?.lock() }
             })
         }
-        observers.append(DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.lock() } })
+        screenLockObserver = ScreenLockObserver { [weak self] in self?.lock() }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
             self?.handleActivity()
             return event
@@ -1125,15 +1127,15 @@ final class UpOnlySession {
     }
 
     /// The idle lock's once-a-second check, which only an unlocked vault needs: it starts with each unlock and stops at
-    /// the lock, so a locked app isn't woken for it.
+    /// the lock, so a locked app isn't woken for it. A strict dispatch timer, so App Nap can't coalesce or put it off
+    /// while the menu is closed, as it may an ordinary timer.
     private func startInactivityTimer() {
-        inactivityTimer?.invalidate()
-        inactivityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkInactivity()
-            }
-        }
-        if let inactivityTimer { RunLoop.main.add(inactivityTimer, forMode: .common) }
+        inactivityTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(deadline: .now() + 1, repeating: .seconds(1), leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.checkInactivity() } }
+        timer.resume()
+        inactivityTimer = timer
     }
 
     #if UPONLY_FIXTURE
@@ -1549,7 +1551,8 @@ extension UpOnlySession {
             return
         }
         let activeHoldings = doc.holdings.filter { $0.isActive(at: Date()) && doc.portfolio(id: $0.portfolioID)?.isActive(at: Date()) == true }
-        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices) metals=\(doc.settings.automaticMetals) fx=\(doc.settings.automaticFX) keyLength=\(doc.settings.coinGeckoKey.count) holdings=\(doc.holdings.count, privacy: .private) active=\(activeHoldings.count, privacy: .private) portfolios=\(doc.portfolios.count, privacy: .private)")
+        // Nothing about the vault in the public part of the log: not even which sources are on, or whether a key is saved.
+        log.notice("refresh start automatic=\(automatic) prices=\(doc.settings.automaticPrices, privacy: .private) metals=\(doc.settings.automaticMetals, privacy: .private) fx=\(doc.settings.automaticFX, privacy: .private) holdings=\(doc.holdings.count, privacy: .private) active=\(activeHoldings.count, privacy: .private) portfolios=\(doc.portfolios.count, privacy: .private)")
         let token = sessionToken, revision = sourceRevision
         if automatic {
             guard priceRequest == nil else { return }
@@ -1603,8 +1606,12 @@ extension UpOnlySession {
             }
         }
     }
+    /// Where `writeDiagnostics` puts its file, beside the vault folder.
+    var diagnosticsURL: URL { Config.supportDirectory.appendingPathComponent("diagnostics.txt") }
+    var hasDiagnosticsFile: Bool { FileManager.default.fileExists(atPath: diagnosticsURL.path) }
     /// A structural summary of the vault for debugging chart gaps, written only when the user asks for it.
-    /// It names accounts and holdings but has no amounts; the file is readable by this user only.
+    /// It names accounts, holdings and companies, with currencies, dates and counts, but no amounts, ownership shares
+    /// or bank profile IDs. The file is created readable by this user only (mode 600), never wider even for a moment.
     func writeDiagnostics() -> String {
         guard let doc = document else { return "Unlock first." }
         let day = BalanceReconstruction.dayFormatter()
@@ -1615,7 +1622,7 @@ extension UpOnlySession {
             let derived = balances.filter { $0.source == BalanceReconstruction.source }
             let entries = doc.entries.filter { $0.accountID == account.id || (account.externalProfileID != nil && $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix("wise:" + account.externalProfileID! + ":") == true) }
             let tracking = doc.bankTracking.filter { $0.accountID == account.id }.sorted { $0.ordinal < $1.ordinal }.map { ($0.tracked ? "on " : "off ") + day.string(from: $0.effectiveAt) }
-            lines.append("  \(account.name) [\(account.currency)] profile=\(account.externalProfileID ?? "-") balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
+            lines.append("  \(account.name) [\(account.currency)] balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
         }
         lines.append("fx:")
         for currency in Set(doc.fx.map(\.sourceCurrency)).sorted() {
@@ -1638,20 +1645,26 @@ extension UpOnlySession {
         // a part with no value even after estimating.
         lines.append("companies:")
         for book in doc.businessAccounting ?? [] {
-            lines.append("  \(book.name) first=\(book.firstMonth) ownership=" + book.ownership.sorted { $0.fromMonth < $1.fromMonth }.map { $0.fromMonth + " " + $0.label }.joined(separator: ", "))
+            // The months a share is recorded from, not the shares themselves.
+            lines.append("  \(book.name) first=\(book.firstMonth) ownership from=" + book.ownership.map(\.fromMonth).sorted().joined(separator: ", "))
         }
         let estimates = ChartEstimates(document: doc)
         let exact = samples.filter { AssetOwnership.personalTotal($0.components, at: $0.utcDay, document: doc) != nil }.count
         let valued = samples.filter { estimates.personalTotal($0.components, day: $0.utcDay) != nil }.count
         lines.append("  chart: \(exact) samples valued as saved, \(valued - exact) estimated, \(samples.count - valued) left out")
         lines.append("pending rebuild: " + (doc.pendingHistoryRebuild.map { day.string(from: $0.from) + " .. " + day.string(from: $0.cursor) } ?? "none"))
-        let url = Config.supportDirectory.appendingPathComponent("diagnostics.txt")
+        let url = diagnosticsURL
+        // Written as the vault is: a new mode-600 file renamed into place, so it is never readable by anyone else.
         do {
-            try Data(lines.joined(separator: "\n").utf8).write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try DiskFileIO().write(Data(lines.joined(separator: "\n").utf8), to: url, sync: false)
             return "Written to " + url.path + ". It isn’t encrypted, so delete it when you’re done."
         }
-        catch { return "Could not write: " + error.localizedDescription }
+        catch { return "Could not write the diagnostics file." }
+    }
+    /// Backup & security's "Delete diagnostics file".
+    func deleteDiagnostics() -> String {
+        do { try FileManager.default.removeItem(at: diagnosticsURL); return "Diagnostics file deleted." }
+        catch { return hasDiagnosticsFile ? "Could not delete " + diagnosticsURL.path + "." : "Diagnostics file deleted." }
     }
     func commitPriceUpdate(_ update: PriceUpdate) async throws {
         try await mutatePrepared { current in try PriceHistory.applying(update, to: current, now: Date()) }
@@ -2122,6 +2135,27 @@ extension UpOnlySession {
     }
 }
 
+/// Locks the vault the moment the screen locks. AppKit holds distributed notifications back while an app is inactive,
+/// and a menu-bar app is inactive nearly all the time, so this asks for immediate delivery, which only the
+/// selector-based registration offers.
+private final class ScreenLockObserver: NSObject {
+    private let screenLocked: @MainActor @Sendable () -> Void
+    init(_ screenLocked: @escaping @MainActor @Sendable () -> Void) {
+        self.screenLocked = screenLocked
+        super.init()
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(received(_:)), name: NSNotification.Name("com.apple.screenIsLocked"),
+                                                            object: nil, suspensionBehavior: .deliverImmediately)
+    }
+    deinit { DistributedNotificationCenter.default().removeObserver(self) }
+    @objc private func received(_ notification: Notification) {
+        // Delivered on the main thread, so the vault is locked before this returns; from anywhere else, as soon as the
+        // main thread can.
+        let lock = self.screenLocked
+        if Thread.isMainThread { MainActor.assumeIsolated { lock() } }
+        else { Task { @MainActor in lock() } }
+    }
+}
+
 /// Everything that belongs to one unlocked vault: the document and what's worked out from it, navigation within the
 /// unlocked app, drafts and editors, imports, what the sources said, and the work in flight for all of it.
 /// `UpOnlySession` holds one in `unlocked` and forwards these under their old names. Lock retires it and puts a fresh
@@ -2135,7 +2169,6 @@ final class UnlockedSession {
     @ObservationIgnored var hourlyCache: [String: [(moment: Date, components: [ValuationComponent])]] = [:]
     @ObservationIgnored fileprivate var estimatesCache: (revision: Int, value: ChartEstimates)?
     @ObservationIgnored fileprivate var rateCache: (revision: Int, monthly: [String: Decimal?], latest: [String: Decimal?]) = (-1, [:], [:])
-    @ObservationIgnored fileprivate var standInCache: (revision: Int, factor: Decimal)?
     fileprivate(set) var monthModel: PopoverModel?
     fileprivate(set) var intraday: [String: ChartEstimates.Series] = [:]
     @ObservationIgnored fileprivate var intradayFetchedAt: [String: Date] = [:]

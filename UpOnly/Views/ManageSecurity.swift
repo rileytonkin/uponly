@@ -35,6 +35,14 @@ extension UpOnlyManagement {
                           action: { diagnosticsMessage = session.writeDiagnostics() }) {
                     UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 28)
                 }
+                // Checked on each showing (and after each write or delete, which change the note below), so a file
+                // written earlier can always be deleted from here.
+                if session.hasDiagnosticsFile {
+                    UpOnlyRow(title: "Delete diagnostics file", caption: "Removes the unencrypted file",
+                              action: { diagnosticsMessage = session.deleteDiagnostics() }) {
+                        UpOnlySymbolBadge(symbol: "trash", tint: Color.secondary, size: 28)
+                    }
+                }
             }
             if let diagnosticsMessage { Text(diagnosticsMessage).font(UpOnlyType.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
         }

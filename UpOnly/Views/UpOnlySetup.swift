@@ -230,27 +230,67 @@ struct UpOnlyRecoveryCodeCard: View {
     }
     var body: some View {
         VStack(spacing: 10) {
+            // Not selectable: ⌘C would copy it without the markers and the clearing that the button gives it.
             Text(formatted).fixedSize(horizontal: false, vertical: true).font(.system(size: 14, weight: .medium, design: .monospaced)).lineSpacing(3)
-                .textSelection(.enabled).fixedSize().accessibilityLabel("Recovery code, " + code.canonical)
-            Button(action: copy) { Label(copied ? "Copied" : "Copy recovery code", systemImage: copied ? "checkmark" : "doc.on.doc").fixedSize(horizontal: false, vertical: true) }
+                .fixedSize().accessibilityLabel("Recovery code, " + code.canonical)
+            Button { copied = UpOnlyRecoveryClipboard.copy(code) } label: {
+                Label(copied ? "Copied" : "Copy recovery code", systemImage: copied ? "checkmark" : "doc.on.doc").fixedSize(horizontal: false, vertical: true)
+            }
                 .controlSize(.small).help("Clears from the clipboard after a minute.")
         }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity)
             .modifier(UpOnlyContentSurface())
+            .background(UpOnlyCaptureShield().frame(width: 0, height: 0))
             .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { copied = false } } }
     }
-    /// The code is marked concealed and transient so clipboard managers and history skip it,
-    /// and it is cleared after a minute unless something else has been copied since.
-    private func copy() {
-        let pasteboard = NSPasteboard.general
-        let markers = [NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"), NSPasteboard.PasteboardType("org.nspasteboard.TransientType")]
-        pasteboard.declareTypes([NSPasteboard.PasteboardType.string] + markers, owner: nil)
-        copied = pasteboard.setString(code.canonical, forType: .string)
-        for marker in markers { pasteboard.setData(Data(), forType: marker) }
+}
+/// The recovery code on the clipboard: for this Mac only (never passed to other devices by Universal Clipboard), marked
+/// concealed and transient so clipboard managers and history skip it, and cleared after a minute, or when Up Only quits
+/// first, unless something else has been copied since.
+@MainActor enum UpOnlyRecoveryClipboard {
+    /// The pasteboard and its change count once the code was written, until it's cleared or replaced.
+    private static var written: (pasteboard: NSPasteboard, change: Int)?
+    static func copy(_ code: RecoveryCode, to pasteboard: NSPasteboard = .general) -> Bool {
+        pasteboard.prepareForNewContents(with: .currentHostOnly)
+        let item = NSPasteboardItem()
+        item.setString(code.canonical, forType: .string)
+        for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"] { item.setData(Data(), forType: NSPasteboard.PasteboardType(marker)) }
+        guard pasteboard.writeObjects([item]) else { return false }
         let change = pasteboard.changeCount
+        written = (pasteboard, change)
         // Not tied to the view: the code must still be cleared after the user moves on.
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(60))
-            if NSPasteboard.general.changeCount == change { NSPasteboard.general.clearContents() }
+            if written?.change == change { clear() }
+        }
+        return true
+    }
+    /// Clears the code if it's still what the clipboard holds: a minute after copying, and as the app quits.
+    static func clear() {
+        guard let written else { return }
+        self.written = nil
+        if written.pasteboard.changeCount == written.change { written.pasteboard.clearContents() }
+    }
+}
+/// Keeps the window showing a recovery code out of screenshots, screen recordings and screen sharing while the code
+/// is on screen, and puts the window back as it was once the code is gone.
+private struct UpOnlyCaptureShield: NSViewRepresentable {
+    func makeNSView(context: Context) -> ShieldView { ShieldView() }
+    func updateNSView(_ view: ShieldView, context: Context) {}
+    static func dismantleNSView(_ view: ShieldView, coordinator: ()) { view.release() }
+    final class ShieldView: NSView {
+        private weak var shielded: NSWindow?
+        private var previous = NSWindow.SharingType.readOnly
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window !== shielded else { return }
+            release()
+            guard let window else { return }
+            shielded = window; previous = window.sharingType
+            window.sharingType = .none
+        }
+        func release() {
+            shielded?.sharingType = previous
+            shielded = nil
         }
     }
 }

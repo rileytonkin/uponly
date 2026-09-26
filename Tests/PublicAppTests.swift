@@ -1545,6 +1545,34 @@ struct WiseInputTests {
         session.surfaceOpened()
         #expect(session.state == .locked && session.document == nil)
     }
+    @Test("The idle check runs by itself while unlocked: an idle vault locks without a click or the menu opening")
+    func idleTimerLocks() async throws {
+        let (session, _, _) = harness()
+        await session.create(recovery: .random())
+        session.recordActivity(at: Date().addingTimeInterval(-UpOnlySession.inactivityInterval))
+        for _ in 0..<50 where session.state == .unlocked { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(session.state == .locked && session.document == nil)
+    }
+    @Test("Diagnostics are created readable by this user only, without profile IDs or ownership shares, and can be deleted")
+    func diagnosticsFile() async throws {
+        let (session, _, _) = harness()
+        await session.create(recovery: .random())
+        try await session.mutate { doc in
+            doc.accounts.append(Account(name: "Synthetic Wise", currency: "EUR", externalProfileID: "90210"))
+            doc.businessAccounting = [BusinessBook(id: "studio", name: "Studio", ownership: [OwnershipPeriod(fromMonth: "2026-01", numerator: 1, denominator: 3)],
+                                                   firstMonth: "2026-01", sourceURL: "", basis: "", fetchedAt: Date())]
+        }
+        try FileManager.default.createDirectory(at: Config.supportDirectory, withIntermediateDirectories: true)
+        defer { _ = session.deleteDiagnostics() }
+        #expect(!session.hasDiagnosticsFile)
+        #expect(session.writeDiagnostics().hasPrefix("Written to "))
+        let text = try String(contentsOf: session.diagnosticsURL, encoding: .utf8)
+        #expect(text.contains("Synthetic Wise [EUR]") && text.contains("Studio first=2026-01 ownership from=2026-01"))
+        #expect(!text.contains("90210") && !text.contains("profile=") && !text.contains("⅓"))
+        let mode = try FileManager.default.attributesOfItem(atPath: session.diagnosticsURL.path)[.posixPermissions] as? Int
+        #expect(mode == 0o600 && session.hasDiagnosticsFile)
+        #expect(session.deleteDiagnostics() == "Diagnostics file deleted." && !session.hasDiagnosticsFile)
+    }
     @Test("Privacy defaults safely and survives an encrypted save and unlock without changing financial data")
     func privacyPersistence() async throws {
         #expect(try VaultJSON.decode(AppSettings.self, from: Data("{}".utf8)).privacyMode == false)
@@ -1560,16 +1588,26 @@ struct WiseInputTests {
         try await session.togglePrivacyMode()
         #expect(!session.privacyMode)
     }
-    @Test("A failed privacy preference save leaves the current visibility and vault unchanged")
+    @Test("A privacy choice that can't be saved leaves values hidden, says so, and leaves the vault unchanged")
     func privacyWriteFailure() async throws {
         let (session, io, _) = harness()
         await session.create(recovery: .random())
+        // Hiding that can't be saved still holds for this unlock; the next unlock is as saved.
+        let unsaved = try io.data(at: session.layout.current)
+        io.failWrite = true
+        await #expect(throws: Error.self) { try await session.togglePrivacyMode() }
+        let unchanged = try io.data(at: session.layout.current)
+        #expect(session.privacyMode && session.message != nil && unchanged == unsaved)
+        io.failWrite = false
+        session.lock(); await session.unlock()
+        #expect(!session.privacyMode)
+        // Showing values that can't be saved leaves them hidden.
         try await session.togglePrivacyMode()
         let saved = try io.data(at: session.layout.current)
         io.failWrite = true
         await #expect(throws: Error.self) { try await session.togglePrivacyMode() }
         let after = try io.data(at: session.layout.current)
-        #expect(session.privacyMode && after == saved)
+        #expect(session.privacyMode && session.message != nil && after == saved)
         #expect(ImportRowState.ready("1 → 2 Bitcoin").displayText(privacy: true) == "Replace current total · Values hidden")
         #expect(ImportRowState.error("Choose a coin").displayText(privacy: true) == "Choose a coin")
     }

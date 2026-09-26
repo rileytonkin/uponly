@@ -177,7 +177,8 @@ nonisolated struct UpOnlyChartLayout {
     }
 }
 
-/// A chart of values over time. Privacy mode draws the stand-in figures themselves, so the axis steps stay round.
+/// A chart of values over time. Privacy mode keeps the line's shape and puts dots in place of every figure: the
+/// value axis, the hover card's amount and note, and what VoiceOver reads.
 struct UpOnlyChart: View {
     @Environment(UpOnlySession.self) private var session
     let points: [UpOnlyChartPoint]
@@ -195,24 +196,17 @@ struct UpOnlyChart: View {
         self.tint = tint; self.onSelect = onSelect; self.bridgesGaps = bridgesGaps; self.plotHeight = plotHeight
     }
     var body: some View {
-        let factor = session.privacyMode ? session.standInFactor : nil
-        let shown = factor.map { f in points.map { point in
-            var scaled = point; scaled.value = point.value.map { $0 * f }; scaled.note = point.note.map { UpOnlyStandIn.scale($0, by: f) }
-            return scaled
-        } } ?? points
-        UpOnlyChartCanvas(points: shown, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, tint: tint,
-                          onSelect: onSelect, bridgesGaps: bridgesGaps, standIn: factor != nil, plotHeight: plotHeight)
+        UpOnlyChartCanvas(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, tint: tint,
+                          onSelect: onSelect, bridgesGaps: bridgesGaps, hidden: session.privacyMode, plotHeight: plotHeight)
     }
 }
 
 struct UpOnlyChartCanvas: View {
-    @Environment(UpOnlySession.self) private var session
     @Environment(\.colorSchemeContrast) private var contrast
     let points: [UpOnlyChartPoint]
-    /// The points are already privacy mode's stand-in figures, so they show as they are.
-    private let standIn: Bool
-    /// Values stay hidden: privacy mode without stand-in figures.
-    private var hidden: Bool { session.privacyMode && !standIn }
+    /// Privacy mode: dots in place of every figure, and an axis as wide as the dots, so its width can't say how large
+    /// the figures are.
+    private let hidden: Bool
     var includesZero: Bool
     /// Daily history: gaps are bridged, and the hover gives the change since the chart's first value.
     private let bridgesGaps: Bool
@@ -220,7 +214,8 @@ struct UpOnlyChartCanvas: View {
     var tint: Color
     var onSelect: ((String) -> Void)?
     private let layout: UpOnlyChartLayout
-    private let axisWidth: CGFloat
+    /// The value axis's width: its widest label, or the dots when values are hidden.
+    let axisWidth: CGFloat
     /// One x-axis label width per visible point (zero where a point has no label).
     private let labelWidths: [CGFloat]
     @State private var hovered: Int? = nil
@@ -232,13 +227,14 @@ struct UpOnlyChartCanvas: View {
     /// `bridgesGaps` is for daily history: straight segments, running across a few days without a value. Off for
     /// monthly charts, which are gently smoothed and keep a missing month as a gap.
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
-         tint: Color = UpOnlyTint.brand, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, standIn: Bool = false, plotHeight: CGFloat = 120) {
+         tint: Color = UpOnlyTint.brand, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, hidden: Bool = false, plotHeight: CGFloat = 120) {
         self.points = points; self.includesZero = includesZero; self.selected = selected; self.tint = tint; self.onSelect = onSelect
-        self.bridgesGaps = bridgesGaps; self.standIn = standIn; self.plotHeight = plotHeight
+        self.bridgesGaps = bridgesGaps; self.hidden = hidden; self.plotHeight = plotHeight
         let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, bridgesGaps: bridgesGaps)
         self.layout = layout
         let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular), labelFont = NSFont.systemFont(ofSize: 10)
-        axisWidth = (layout.scale.ticks.map { (UpOnlyChartScale.label($0) as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
+        let tickLabels = hidden ? ["••••"] : layout.scale.ticks.map(UpOnlyChartScale.label)
+        axisWidth = (tickLabels.map { ($0 as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
         labelWidths = layout.visible.map { point in
             guard let text = layout.labelled == nil ? point.label : point.axisLabel else { return 0 }
             return (text as NSString).size(withAttributes: [.font: labelFont]).width
@@ -283,7 +279,7 @@ struct UpOnlyChartCanvas: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("History")
-        .accessibilityValue(session.privacyMode ? "Values hidden" : layout.summary)
+        .accessibilityValue(hidden ? "Values hidden" : layout.summary)
         .accessibilityActions {
             // Choosing a month is otherwise a click on the plot; VoiceOver lists it as an action instead.
             if let onSelect {
@@ -311,7 +307,7 @@ struct UpOnlyChartCanvas: View {
                     Text("since " + layout.visible[first].label).foregroundStyle(.secondary)
                 }.font(.system(size: 10, weight: .medium).monospacedDigit()).lineLimit(1)
             }
-            // Notes can cite amounts (a company's revenue and expenses): stand-ins arrive scaled; hidden values hide them.
+            // Notes can cite amounts (a company's revenue and expenses), so privacy mode hides them too.
             if let note = point.note, !hidden {
                 Text(note).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
             }
