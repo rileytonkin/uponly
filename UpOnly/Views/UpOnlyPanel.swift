@@ -354,7 +354,7 @@ struct UpOnlyUnlockedPanel: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
                     // Centred on the name's lowercase letters rather than sat on its baseline.
-                    if titleIsLive { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] - 6 }.transition(.opacity) }
+                    if titleIsLive { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }.transition(.opacity) }
                     Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
                 }
