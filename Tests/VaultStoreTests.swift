@@ -67,8 +67,8 @@ final class CrashingFileIO: VaultFileIO, @unchecked Sendable {
 }
 private struct SharedLock: AdvisoryLock { func release() {} }
 
-/// The background configuration's two Keychain items in memory, with failures to order and a log of every change.
-final class MemoryBackgroundStore: BackgroundConfigurationStore, @unchecked Sendable {
+/// A Keychain item and its login-keychain predecessor in memory, with failures to order and a log of every change.
+final class MemoryBackgroundStore: KeychainItemStore, @unchecked Sendable {
     var current: Data?, legacy: Data?
     /// Which reads fail, by `legacy`.
     var unreadable: Set<Bool> = []
@@ -82,6 +82,10 @@ final class MemoryBackgroundStore: BackgroundConfigurationStore, @unchecked Send
         changes.append("save")
         if saveFails { throw VaultError.unavailable }
         current = data
+    }
+    func delete() throws {
+        changes.append("delete")
+        current = nil
     }
     func deleteLegacy() {
         changes.append("delete old")
@@ -1500,42 +1504,32 @@ struct VaultStoreTests {
         #expect(session.state == .unlocked && session.document?.vaultID == vaultID)
     }
 
-    // MARK: The background configuration's Keychain move
+    // MARK: The background configuration's Keychain item
 
-    @Test("The background configuration moves from the login keychain once, deleting the old item only after the new one is saved")
-    func backgroundConfigurationMigration() throws {
+    @Test("The background configuration is read only from the data-protection Keychain; a login-keychain one is deleted, never used")
+    func backgroundConfigurationIgnoresLoginKeychain() throws {
         let signing = VaultCrypto.makeSigningKeyPair()
         let config = BackgroundConfiguration(vaultID: UUID(), inboxPublicKey: Data([4]), signingPrivateKey: signing.privateX963, signingPublicKey: signing.publicX963, crypto: ["bitcoin"], currencies: ["EUR"], metals: [.gold], pricesEnabled: true, fxEnabled: true, metalsEnabled: false, coinGeckoKey: "")
         let saved = try JSONEncoder().encode(config)
         let keychain = MemoryBackgroundStore()
         #expect(try BackgroundConfiguration.load(from: keychain) == nil)
+        // One planted in the login keychain, where any process could put one, is deleted unread and never copied.
         keychain.legacy = saved
-        // A move that fails leaves the old item in place, and it still loads.
-        keychain.saveFails = true
+        #expect(try BackgroundConfiguration.load(from: keychain) == nil)
+        #expect(keychain.legacy == nil && keychain.current == nil && !keychain.changes.contains("save"))
+        keychain.legacy = saved; keychain.unreadable = [true]
+        #expect(try BackgroundConfiguration.load(from: keychain) == nil && keychain.legacy == nil)
+        // The one saved in its place loads, and one that can't be read now is never taken for none.
+        try config.save(to: keychain)
         #expect(try BackgroundConfiguration.load(from: keychain) == config)
-        #expect(keychain.legacy == saved && keychain.current == nil && keychain.changes == ["save"])
-        // The next load moves it: saved first, and only then the old item deleted.
-        keychain.saveFails = false
-        #expect(try BackgroundConfiguration.load(from: keychain) == config)
-        #expect(keychain.current == saved && keychain.legacy == nil && keychain.changes == ["save", "save", "delete old"])
-        // Once moved, loading changes nothing, even if an earlier build saves an old item again.
-        keychain.legacy = saved
-        #expect(try BackgroundConfiguration.load(from: keychain) == config)
-        #expect(keychain.changes.count == 3 && keychain.legacy == saved)
-        // An item that can't be read now is never taken for none: nothing is saved or deleted.
         keychain.unreadable = [false]
         #expect(throws: VaultError.unavailable) { _ = try BackgroundConfiguration.load(from: keychain) }
-        keychain.current = nil; keychain.unreadable = [true]
-        #expect(throws: VaultError.unavailable) { _ = try BackgroundConfiguration.load(from: keychain) }
-        #expect(keychain.changes.count == 3 && keychain.legacy == saved)
-        // Saving writes the new item only.
-        try config.save(to: keychain)
-        #expect(keychain.changes == ["save", "save", "delete old", "save"] && keychain.legacy == saved)
+        #expect(keychain.current == saved)
     }
 
     @Test("The background configuration is kept on this Mac only and readable after its first unlock; the old item is the login keychain's")
     func backgroundConfigurationItems() {
-        let keychain = BackgroundKeychain(), add = keychain.addition(Data([1]))
+        let keychain = KeychainItem.backgroundSources, add = keychain.addition(Data([1]))
         #expect(add[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
         #expect(add[kSecUseDataProtectionKeychain as String] as? Bool == true && add[kSecAttrSynchronizable as String] as? Bool == false)
         #expect(keychain.legacyItem[kSecUseDataProtectionKeychain as String] as? Bool == false)
@@ -1544,5 +1538,9 @@ struct VaultStoreTests {
             #expect(item[kSecAttrAccount as String] as? String == "sources")
         }
         #expect(BackgroundConfiguration.service == (Bundle.main.bundleIdentifier ?? "org.uponly") + ".background")
+        // The private build's Wise and accounting connections are kept the same way, in the app's default access group.
+        let credential = KeychainItem(service: "org.uponly.personal.wise", account: "connection", label: "Up Only Wise connection").addition(Data([1]))
+        #expect(credential[kSecUseDataProtectionKeychain as String] as? Bool == true && credential[kSecAttrSynchronizable as String] as? Bool == false)
+        #expect(credential[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String && credential[kSecAttrAccessGroup as String] == nil)
     }
 }

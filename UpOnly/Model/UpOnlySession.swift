@@ -426,6 +426,9 @@ final class UpOnlySession {
         do {
             let opened = try await vault.create(recovery: recovery, confirmation: recovery.canonical)
             guard sessionToken == token else { return }
+            // A new vault: whatever background sources an earlier one set up on this Mac go.
+            await forgetBackground(unless: opened.document.vaultID)
+            guard sessionToken == token else { return }
             publish(opened.document, freshUnlock: true)
         } catch VaultError.cancelled { }
         catch {
@@ -446,6 +449,8 @@ final class UpOnlySession {
         do {
             let opened = try await vault.recover(RecoveryCode(canonical: code))
             guard sessionToken == token else { return }
+            await forgetBackground(unless: opened.document.vaultID)
+            guard sessionToken == token else { return }
             publish(opened.document, freshUnlock: true)
             if await vault.openedPrevious { message = Self.previousCopyNotice }
         } catch VaultError.cancelled { }
@@ -458,8 +463,11 @@ final class UpOnlySession {
     func startOver() async {
         guard canStartOver, !isBusy else { return }
         canStartOver = false
-        do { _ = try await vault.startOver() }
-        catch { message = "Up Only couldn’t start over, so nothing was moved. Try unlocking again." }
+        do {
+            _ = try await vault.startOver()
+            // No vault is left, so no background source is kept for one.
+            await forgetBackground(unless: nil)
+        } catch { message = "Up Only couldn’t start over, so nothing was moved. Try unlocking again." }
         state = layout.holdsVault(vault.io) ? .locked : .newVault
     }
 
@@ -968,6 +976,10 @@ final class UpOnlySession {
     func commitBuys(portfolioID: UUID?, portfolioName: String, owner: String?, assetID: String, assetName: String, kind: TrackedKind, buys: [Buy]) async throws {
         let sorted = buys.filter { $0.quantity > 0 }.sorted { $0.date < $1.date }
         guard let first = sorted.first else { throw ImportFailure("Enter an amount for at least one buy.") }
+        // Checked as every other entry is: the ID names the coin in price requests.
+        guard let asset = try? CanonicalAssetID(assetID), asset.rawValue == assetID else {
+            throw ImportFailure("Check the coin’s CoinGecko ID: lowercase letters, digits and hyphens, as in “bitcoin”.")
+        }
         var newName: String?
         if portfolioID == nil {
             do { newName = try Self.name(portfolioName) } catch { throw ImportFailure("Name the new portfolio.") }
@@ -984,7 +996,6 @@ final class UpOnlySession {
                 next.portfolios.append(created); portfolio = created.id
             }
             guard let portfolio else { throw VaultError.unknownPortfolio }
-            let asset = CanonicalAssetID(rawValue: assetID)
             let existing = document.holdings.first { $0.portfolioID == portfolio && $0.assetID == asset && $0.archivedAt == nil }
             // Totals saved after the first buy rise by the buys before them; what was held on each buy's day, plus
             // every buy so far, is the new total that day.
@@ -1658,20 +1669,23 @@ extension UpOnlySession {
     }
     func enableExchangeRates() async {
         guard state == .unlocked else { return }
+        let token = sessionToken
         resetSourceWork()
         do {
             try await mutate { $0.settings.automaticFX = true }
             scheduleRefresh()
-        } catch { message = "Exchange rates could not be enabled. Please try again." }
+        } catch { if token == sessionToken { message = "Exchange rates could not be enabled. Please try again." } }
     }
-    /// Replaces the catalog with ranked search hits for `query`. Cheap enough to run as the user types.
+    /// Replaces the catalog with ranked search hits for `query`. Cheap enough to run as the user types. Only with
+    /// automatic prices on: otherwise what's typed stays on this Mac, and the coins it knows (and a CoinGecko ID typed
+    /// in full) are what's offered.
     func searchCatalog(_ query: String) async {
-        guard state == .unlocked, !isFixture, let settings = document?.settings else { return }
+        guard state == .unlocked, !isFixture, let settings = document?.settings, settings.allowsLookups(.crypto) else { return }
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard clean.count >= 2, !Task.isCancelled else { return }
         let token = sessionToken, revision = sourceRevision
         catalogRequest?.cancel()
-        let request = Task { try await PublicPrices.searchCoins(clean, key: settings.automaticPrices ? settings.coinGeckoKey : "") }
+        let request = Task { try await PublicPrices.searchCoins(clean, key: settings.coinGeckoKey) }
         catalogRequest = request
         guard let coins = try? await request.value, token == sessionToken, revision == sourceRevision, !Task.isCancelled else { return }
         var merged = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
@@ -1823,6 +1837,9 @@ extension UpOnlySession {
                     return .failed
                 }
                 guard token == sessionToken else { return .failed }
+                // A backup of another vault: the replaced vault's background sources go with it.
+                await forgetBackground(unless: opened.document.vaultID)
+                guard token == sessionToken else { return .failed }
                 // The vault already has the backup's session; clear what the replaced one left behind.
                 endSession(lockingVault: false)
                 token = sessionToken
@@ -1850,6 +1867,8 @@ extension UpOnlySession {
             }.value
             vault = VaultStore(layout: layout, io: DiskFileIO(), keys: keys, authenticator: auth)
             opened = try await vault.unlock()
+            guard token == sessionToken else { return .failed }
+            await forgetBackground(unless: opened.document.vaultID)
             guard token == sessionToken else { return .failed }
             publish(opened.document, freshUnlock: true)
             return .restored
@@ -1991,14 +2010,17 @@ extension UpOnlySession {
         }
         scheduleHistoryRebuild()
     }
+    /// Fetches the background sources every 15 minutes, locked or not, but only for the vault in this folder: a saved
+    /// configuration whose vault isn't the one on disk (deleted, started over, replaced) fetches nothing.
     func startBackgroundRefresh() {
         guard !isFixture else { return }
         backgroundTask?.cancel()
+        let layout = layout
         backgroundTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
                     guard let self else { return }
-                    let load = Task.detached(priority: .utility) { try BackgroundConfiguration.load() }
+                    let load = Task.detached(priority: .utility) { try BackgroundConfiguration.load(for: layout) }
                     if let configuration = try await load.value {
                         guard !Task.isCancelled else { return }
                         let root = Config.supportDirectory
@@ -2030,10 +2052,11 @@ extension UpOnlySession {
             let saved = try await Task.detached(priority: .utility) { try BackgroundConfiguration.load() }.value
             guard token == sessionToken, state == .unlocked else { return }
             let pair: (privateX963: Data, publicX963: Data)
+            var minted = false
             if let saved, saved.vaultID == current.vaultID, saved.signingPublicKey == current.backgroundSignerPublicKey {
                 pair = (saved.signingPrivateKey, saved.signingPublicKey)
             } else {
-                pair = VaultCrypto.makeSigningKeyPair()
+                pair = VaultCrypto.makeSigningKeyPair(); minted = true
                 try await mutate { $0.backgroundSignerPublicKey = pair.publicX963 }
             }
             guard state == .unlocked, let doc = document, doc.vaultID == current.vaultID else { return }
@@ -2057,10 +2080,27 @@ extension UpOnlySession {
                 if saved?.metalsEnabled != next.metalsEnabled || saved?.metals != next.metals { changed.append("metals") }
                 let root = Config.supportDirectory, vaultID = doc.vaultID
                 await BackgroundRefreshSchedule.shared.reset(vaultID: vaultID, root: root, sources: changed)
-                try await Task.detached(priority: .utility) { try next.save() }.value
-                if token == sessionToken, state == .unlocked { startBackgroundRefresh() }
+                // A new signing key: packets sealed before it (for another vault, or to an inbox key since replaced) can
+                // never open, so they go once it's saved, with the loop that could still write one stopped until then.
+                let stale = minted
+                if stale { backgroundTask?.cancel() }
+                defer { if stale { startBackgroundRefresh() } }
+                try await Task.detached(priority: .utility) { try next.save(); if stale { BackgroundRefresh.deleteSealed(root: root) } }.value
+                if !stale, token == sessionToken, state == .unlocked { startBackgroundRefresh() }
             }
-        } catch { backgroundIssues = ["Background source setup"] }
+        } catch {
+            // A lock partway through isn't a failed setup, and mustn't show as one on the lock screen.
+            if token == sessionToken { backgroundIssues = ["Background source setup"] }
+        }
+    }
+    /// Deletes the background configuration, and what it fetched and scheduled, unless it belongs to `vaultID` (nil when
+    /// no vault is left), then restarts the loop, which idles until `configureBackground` saves one for this vault.
+    private func forgetBackground(unless vaultID: UUID?) async {
+        guard !isFixture else { return }
+        let root = Config.supportDirectory
+        backgroundTask?.cancel(); backgroundTask = nil
+        if await Task.detached(priority: .utility, operation: { BackgroundRefresh.forget(unless: vaultID, root: root) }).value { backgroundIssues = [] }
+        startBackgroundRefresh()
     }
     func applyBackgroundCache() async {
         guard !isFixture, state == .unlocked, document != nil, backgroundCacheRequest == nil else { return }

@@ -35,7 +35,8 @@ struct UpOnlyGuidedEntry: View {
     @State private var choosingPortfolio = false
     /// Several buys, each with its day, instead of one total (nil). Their costs fill in from each day's price.
     @State private var buys: [BuyLine]?
-    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = UTCDay.today() }
+    /// `cost` is typed, in dollars, only while prices aren't looked up (`lookups`).
+    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = UTCDay.today(); var cost = "" }
     /// Each buy day's average price, keyed by asset and day.
     @State private var dayPrices: [String: Decimal] = [:]
     @FocusState private var searchFocused: Bool
@@ -47,6 +48,13 @@ struct UpOnlyGuidedEntry: View {
     private var coins: [CatalogCoin] { ImportCoinList.coins(document: session.document, catalog: session.catalog) }
     private var coin: CatalogCoin? { coins.first { $0.id == row.holding.resolvedCoinID } }
     private var account: Account? { accounts.first { $0.id == row.bank.account.existingID } }
+    /// Whether today's and past prices of what's entered may be looked up: only with its source switched on (coins,
+    /// metals or exchange rates) once setup is complete. Otherwise nothing is asked of any provider and the cost is typed.
+    private var lookups: Bool {
+        session.document?.settings.allowsLookups(mode == .bankBalances ? .fx : mode == .metals ? .metal : .crypto) == true
+    }
+    /// Said where a looked-up price would have filled something in.
+    private var lookupsOffNote: String { (mode == .metals ? "Gold & silver prices" : "Crypto prices") + " are off, so enter " + (buys == nil ? "the cost" : "each buy’s cost") + " yourself." }
     private var title: String { mode == .bankBalances ? row.bank.account.name : mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.name ?? "Metal") : row.holding.assetName.isEmpty ? row.holding.resolvedCoinID : row.holding.assetName }
     private var quantity: Binding<String> { mode == .bankBalances ? $row.bank.balance : $row.holding.quantity }
     private var date: Binding<Date> { Binding(get: { (try? ImportDateFormat.iso.date(row.bank.date)) ?? UTCDay.today() }, set: { row.bank.date = ImportDateFormat.today($0) }) }
@@ -198,6 +206,11 @@ struct UpOnlyGuidedEntry: View {
                     }) { addBadge }
                 }
             }
+            // Search stays on this Mac then (`UpOnlySession.searchCatalog`).
+            if !query.isEmpty, !lookups {
+                Text("Crypto prices are off, so only coins Up Only already knows are searched. For another, enter its CoinGecko ID.")
+                    .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
     private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28) }
@@ -270,11 +283,15 @@ struct UpOnlyGuidedEntry: View {
                 }
             }
             if mode != .bankBalances {
+                if !lookups {
+                    Text(lookupsOffNote).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 ManageCard { portfolioRows }
                 if buys == nil {
                     // Bought in several goes: each buy with its day, costs filled in.
                     ManageCard {
-                        UpOnlyRow(title: "Several buys", caption: "Each with its date; costs fill in from that day's price", chevron: true, action: startBuys) {
+                        UpOnlyRow(title: "Several buys", caption: lookups ? "Each with its date; costs fill in from that day's price" : "Each with its date and cost", chevron: true, action: startBuys) {
                             UpOnlySymbolBadge(symbol: "list.bullet", tint: mode == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 28)
                         }
                     }
@@ -360,9 +377,12 @@ struct UpOnlyGuidedEntry: View {
     private var buyPriceKeys: String { Set((buys ?? []).filter { !isToday($0.date) }.map { dayKey($0.date) }).sorted().joined(separator: ",") }
     /// The price a buy is costed at: today's for one bought today, else that day's average.
     private func price(on day: Date) -> Decimal? { isToday(day) ? unitPrice : dayPrices[dayKey(day)] }
-    /// A buy's cost in dollars: its amount (in grams for metal) at that day's price.
+    /// A buy's cost in dollars: its amount (in grams for metal) at that day's price, or what was typed when prices
+    /// aren't looked up.
     private func buyCost(_ line: BuyLine) -> Decimal? {
-        guard let amount = parsed(line.quantity), amount > 0, let price = price(on: line.date) else { return nil }
+        guard let amount = parsed(line.quantity), amount > 0 else { return nil }
+        if !lookups { return parsed(line.cost).flatMap { $0 > 0 ? $0 : nil } }
+        guard let price = price(on: line.date) else { return nil }
         let units = mode == .metals ? ((try? MetalWeightUnit.resolve(row.holding.unit).grams(amount)) ?? amount) : amount
         guard let cost = try? MoneyInput.multiply(units, price, allowingRounding: true) else { return nil }
         var raw = cost, rounded = Decimal(); NSDecimalRound(&rounded, &raw, 2, .plain); return rounded
@@ -373,7 +393,7 @@ struct UpOnlyGuidedEntry: View {
         return lines.isEmpty || costs.contains { $0 == nil } ? nil : costs.compactMap { $0 }.reduce(0, +)
     }
     private func fetchBuyPrices() async {
-        guard let settings = session.document?.settings else { return }
+        guard lookups, let settings = session.document?.settings else { return }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
         guard !asset.isEmpty else { return }
         for day in Set((buys ?? []).map { UTCDay.start(of: $0.date) }) where !isToday(day) && dayPrices[dayKey(day)] == nil {
@@ -383,6 +403,7 @@ struct UpOnlyGuidedEntry: View {
     }
     private func buyRow(_ index: Int) -> some View {
         let quantity = Binding(get: { buys?.indices.contains(index) == true ? buys![index].quantity : "" }, set: { if buys?.indices.contains(index) == true { buys![index].quantity = $0 } })
+        let typedCost = Binding(get: { buys?.indices.contains(index) == true ? buys![index].cost : "" }, set: { if buys?.indices.contains(index) == true { buys![index].cost = $0 } })
         let day = Binding(get: { buys?.indices.contains(index) == true ? buys![index].date : UTCDay.today() }, set: { if buys?.indices.contains(index) == true { buys![index].date = $0 } })
         let line = buys?.indices.contains(index) == true ? buys![index] : BuyLine()
         return VStack(spacing: 0) {
@@ -400,7 +421,12 @@ struct UpOnlyGuidedEntry: View {
             }.frame(minHeight: 36)
             HStack {
                 Spacer()
-                if let cost = buyCost(line) {
+                if !lookups {
+                    // No price is looked up, so its cost is typed, in dollars (optional, as a single entry's is).
+                    UpOnlyValueField("Cost", text: typedCost).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 110).accessibilityLabel("Cost of this buy in US dollars")
+                    Text("USD").fixedSize()
+                } else if let cost = buyCost(line) {
                     UpOnlyPrivateText("≈ " + UpOnlyFormat.exactMoney(cost) + " at " + (isToday(line.date) ? "today's" : "that day's") + " price")
                 } else if (parsed(line.quantity) ?? 0) > 0 {
                     Text(isToday(line.date) || dayPrices[dayKey(line.date)] == nil ? "Looking up the price…" : "No price for that day")
@@ -446,7 +472,7 @@ struct UpOnlyGuidedEntry: View {
             ManageCard {
                 VStack(alignment: .leading, spacing: 10) {
                     note("Adds each buy to what you held that day, and to any total saved after it.", symbol: "checkmark.circle.fill", tint: UpOnlyTint.gain)
-                    if buysCost == nil { note("A buy without a price for its day is saved without a cost.", symbol: "info.circle.fill", tint: .secondary) }
+                    if buysCost == nil { note(lookups ? "A buy without a price for its day is saved without a cost." : "A buy without a cost typed is saved without one.", symbol: "info.circle.fill", tint: .secondary) }
                 }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -555,7 +581,7 @@ struct UpOnlyGuidedEntry: View {
         return rounded
     }
     private func fetchClosePrice() async {
-        guard let key = closeKey, closePrice?.key != key, let settings = session.document?.settings else { return }
+        guard lookups, let key = closeKey, closePrice?.key != key, let settings = session.document?.settings else { return }
         let asset = mode == .metals ? ((try? PreciousMetal.resolve(row.holding.coin))?.assetID.rawValue ?? "") : row.holding.resolvedCoinID
         guard !asset.isEmpty else { return }
         for attempt in 0..<3 {
@@ -595,13 +621,14 @@ struct UpOnlyGuidedEntry: View {
         default: return latestPrice(CanonicalAssetID(rawValue: row.holding.resolvedCoinID))
         }
     }
-    /// Fetches today's price once the coin, metal or currency is known, using the same requests as the app's own price
-    /// updates: coins from CoinGecko's top-coins list, so it can't tell which you add.
+    /// Fetches today's price once the coin, metal or currency is known, only with its source switched on. It uses the
+    /// app's own price requests: CoinGecko's top-coins list names no coin, but a coin outside it is asked for by ID, and
+    /// Binance's fallback names the coin's pair; a metal and a currency are named in their requests.
     private func fetchLivePrice() async {
         let key = priceKey
-        guard let settings = session.document?.settings, livePrice?.key != key else { return }
-        // A lookup you asked for by choosing it: tried a few times, as a source may be busy (the dashboard's charts use
-        // the same ones), with Binance as the coins' second source.
+        guard lookups, let settings = session.document?.settings, livePrice?.key != key else { return }
+        // Tried a few times, as a source may be busy (the dashboard's charts use the same ones), with Binance as the
+        // coins' second source.
         for attempt in 0..<3 {
             if attempt > 0 { try? await Task.sleep(for: .seconds(4)) }
             guard !Task.isCancelled, key == priceKey else { return }
