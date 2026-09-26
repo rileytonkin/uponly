@@ -43,10 +43,8 @@ extension PublicPrices {
         if let book = try? await binanceBook() {
             let now = Date()
             for id in wanted.sorted() {
-                guard let symbol = knownSymbols[id], let pair = binancePair(symbol), let price = book[pair] else { continue }
-                // A price far from the last saved one means the ticker isn't this coin here; CoinGecko decides.
-                if let last = saved[id], last > 0, abs(NSDecimalNumber(decimal: price / last).doubleValue - 1) > 0.5 { continue }
-                quotes.append(QuoteObservation(assetID: CanonicalAssetID(rawValue: id), priceUSD: PreciseDecimal(price), providerTime: now, fetchedAt: now, provider: "Binance"))
+                guard let listing = binanceListing(id, book: book, saved: saved[id]) else { continue }
+                quotes.append(QuoteObservation(assetID: CanonicalAssetID(rawValue: id), priceUSD: PreciseDecimal(listing.price), providerTime: now, fetchedAt: now, provider: "Binance"))
             }
         }
         let rest = wanted.subtracting(quotes.map(\.assetID.rawValue))
@@ -58,6 +56,20 @@ extension PublicPrices {
             } catch { if quotes.isEmpty { throw error } }
         }
         return (quotes, symbols)
+    }
+    /// The Binance pair a coin's current price is read from, and that price: only for a coin whose ticker is known to
+    /// be its own (CoinGecko's top coins), that Binance trades against USDT, and, when a saved price is given, within
+    /// 50% of it; further off, the ticker isn't this coin there and CoinGecko decides. The hourly prices and the live
+    /// stream both match coins this way.
+    static func binanceListing(_ id: String, book: [String: Decimal], saved: Decimal?) -> (pair: String, price: Decimal)? {
+        guard let symbol = knownSymbols[id], let pair = binancePair(symbol), let price = book[pair] else { return nil }
+        if let saved, saved > 0, !agrees(price, saved) { return nil }
+        return (pair, price)
+    }
+    /// Within 50% of `reference`, a positive price.
+    static func agrees(_ price: Decimal, _ reference: Decimal) -> Bool {
+        guard reference > 0, price > 0 else { return false }
+        return abs(NSDecimalNumber(decimal: price / reference).doubleValue - 1) <= 0.5
     }
     /// Current prices, naming as few of your coins as it can: the 250 largest by market cap in one request, then the
     /// next 250 if a coin is still missing, and a coin outside those is asked for by name (history requests always name
@@ -290,6 +302,186 @@ extension PublicPrices {
         "cash-4": "cash", "humanity": "h", "jpysc": "jpysc", "ozone-chain": "ozo", "avant-usd": "avusd",
         "grx-chain": "grx", "stp-network": "awe", "golem": "glm", "bc-token": "bc"
     ]
+}
+
+// MARK: Live prices while the menu is open
+
+/// A price that arrived while the menu was open: kept in memory for today's figures (`UnlockedSession.livePrices`),
+/// never saved, so the vault's prices keep their hourly schedule.
+nonisolated struct LivePrice: Sendable, Equatable {
+    var price: Decimal
+    var time: Date
+    /// From Binance's stream, rather than CoinGecko's once-a-minute list.
+    var streamed: Bool
+}
+/// A held coin the live prices are for, with its latest saved price: what a Binance pair is matched against, and what
+/// each streamed price must stay near.
+nonisolated struct LiveCoin: Sendable, Equatable {
+    var id: CanonicalAssetID
+    var saved: Decimal?
+}
+/// A Binance pair on the stream: the coin it prices, and the price each tick must stay within 50% of.
+nonisolated struct LiveSubscription: Sendable, Equatable {
+    var asset: CanonicalAssetID
+    var reference: Decimal
+}
+/// One live connection, a message at a time: `URLSessionWebSocketTask` in the app (`PublicPrices.openLiveStream`), a
+/// fake in tests. `close` ends a `receive` that's waiting.
+protocol LivePriceSocket: Sendable {
+    func receive() async throws -> Data
+    func close()
+}
+/// Where live prices come from: Binance's one list of every price (to see which coins it lists; it names no coin), its
+/// stream, and CoinGecko's current prices. The app uses the network; tests hand in fakes, and the fixture build has
+/// none, so it never streams.
+nonisolated struct LivePriceSources: Sendable {
+    var book: @Sendable () async throws -> [String: Decimal]
+    var open: @Sendable (URL) throws -> any LivePriceSocket
+    var gecko: @Sendable (_ ids: [String], _ key: String) async throws -> [QuoteObservation]
+    static let network = LivePriceSources(book: { try await PublicPrices.binanceBook() }, open: { try PublicPrices.openLiveStream($0) },
+                                          gecko: { try await PublicPrices.marketQuotes(ids: $0, key: $1).quotes })
+}
+/// Where the network side leaves live prices for the session, which takes them once a second: the socket is read off
+/// the main thread, and the menu redraws at most once a second whatever the ticks do.
+final class LivePriceFeed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [CanonicalAssetID: LivePrice] = [:]
+    private var lastTick: Date?
+    private var unlistedIDs: [String]?
+    private var checked: Date?
+    init(checkedAt: Date? = nil) { checked = checkedAt }
+    /// Keeps the newest price per coin until `take`.
+    func put(_ asset: CanonicalAssetID, _ price: LivePrice) {
+        lock.withLock {
+            if pending[asset].map({ $0.time < price.time }) ?? true { pending[asset] = price }
+            if price.streamed { lastTick = Date() }
+        }
+    }
+    func take() -> [CanonicalAssetID: LivePrice] { lock.withLock { defer { pending = [:] }; return pending } }
+    /// Binance's stream is connected and delivered within the last minute: what "Live" beside the total says.
+    func isStreaming(now: Date = Date()) -> Bool { lock.withLock { lastTick.map { now.timeIntervalSince($0) < 60 } ?? false } }
+    func disconnected() { lock.withLock { lastTick = nil } }
+    /// The coins Binance doesn't list (or couldn't be asked about), left to CoinGecko; nil until Binance's list is asked.
+    var unlisted: [String]? { get { lock.withLock { unlistedIDs } } set { lock.withLock { unlistedIDs = newValue } } }
+    /// When CoinGecko was last asked, so reopening the menu within the minute doesn't ask again.
+    var checkedAt: Date? { get { lock.withLock { checked } } set { lock.withLock { checked = newValue } } }
+}
+extension PublicPrices {
+    static let liveMessageLimit = 64 * 1024
+    static let liveStreamLimit = 100
+    /// Binance's combined stream for `pairs` ("BTCUSDT"), built only here: each lowercased and checked against
+    /// `^[a-z0-9]{2,20}$` (anything else is left out, never escaped into the URL), duplicates dropped, at most 100.
+    /// Returns the pairs it asks for; nil when none is left.
+    static func liveStream(_ pairs: [String]) -> (url: URL, pairs: Set<String>)? {
+        var names: [String] = [], kept = Set<String>()
+        for pair in pairs {
+            let lower = pair.lowercased()
+            guard (2...20).contains(lower.count), lower.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber) }),
+                  names.count < liveStreamLimit, kept.insert(lower.uppercased()).inserted else { continue }
+            names.append(lower + "@miniTicker")
+        }
+        guard !names.isEmpty else { return nil }
+        var components = URLComponents(); components.scheme = "wss"; components.host = streamHost; components.port = 443; components.path = "/stream"
+        components.percentEncodedQuery = "streams=" + names.joined(separator: "/")
+        guard let url = components.url else { return nil }
+        return (url, kept)
+    }
+    private struct LiveMessage: Decodable {
+        var stream: String
+        var data: Ticker
+        struct Ticker: Decodable {
+            var event: String, time: Int64, symbol: String, close: String
+            enum CodingKeys: String, CodingKey { case event = "e", time = "E", symbol = "s", close = "c" }
+        }
+    }
+    /// One stream message as a coin's price, or nil: only `{"stream": …, "data": {"e": "24hrMiniTicker", …}}` for a
+    /// subscribed pair, named alike in both places, its close read exactly, positive and within 50% of the pair's
+    /// reference, from the past five minutes (a few seconds ahead is the Mac's clock, and counts as now).
+    static func decodeLiveTick(_ data: Data, subscribed: [String: LiveSubscription], now: Date) -> (asset: CanonicalAssetID, price: LivePrice)? {
+        guard data.count <= liveMessageLimit, let message = try? JSONDecoder().decode(LiveMessage.self, from: data) else { return nil }
+        let ticker = message.data
+        guard ticker.event == "24hrMiniTicker", let subscription = subscribed[ticker.symbol], message.stream == ticker.symbol.lowercased() + "@miniTicker",
+              let price = try? MoneyInput.parseExact(ticker.close), MoneyInput.isFinite(price), price > 0, agrees(price, subscription.reference), ticker.time > 0 else { return nil }
+        let time = Date(timeIntervalSince1970: TimeInterval(ticker.time) / 1000)
+        guard now.timeIntervalSince(time) <= 300, time.timeIntervalSince(now) <= 5 else { return nil }
+        return (subscription.asset, LivePrice(price: price, time: min(time, now), streamed: true))
+    }
+    /// The wait before reconnecting: a second after a connection that delivered (Binance ends each after 24 hours),
+    /// doubling to a minute while they keep failing.
+    static func liveRetryDelay(after delay: TimeInterval?) -> TimeInterval { delay.map { min($0 * 2, 60) } ?? 1 }
+    /// Live prices until cancelled, all left in `feed`: Binance's stream for the coins it lists, and CoinGecko's current
+    /// prices at most once a minute for the rest (every coin, while Binance can't be reached).
+    static func streamLivePrices(_ coins: [LiveCoin], key: String, sources: LivePriceSources, feed: LivePriceFeed) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await streamBinance(coins, sources: sources, feed: feed) }
+            group.addTask { await refreshUnlisted(key: key, sources: sources, feed: feed) }
+        }
+    }
+    private static func streamBinance(_ coins: [LiveCoin], sources: LivePriceSources, feed: LivePriceFeed) async {
+        var delay: TimeInterval?
+        while !Task.isCancelled {
+            // Which coins Binance lists, matched as the hourly prices are, from its one request for every price.
+            let book = try? await sources.book()
+            var candidates: [String: LiveSubscription] = [:]
+            for coin in coins {
+                guard let book, let listing = binanceListing(coin.id.rawValue, book: book, saved: coin.saved), candidates[listing.pair] == nil else { continue }
+                candidates[listing.pair] = LiveSubscription(asset: coin.id, reference: coin.saved.flatMap { $0 > 0 ? $0 : nil } ?? listing.price)
+            }
+            let stream = liveStream(candidates.keys.sorted())
+            let subscribed = candidates.filter { stream?.pairs.contains($0.key) == true }
+            let streamed = Set(subscribed.values.map(\.asset))
+            feed.unlisted = coins.map(\.id).filter { !streamed.contains($0) }.map(\.rawValue)
+            if let stream, let socket = try? sources.open(stream.url) {
+                if await readLive(socket, subscribed: subscribed, feed: feed) { delay = nil }
+                feed.disconnected()
+            }
+            delay = liveRetryDelay(after: delay)
+            do { try await Task.sleep(for: .seconds(delay ?? 1)) } catch { return }
+        }
+    }
+    /// Reads one connection until it ends or the stream stops, leaving each valid price in `feed`. True when one came.
+    private static func readLive(_ socket: any LivePriceSocket, subscribed: [String: LiveSubscription], feed: LivePriceFeed) async -> Bool {
+        let delivered = await withTaskCancellationHandler {
+            var received = false
+            while !Task.isCancelled {
+                guard let message = try? await socket.receive() else { break }
+                guard let tick = decodeLiveTick(message, subscribed: subscribed, now: Date()) else { continue }
+                feed.put(tick.asset, tick.price); received = true
+            }
+            return received
+        } onCancel: { socket.close() }
+        socket.close()
+        return delivered
+    }
+    /// CoinGecko's current prices for the coins Binance doesn't list, through the hourly refresh's own request (the
+    /// largest coins' list; a coin outside it asked for by its ID), at most once a minute, a failure included.
+    private static func refreshUnlisted(key: String, sources: LivePriceSources, feed: LivePriceFeed) async {
+        while !Task.isCancelled {
+            if let ids = feed.unlisted, !ids.isEmpty, feed.checkedAt.map({ Date().timeIntervalSince($0) >= 60 }) ?? true {
+                feed.checkedAt = Date()
+                if let quotes = try? await sources.gecko(ids, key) {
+                    let wanted = Set(ids), now = Date()
+                    for quote in quotes where wanted.contains(quote.assetID.rawValue) && MoneyInput.isFinite(quote.priceUSD.value) && quote.priceUSD.value > 0 {
+                        feed.put(quote.assetID, LivePrice(price: quote.priceUSD.value, time: min(quote.providerTime, now), streamed: false))
+                    }
+                }
+            }
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+        }
+    }
+    /// `document` with each live price after its coin's saved ones, only where it's newer than the latest saved price:
+    /// what today's figures are worked out from while the menu is open. A saved price as new or newer stands. Never saved.
+    static func overlaying(_ live: [CanonicalAssetID: LivePrice], on document: VaultDocument) -> VaultDocument {
+        guard !live.isEmpty else { return document }
+        var latest: [CanonicalAssetID: Date] = [:]
+        for quote in document.quotes where live[quote.assetID] != nil { latest[quote.assetID] = max(latest[quote.assetID] ?? .distantPast, quote.providerTime) }
+        var next = document
+        for (asset, price) in live.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where price.time > (latest[asset] ?? .distantPast) {
+            next.quotes.append(QuoteObservation(assetID: asset, priceUSD: PreciseDecimal(price.price), providerTime: price.time, fetchedAt: price.time,
+                                                provider: price.streamed ? "Binance · live" : "CoinGecko · live"))
+        }
+        return next
+    }
 }
 
 /// The last Binance price list and when it came, shared for a minute.

@@ -24,7 +24,8 @@ extension UpOnlyUnlockedPanel {
         let interval = selectedInterval
         guard let document = session.document else { return WorthSnapshot(interval: interval) }
         let samples = DashboardPeriod.samples(in: interval, scope: scope, document: document)
-        let valuation = AssetOwnership.personalValue(at: interval.end, scope: scope, document: document)
+        // Today's figure at the live prices while the menu is open; the chart's saved days stay as saved.
+        let valuation = AssetOwnership.personalValue(at: interval.end, scope: scope, document: session.pricedDocument() ?? document)
         let estimates = session.chartEstimates() ?? ChartEstimates(document: document)
         // Whatever a saved day lacks (a price, a rate, a balance, a company's share that month) is filled from the
         // nearest saved values, so the line never dips or cuts across for want of one.
@@ -59,7 +60,7 @@ extension UpOnlyUnlockedPanel {
         return VStack(alignment: .leading, spacing: 0) {
             if let ownerShare { eyebrow(ownerShare).frame(minHeight: 26, alignment: .leading) }
             if let valuation, available, let value = valuation.total ?? valuation.lastComplete?.value {
-                UpOnlyAmount(value: value, cents: true).padding(.top, ownerShare != nil ? 10 : 0)
+                headlineAmount(value, live: valuation.total != nil && session.isLive(valuation.components)).padding(.top, ownerShare != nil ? 10 : 0)
             }
             if let valuation, available {
                 VStack(alignment: .leading, spacing: 5) {
@@ -214,7 +215,7 @@ extension UpOnlyUnlockedPanel {
                 // Metals read by name ("Gold"), coins by ticker ("BTC"); the full name is on hover.
                 ticker: metalKind?.name ?? (symbol.isEmpty ? holding.assetName : symbol), name: metalKind != nil ? symbol : holding.assetName,
                 price: quantity.flatMap { q in value.flatMap { UpOnlyFormat.unitPrice(quantity: q, valueUSD: $0, metal: metal) } },
-                change: snapshot.estimates?.priceChange(holding.assetID, since: snapshot.interval.start, now: date),
+                change: snapshot.estimates?.priceChange(holding.assetID, since: snapshot.interval.start, now: date, live: session.livePrices[holding.assetID]),
                 value: value,
                 valueText: value.map(UpOnlyFormat.exactMoney) ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"),
                 quantity: quantity.map { UpOnlyFormat.quantityText($0, symbol: symbol.isEmpty ? holding.assetName : symbol, metal: metal) },

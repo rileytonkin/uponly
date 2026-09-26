@@ -518,6 +518,13 @@ struct UpOnlyUnlockedPanel: View {
         UpOnlySegments(options: WorthRange.allCases.map { ($0, $0.title, $0.spokenTitle) },
                        selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range")
     }
+    /// A page's headline figure, with "Live" at the row's end while its prices stream in (`UpOnlySession.isLive`).
+    func headlineAmount(_ value: Decimal, live: Bool) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            UpOnlyAmount(value: value, cents: true)
+            if live { Spacer(minLength: 4); UpOnlyLiveBadge().transition(.opacity) }
+        }.animation(.snappy(duration: 0.3), value: live)
+    }
     func eyebrow(_ title: String) -> some View {
         Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
     }

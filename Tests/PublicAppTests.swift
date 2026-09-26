@@ -2923,6 +2923,251 @@ struct NetworkOptInTests {
     }
 }
 
+#if UPONLY_FIXTURE
+/// A socket the test feeds by hand: `send` delivers a message as Binance would, and `close` ends the connection, as
+/// the server or the app would.
+private final class FakeLiveSocket: LivePriceSocket, @unchecked Sendable {
+    let url: URL
+    private let lock = NSLock()
+    private var queued: [Data] = []
+    private var waiter: CheckedContinuation<Data, Error>?
+    private var ended = false
+    init(url: URL) { self.url = url }
+    var closed: Bool { lock.withLock { ended } }
+    func send(_ message: Data) {
+        let waiting: CheckedContinuation<Data, Error>? = lock.withLock {
+            guard !ended else { return nil }
+            guard let next = waiter else { queued.append(message); return nil }
+            waiter = nil
+            return next
+        }
+        waiting?.resume(returning: message)
+    }
+    func receive() async throws -> Data {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+            let ready: Result<Data, Error>? = lock.withLock {
+                if ended { return .failure(URLError(.networkConnectionLost)) }
+                if !queued.isEmpty { return .success(queued.removeFirst()) }
+                waiter = continuation
+                return nil
+            }
+            if let ready { continuation.resume(with: ready) }
+        }
+    }
+    func close() {
+        let waiting: CheckedContinuation<Data, Error>? = lock.withLock {
+            ended = true
+            defer { waiter = nil }
+            return waiter
+        }
+        waiting?.resume(throwing: URLError(.cancelled))
+    }
+}
+/// Every socket the session opened, in order, behind sources that list BTC and ETH on Binance and price nothing else.
+private final class FakeLiveSockets: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [FakeLiveSocket] = []
+    var opened: [FakeLiveSocket] { lock.withLock { all } }
+    func open(_ url: URL) -> any LivePriceSocket {
+        let socket = FakeLiveSocket(url: url)
+        lock.withLock { all.append(socket) }
+        return socket
+    }
+    var sources: LivePriceSources {
+        LivePriceSources(book: { ["BTCUSDT": 61000, "ETHUSDT": 2500] }, open: { [self] in self.open($0) }, gecko: { _, _ in [] })
+    }
+}
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func add() { lock.withLock { value += 1 } }
+}
+
+/// Live prices while the menu is open: the stream's URL and messages are checked, live prices only ever stand in for
+/// older saved ones in today's figures, and the stream runs only while the menu is open, unlocked and priced.
+@Suite("Live prices while the menu is open")
+@MainActor struct LivePriceTests {
+    private let now = Date(timeIntervalSince1970: 1_790_256_000)
+    private let bitcoin = CanonicalAssetID(rawValue: "bitcoin")
+    /// A combined-stream mini-ticker message, as Binance sends it.
+    private func tick(_ pair: String = "BTCUSDT", event: String = "24hrMiniTicker", stream: String? = nil, price: String = "61000.50", at time: Date) -> Data {
+        let millis = Int64((time.timeIntervalSince1970 * 1000).rounded()), name = stream ?? pair.lowercased() + "@miniTicker"
+        return Data(#"{"stream":"\#(name)","data":{"e":"\#(event)","E":\#(millis),"s":"\#(pair)","c":"\#(price)","o":"60000","h":"61500","l":"59000","v":"10","q":"600000"}}"#.utf8)
+    }
+    /// An unlocked vault, set up with crypto prices on, holding 2 BTC last saved at $60,000 ten minutes ago.
+    private func unlockedSession() async throws -> UpOnlySession {
+        let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-live-test-" + UUID().uuidString))
+        let session = UpOnlySession(testing: VaultStore(layout: layout, io: MemoryFileIO(), keys: MemoryKeyStore(), authenticator: FixtureAuthenticator()), layout: layout)
+        await session.create(recovery: .random())
+        try await session.completeSetup(tracked: [.crypto], prices: true, fx: false, key: "")
+        let held = Date().addingTimeInterval(-2 * 86400), saved = Date().addingTimeInterval(-600)
+        try await session.mutate { doc in
+            let portfolio = Portfolio(name: "Ledger", createdAt: held.addingTimeInterval(-60))
+            doc.portfolios.append(portfolio)
+            doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 2, at: held, document: doc)
+            doc.quotes.append(QuoteObservation(assetID: CanonicalAssetID(rawValue: "bitcoin"), priceUSD: PreciseDecimal(60000), providerTime: saved, fetchedAt: saved, provider: "Binance"))
+        }
+        // The backdated holding queues its past days for rebuilding, which saves in chunks; let that finish first, so
+        // any save after this is the test's.
+        try await waitFor { !session.historyRebuilding }
+        return session
+    }
+    private func waitFor(_ condition: () -> Bool) async throws {
+        for _ in 0..<500 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(condition(), "The live prices did not get there in time")
+    }
+
+    @Test("The stream's URL names only valid pairs, lowercased and once each, at most 100, and only it opens")
+    func streamURL() throws {
+        let stream = try #require(PublicPrices.liveStream(["BTCUSDT", "ethusdt", "BTCUSDT", "BTC/USDT", "x", "ÉTHUSDT", "../stream", "btc@miniticker", "BTC USDT", String(repeating: "A", count: 21)]))
+        #expect(stream.url.absoluteString == "wss://stream.binance.com:443/stream?streams=btcusdt@miniTicker/ethusdt@miniTicker")
+        #expect(stream.pairs == ["BTCUSDT", "ETHUSDT"])
+        let many = try #require(PublicPrices.liveStream((0..<150).map { "COIN\($0)USDT" }))
+        #expect(many.pairs.count == 100 && many.url.absoluteString.components(separatedBy: "@miniTicker").count == 101)
+        #expect(PublicPrices.liveStream(["", "a", "BTC-USDT"]) == nil && PublicPrices.liveStream([]) == nil)
+        // Nothing else is opened: another host, port or path is refused before any connection.
+        for text in ["wss://example.com:443/stream?streams=btcusdt@miniTicker", "wss://stream.binance.com:9443/stream?streams=btcusdt@miniTicker",
+                     "ws://stream.binance.com:443/stream?streams=btcusdt@miniTicker", "wss://stream.binance.com:443/ws/btcusdt@miniTicker"] {
+            #expect(throws: (any Error).self) { try PublicPrices.openLiveStream(URL(string: text)!) }
+        }
+    }
+    @Test("Only a fresh mini-ticker for a subscribed pair, with a sane exact price, becomes a live price")
+    func parsing() {
+        let subscribed = ["BTCUSDT": LiveSubscription(asset: bitcoin, reference: 60000)]
+        func decode(_ data: Data) -> (asset: CanonicalAssetID, price: LivePrice)? { PublicPrices.decodeLiveTick(data, subscribed: subscribed, now: now) }
+        let good = decode(tick(at: now.addingTimeInterval(-1)))
+        #expect(good?.asset == bitcoin && good?.price == LivePrice(price: Decimal(string: "61000.5")!, time: now.addingTimeInterval(-1), streamed: true))
+        // Another event, a pair not asked for, or a stream named for another pair.
+        #expect(decode(tick(event: "24hrTicker", at: now)) == nil)
+        #expect(decode(tick("ETHUSDT", price: "2500", at: now)) == nil)
+        #expect(decode(tick(stream: "ethusdt@miniTicker", at: now)) == nil)
+        // Prices that aren't exact positive decimals, or aren't near the saved price.
+        for price in ["abc", "-61000", "0", "6.1e4", "NaN", "", "1000000000000000000000000000", "999999", "20000"] {
+            #expect(decode(tick(price: price, at: now)) == nil, "\(price)")
+        }
+        #expect(decode(tick(price: "89000", at: now)) != nil)
+        // Older than five minutes, or ahead of the Mac's clock by more than a few seconds; a second ahead counts as now.
+        #expect(decode(tick(at: now.addingTimeInterval(-301))) == nil && decode(tick(at: now.addingTimeInterval(-299))) != nil)
+        #expect(decode(tick(at: now.addingTimeInterval(60))) == nil)
+        #expect(decode(tick(at: now.addingTimeInterval(1)))?.price.time == now)
+        // Anything else Binance might send, or not JSON at all, or too large.
+        #expect(decode(Data(#"{"result":null,"id":1}"#.utf8)) == nil && decode(Data("not json".utf8)) == nil)
+        #expect(decode(Data(#"{"stream":"btcusdt@miniTicker","data":{"e":"24hrMiniTicker","E":1790256000000,"s":"BTCUSDT"}}"#.utf8)) == nil)
+        var padded = tick(at: now); padded.insert(contentsOf: Data(repeating: 0x20, count: 70_000), at: padded.count - 1)
+        #expect(decode(padded) == nil)
+    }
+    @Test("A live price newer than the saved one values today's figures and moves; an older one doesn't")
+    func overlay() throws {
+        let inbox = VaultCrypto.makeInboxKeyPair()
+        var doc = VaultDocument.empty(inboxPrivateKeyX963: inbox.privateX963, inboxPublicKeyX963: inbox.publicX963)
+        let portfolio = Portfolio(name: "Ledger", createdAt: now.addingTimeInterval(-3 * 86400)); doc.portfolios = [portfolio]
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: bitcoin, assetName: "Bitcoin", quantity: 2, at: now.addingTimeInterval(-2 * 86400), document: doc)
+        doc.quotes = [QuoteObservation(assetID: bitcoin, priceUSD: PreciseDecimal(50000), providerTime: now.addingTimeInterval(-86400), fetchedAt: now, provider: "Binance"),
+                      QuoteObservation(assetID: bitcoin, priceUSD: PreciseDecimal(60000), providerTime: now.addingTimeInterval(-600), fetchedAt: now, provider: "Binance")]
+        let newer = LivePrice(price: 61000, time: now.addingTimeInterval(-5), streamed: true), older = LivePrice(price: 59000, time: now.addingTimeInterval(-900), streamed: true)
+        let live = PublicPrices.overlaying([bitcoin: newer], on: doc), stale = PublicPrices.overlaying([bitcoin: older], on: doc)
+        #expect(NetWorthCalculator.value(at: now, scope: .allTracked, document: live, now: now).total == 122000)
+        #expect(NetWorthCalculator.value(at: now, scope: .allTracked, document: stale, now: now).total == 120000)
+        #expect(stale.quotes == doc.quotes && live.quotes.count == doc.quotes.count + 1 && live.quotes.last?.provider == "Binance · live")
+        // The holding's move over the day follows the newer live price, and not an older one.
+        let estimates = ChartEstimates(document: doc), dayAgo = now.addingTimeInterval(-86400)
+        #expect(estimates.priceChange(bitcoin, since: dayAgo, now: now) == Decimal(string: "0.2"))
+        #expect(estimates.priceChange(bitcoin, since: dayAgo, now: now, live: newer) == Decimal(string: "0.22"))
+        #expect(estimates.priceChange(bitcoin, since: dayAgo, now: now, live: older) == Decimal(string: "0.2"))
+    }
+    @Test("Reconnects wait a second after a working connection, doubling to a minute while they fail")
+    func backoff() {
+        var delay: TimeInterval?, waits: [TimeInterval] = []
+        for _ in 0..<8 { let next = PublicPrices.liveRetryDelay(after: delay); waits.append(next); delay = next }
+        #expect(waits == [1, 2, 4, 8, 16, 32, 60, 60])
+    }
+    @Test("The stream runs while the menu is open, shows in today's figures without saving, reconnects, and stops at close and lock")
+    func lifecycle() async throws {
+        let session = try await unlockedSession()
+        // The fixture build never streams by itself.
+        #expect(session.liveSources == nil)
+        let sockets = FakeLiveSockets()
+        session.liveSources = sockets.sources
+        let generation = try #require(session.document?.generation)
+        session.menuOpened()
+        try await waitFor { sockets.opened.count == 1 }
+        #expect(sockets.opened.first?.url.absoluteString == "wss://stream.binance.com:443/stream?streams=btcusdt@miniTicker")
+        sockets.opened[0].send(tick(at: Date().addingTimeInterval(-1)))
+        try await waitFor { session.livePrices[bitcoin]?.price == Decimal(string: "61000.5") }
+        #expect(session.liveStreaming)
+        let priced = try #require(session.pricedDocument())
+        let valuation = NetWorthCalculator.value(at: Date(), scope: .allTracked, document: priced)
+        #expect(valuation.total == Decimal(string: "122001") && session.isLive(valuation.components))
+        // Nothing is saved for it: the vault keeps its one saved price and generation.
+        #expect(session.document?.generation == generation && session.document?.quotes.count == 1)
+        #expect(session.document?.quotes.contains { $0.provider.hasSuffix("live") } == false)
+        // A dropped connection (Binance ends each after a day) reconnects after a second.
+        sockets.opened[0].close()
+        try await waitFor { sockets.opened.count == 2 }
+        // Closing the menu closes the socket, and nothing reconnects.
+        session.surfaceClosed()
+        try await waitFor { sockets.opened[1].closed }
+        #expect(!session.liveStreaming)
+        try await Task.sleep(for: .milliseconds(1500))
+        #expect(sockets.opened.count == 2)
+        // Opening it again streams again; locking closes the socket and discards what streamed.
+        session.menuOpened()
+        try await waitFor { sockets.opened.count == 3 }
+        session.lock()
+        try await waitFor { sockets.opened[2].closed }
+        #expect(session.livePrices.isEmpty && !session.liveStreaming && session.pricedDocument() == nil)
+    }
+    @Test("Switching crypto prices off stops the stream and drops what streamed")
+    func pricesOff() async throws {
+        let session = try await unlockedSession()
+        let sockets = FakeLiveSockets()
+        session.liveSources = sockets.sources
+        session.menuOpened()
+        try await waitFor { sockets.opened.count == 1 }
+        sockets.opened[0].send(tick(at: Date()))
+        try await waitFor { session.livePrices[bitcoin] != nil }
+        try await session.saveSources(prices: false, fx: false, key: "")
+        try await waitFor { sockets.opened[0].closed }
+        #expect(session.livePrices.isEmpty && !session.liveStreaming)
+    }
+    @Test("A coin Binance doesn't list is priced from CoinGecko at most once a minute, and isn't marked live")
+    func unlisted() async throws {
+        let session = try await unlockedSession()
+        let calls = CallCounter()
+        session.liveSources = LivePriceSources(book: { [:] }, open: { _ in throw PriceError.unavailable }, gecko: { ids, _ in
+            calls.add()
+            return ids.map { QuoteObservation(assetID: CanonicalAssetID(rawValue: $0), priceUSD: PreciseDecimal(60500), providerTime: Date(), fetchedAt: Date(), provider: "CoinGecko") }
+        })
+        session.menuOpened()
+        try await waitFor { session.livePrices[bitcoin]?.price == 60500 }
+        #expect(session.livePrices[bitcoin]?.streamed == false && !session.liveStreaming)
+        let priced = try #require(session.pricedDocument())
+        #expect(!session.isLive(NetWorthCalculator.value(at: Date(), scope: .allTracked, document: priced).components))
+        try await Task.sleep(for: .seconds(2))
+        #expect(calls.count == 1)
+        // Reopening within the minute doesn't ask again.
+        session.surfaceClosed(); session.menuOpened()
+        try await Task.sleep(for: .milliseconds(1500))
+        #expect(calls.count == 1)
+    }
+    @Test("A second's prices from an earlier unlock never reach a later one, and an older price never replaces a newer")
+    func fenced() async throws {
+        let session = try await unlockedSession()
+        let token = session.sessionToken, price = LivePrice(price: 61000, time: Date(), streamed: true)
+        session.lock()
+        await session.unlock()
+        #expect(session.state == .unlocked)
+        session.publishLive([bitcoin: price], streaming: true, token: token)
+        #expect(session.livePrices.isEmpty && !session.liveStreaming)
+        session.publishLive([bitcoin: price], streaming: true, token: session.sessionToken)
+        #expect(session.livePrices[bitcoin] == price && session.liveStreaming)
+        session.publishLive([bitcoin: LivePrice(price: 1, time: price.time.addingTimeInterval(-10), streamed: true)], streaming: true, token: session.sessionToken)
+        #expect(session.livePrices[bitcoin] == price)
+    }
+}
+#endif
+
 struct PerformanceFXTests {
     @Test("Personal historical FX is fetched without waiting behind company currencies or asset history")
     func personalFXBackfill() throws {
