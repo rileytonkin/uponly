@@ -341,8 +341,9 @@ nonisolated struct LivePriceSources: Sendable {
     static let network = LivePriceSources(book: { try await PublicPrices.binanceBook() }, open: { try PublicPrices.openLiveStream($0) },
                                           gecko: { try await PublicPrices.marketQuotes(ids: $0, key: $1).quotes })
 }
-/// Where the network side leaves live prices for the session, which takes them once a second: the socket is read off
-/// the main thread, and the menu redraws at most once a second whatever the ticks do.
+/// Where the network side leaves live prices for the session, which takes them every few seconds
+/// (`UpOnlySession.livePublishInterval`): the socket is read off the main thread, and the menu redraws only then,
+/// whatever the ticks do.
 final class LivePriceFeed: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: [CanonicalAssetID: LivePrice] = [:]

@@ -2999,6 +2999,8 @@ private final class CallCounter: @unchecked Sendable {
     private func unlockedSession() async throws -> UpOnlySession {
         let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-live-test-" + UUID().uuidString))
         let session = UpOnlySession(testing: VaultStore(layout: layout, io: MemoryFileIO(), keys: MemoryKeyStore(), authenticator: FixtureAuthenticator()), layout: layout)
+        // The menu shows streamed prices every 5 seconds; here, every tenth of a second.
+        session.livePublishInterval = .milliseconds(100)
         await session.create(recovery: .random())
         try await session.completeSetup(tracked: [.crypto], prices: true, fx: false, key: "")
         let held = Date().addingTimeInterval(-2 * 86400), saved = Date().addingTimeInterval(-600)

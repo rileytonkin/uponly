@@ -514,16 +514,15 @@ struct UpOnlyUnlockedPanel: View {
         }.frame(minHeight: 26)
     }
     /// 24H 7D 30D 1Y All above the chart.
-    var rangeControl: some View {
+    /// With a live dot on 24H while the page's prices stream in (`UpOnlySession.isLive`), as trading apps mark the live range.
+    func rangeControl(live: Bool = false) -> some View {
         UpOnlySegments(options: WorthRange.allCases.map { ($0, $0.title, $0.spokenTitle) },
-                       selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range")
+                       selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range",
+                       live: live ? .day : nil)
     }
-    /// A page's headline figure, with "Live" at the row's end while its prices stream in (`UpOnlySession.isLive`).
-    func headlineAmount(_ value: Decimal, live: Bool) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            UpOnlyAmount(value: value, cents: true)
-            if live { Spacer(minLength: 4); UpOnlyLiveBadge().transition(.opacity) }
-        }.animation(.snappy(duration: 0.3), value: live)
+    /// A page's headline figure.
+    func headlineAmount(_ value: Decimal) -> some View {
+        UpOnlyAmount(value: value, cents: true)
     }
     func eyebrow(_ title: String) -> some View {
         Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)

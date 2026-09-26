@@ -48,19 +48,16 @@ struct UpOnlyAmount: View {
     }
 }
 
-/// "● Live" beside a headline figure whose prices are streaming in while the menu is open, as exchange apps mark a live
-/// price: a small green dot that pulses (still, with Reduce Motion) and a quiet word. It says nothing about the figure,
-/// so it shows in privacy mode too, where the figure stays ••••.
-struct UpOnlyLiveBadge: View {
+/// The dot on 24H while a page's prices stream in with the menu open, as trading apps mark the live range: small, green,
+/// pulsing (still, with Reduce Motion). It says nothing about the figures, so it shows in privacy mode too. The segment's
+/// spoken label says "live" for it.
+struct UpOnlyLiveDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(UpOnlyTint.gain)
-                .symbolEffect(.pulse, options: .repeat(.continuous), isActive: !reduceMotion)
-            Text("Live").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary)
-        }
-        .accessibilityElement(children: .ignore).accessibilityLabel("Live prices")
-        .help("Prices update every few seconds while the menu is open")
+        Image(systemName: "circle.fill").font(.system(size: 5)).foregroundStyle(UpOnlyTint.gain)
+            .symbolEffect(.pulse, options: .repeat(.continuous), isActive: !reduceMotion)
+            .accessibilityHidden(true)
+            .help("Live: prices update every 5 seconds while the menu is open")
     }
 }
 
@@ -70,21 +67,26 @@ struct UpOnlySegments<Value: Hashable>: View {
     let options: [(value: Value, title: String, spoken: String)]
     @Binding var selection: Value
     var label: String
+    /// The choice that shows live values right now, marked with a live dot.
+    var live: Value? = nil
     @Namespace private var pill
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.value) { option in
                 let chosen = selection == option.value
                 Button { selection = option.value } label: {
-                    Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
+                    HStack(spacing: 3) {
+                        Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
+                        if live == option.value { UpOnlyLiveDot().transition(.opacity) }
+                    }
                         .foregroundStyle(chosen ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity, minHeight: 26)
                         .background { if chosen { Capsule().fill(Color.white.opacity(0.12)).matchedGeometryEffect(id: "pill", in: pill) } }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain)
-                    .accessibilityLabel(option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
+                    .accessibilityLabel(live == option.value ? option.spoken + ", live" : option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
             }
-        }.animation(.snappy(duration: 0.25), value: selection)
+        }.animation(.snappy(duration: 0.25), value: selection).animation(.snappy(duration: 0.3), value: live)
             .accessibilityElement(children: .contain).accessibilityLabel(label)
     }
 }

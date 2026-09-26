@@ -60,7 +60,7 @@ extension UpOnlyUnlockedPanel {
         return VStack(alignment: .leading, spacing: 0) {
             if let ownerShare { eyebrow(ownerShare).frame(minHeight: 26, alignment: .leading) }
             if let valuation, available, let value = valuation.total ?? valuation.lastComplete?.value {
-                headlineAmount(value, live: valuation.total != nil && session.isLive(valuation.components)).padding(.top, ownerShare != nil ? 10 : 0)
+                headlineAmount(value).padding(.top, ownerShare != nil ? 10 : 0)
             }
             if let valuation, available {
                 VStack(alignment: .leading, spacing: 5) {
@@ -110,7 +110,7 @@ extension UpOnlyUnlockedPanel {
             }
             if snapshot.hasHistory {
                 VStack(alignment: .leading, spacing: 10) {
-                    rangeControl
+                    rangeControl(live: valuation.map { $0.total != nil && session.isLive($0.components) } ?? false)
                     if snapshot.points.contains(where: { $0.value != nil }) {
                         UpOnlyChart(points: snapshot.points, tint: trendTint(snapshot.points), plotHeight: chartPlotHeight, bridgesGaps: true)
                     } else {

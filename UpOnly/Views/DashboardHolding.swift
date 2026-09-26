@@ -32,7 +32,7 @@ extension UpOnlyUnlockedPanel {
         let stats = [change.map { changeStat($0) }, performance.flatMap { HoldingPerformance.total([$0]) }.map(allTimeStat)].compactMap { $0 }
         return VStack(alignment: .leading, spacing: 0) {
             if let value {
-                headlineAmount(value, live: session.isLive(component.map { [$0] } ?? []))
+                headlineAmount(value)
             } else {
                 Text(component?.missing == "quote" ? "Price needed" : "Quantity needed").font(UpOnlyType.title)
             }
@@ -47,7 +47,7 @@ extension UpOnlyUnlockedPanel {
             if !stats.isEmpty { headlineStats(stats).padding(.top, 10) }
             if points.contains(where: { $0.value != nil }) {
                 VStack(alignment: .leading, spacing: 10) {
-                    rangeControl
+                    rangeControl(live: session.isLive(component.map { [$0] } ?? []))
                     UpOnlyChart(points: points, tint: trendTint(points), plotHeight: chartPlotHeight, bridgesGaps: true)
                 }.padding(.top, 18)
             }

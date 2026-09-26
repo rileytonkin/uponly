@@ -266,6 +266,9 @@ final class UpOnlySession {
     @ObservationIgnored private var screenLockObserver: ScreenLockObserver?
     @ObservationIgnored private var inactivityTimer: DispatchSourceTimer?
     @ObservationIgnored private var eventMonitor: Any?
+    /// How often streamed prices reach the screen while the menu is open: often enough to feel live, calm enough to read.
+    /// Tests shorten it.
+    @ObservationIgnored var livePublishInterval: Duration = .seconds(5)
     #if UPONLY_FIXTURE
     @ObservationIgnored private var previewWindow: NSWindow?
     #endif
@@ -2262,12 +2265,16 @@ extension UpOnlySession {
         unlocked.liveFor = (ids, key)
         // The network side runs off the main thread and only ever writes to `feed`.
         unlocked.liveWork = Task.detached(priority: .utility) { await PublicPrices.streamLivePrices(coins, key: key, sources: sources, feed: feed) }
-        // Once a second, whatever arrived goes to the dashboard in one change, if it's still this unlock's.
+        // Whatever arrived goes to the dashboard in one change, if it's still this unlock's: after a second at first, so
+        // the menu goes live at once, then every `livePublishInterval`.
+        let interval = livePublishInterval
         unlocked.liveTask = Task { [weak self] in
+            var wait = min(Duration.seconds(1), interval)
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                do { try await Task.sleep(for: wait) } catch { return }
                 guard let self, !Task.isCancelled else { return }
                 self.publishLive(feed.take(), streaming: feed.isStreaming(), checkedAt: feed.checkedAt, token: token)
+                wait = interval
             }
         }
     }
