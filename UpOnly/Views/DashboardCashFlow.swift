@@ -43,7 +43,7 @@ extension UpOnlyUnlockedPanel {
                     Text(model.pendingAccounting.joined(separator: ", ") + " · " + model.month.title + " not reported yet")
                         .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if let latest = model.latestAccountingMonth, latest != model.month {
-                        Button("View " + latest.title) { model.select(latest) }.buttonStyle(.bordered).controlSize(.small)
+                        Button("View " + latest.title) { model.select(latest) }.buttonStyle(.glass).controlSize(.small)
                     }
                 }.padding(.top, 8)
             }
@@ -204,7 +204,7 @@ extension UpOnlyUnlockedPanel {
                 ManageCard {
                     if latest.isEmpty {
                         UpOnlyRow(title: "Add a transaction", caption: "Or import a bank statement", chevron: true, action: { session.addingInMenu = true }) {
-                            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 24)
+                            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
                         }
                     } else {
                         let byMonth = Dictionary(grouping: latest, by: \.month)
@@ -217,7 +217,7 @@ extension UpOnlyUnlockedPanel {
                                 UpOnlyValueRow(label: entry.label, value: personalEntryAmount(entry)).padding(.vertical, 2)
                             }
                         }
-                        UpOnlyRow(title: entries.count > latest.count ? "See all \(entries.count) transactions" : "See all transactions", divided: true, chevron: true,
+                        UpOnlyRow(title: entries.count > latest.count ? "See all \(entries.count) transactions" : "See all transactions", chevron: true,
                                   action: { manage("Entries") }) { EmptyView() }
                             .accessibilityLabel("See all personal transactions")
                     }

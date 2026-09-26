@@ -29,7 +29,7 @@ struct UpOnlyPanel: View {
         // Fills the popover, pinned to the top, so for the frame before the popover takes a new size (unlocking,
         // locking) the page shows over its own background rather than a strip of the popover's glass.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.regular)
+        .buttonStyle(.glass).controlSize(.regular)
         .background { Color(nsColor: .windowBackgroundColor).ignoresSafeArea() }
         .background(UpOnlyPanelKeyboard(close: {
             // Esc steps back first (switcher, a page in Manage or Add, a drill-in) and closes the menu from the top.
@@ -327,10 +327,8 @@ struct UpOnlyUnlockedPanel: View {
             // A page opened from another page's row has a back box first.
             HStack(spacing: 4) {
                 if let backTitle, !showingSwitcher {
-                    Button { session.dashboardBack() } label: {
-                        Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                            .frame(width: 26, height: 26).background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7)).contentShape(Rectangle())
-                    }.buttonStyle(.plain).padding(.trailing, 4).help("Back to " + backTitle + " (Esc)").accessibilityLabel("Back to " + backTitle)
+                    UpOnlyCircleButton(symbol: "chevron.left", label: "Back to " + backTitle, help: "Back to " + backTitle + " (Esc)") { session.dashboardBack() }
+                        .padding(.trailing, 6)
                 }
                 switcherTitle.layoutPriority(1)
                 Spacer(minLength: 8)
@@ -481,7 +479,7 @@ struct UpOnlyUnlockedPanel: View {
                     session.entryMonthForManagement = month.description
                     session.requestedRateCurrency = currencies.first
                     session.managementSection = "Entries"; session.managementInMenu = true
-                }.buttonStyle(.bordered).disabled(session.isBusy)
+                }.buttonStyle(.glass).disabled(session.isBusy)
             }.controlSize(.small)
         }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity, alignment: .leading).modifier(UpOnlyContentSurface())
     }
@@ -502,7 +500,7 @@ struct UpOnlyUnlockedPanel: View {
                     }
                 }.font(UpOnlyType.body)
             }
-            Button("View transactions") { manage("Entries") }.buttonStyle(.bordered).controlSize(.small)
+            Button("View transactions") { manage("Entries") }.buttonStyle(.glass).controlSize(.small)
         }
     }
     // Every page opens the same way: what the number is on the left and, on Cash flow, the period on the right.
@@ -799,16 +797,16 @@ struct UpOnlyUnlockedPanel: View {
         ManageCard {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 UpOnlyRow(title: row.name, caption: row.detail, captionIsPrivate: row.detailIsAmount, value: row.value, change: row.change,
-                          valueDetail: row.valueDetail, divided: index > 0, chevron: row.chevron, selected: row.selected, options: row.options,
+                          valueDetail: row.valueDetail, chevron: row.chevron, selected: row.selected, options: row.options,
                           action: row.action) { assetBadge(row) }
             }
         }
     }
     /// A row's logo: its bank's, a picture, a coin's or metal's, else its symbol.
     @ViewBuilder func assetBadge(_ row: AssetRow) -> some View {
-        if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 24) }
-        else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 24) }
-        else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 24) }
-        else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 24) }
+        if let bank = row.bank { UpOnlyBankBadge(name: bank, synced: row.synced, image: row.image, size: 28) }
+        else if let image = row.image { UpOnlyProfileImage(data: image, name: row.name, size: 28) }
+        else if let logo = row.logo { UpOnlyAssetBadge(assetID: logo, symbol: row.name, size: 28) }
+        else { UpOnlySymbolBadge(symbol: row.symbol, tint: row.tint, size: 28) }
     }
 }

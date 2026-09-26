@@ -135,9 +135,9 @@ extension UpOnlyUnlockedPanel {
                 }.lineLimit(1).minimumScaleFactor(0.8)
                 Text(caption).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 8)
-                .background(selected ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(selected ? 0.1 : 0.06)))
-                .contentShape(RoundedRectangle(cornerRadius: 10))
+                // The card fill every tile has, a shade deeper for the one on the chart.
+                .background(selected ? Color.primary.opacity(0.11) : UpOnlyContentSurface.fill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
         }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : []).help("Show " + title.lowercased() + " on the chart")
     }
     func companyBankRow(_ bank: BankBalanceGroup, document: VaultDocument?) -> AssetRow {

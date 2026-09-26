@@ -53,7 +53,7 @@ struct UpOnlyDataAttention: View {
             if !report.balances.isEmpty {
                 section("Balances needed") {
                     ForEach(Array(report.balances.enumerated()), id: \.element.id) { index, account in
-                        UpOnlyRow(title: account.name, caption: "Add its balance", divided: index > 0, chevron: true, action: {
+                        UpOnlyRow(title: account.name, caption: "Add its balance", chevron: true, action: {
                             session.startImport(.bankBalances, prefill: true, accountID: account.id)
                         }) {
                             if let image = account.profileImage { UpOnlyProfileImage(data: image, name: account.name, size: 28) }
@@ -66,7 +66,7 @@ struct UpOnlyDataAttention: View {
                 section("Holdings need quantities") {
                     ForEach(Array(report.quantities.enumerated()), id: \.element.id) { index, holding in
                         let metals = session.document?.portfolio(id: holding.portfolioID)?.kind == .metals
-                        UpOnlyRow(title: holding.assetName, caption: metals ? "Add its weight" : "Add its quantity", divided: index > 0, chevron: true, action: {
+                        UpOnlyRow(title: holding.assetName, caption: metals ? "Add its weight" : "Add its quantity", chevron: true, action: {
                             session.startImport(metals ? .metals : .holdings, prefill: true, holdingID: holding.id)
                         }) {
                             if let metal = PreciousMetal.asset(holding.assetID) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
@@ -82,7 +82,7 @@ struct UpOnlyDataAttention: View {
                         if report.pricesNeeded { note("No price or rate for today: " + report.missingPriceLabels.joined(separator: ", ") + ". Check the source is on, has its key, and has updated.") }
                         if !report.accountingNames.isEmpty { note(report.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)
-                    UpOnlyRow(title: "Open Settings", divided: true, chevron: true, action: { session.managementSection = "Sources" }) {
+                    UpOnlyRow(title: "Open Settings", chevron: true, action: { session.managementSection = "Sources" }) {
                         UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 28)
                     }
                 }
@@ -105,10 +105,10 @@ struct UpOnlyDataAttention: View {
                     UpOnlyRow(title: "All of " + month.title + "’s transactions", chevron: true, action: {
                         session.entryMonthForManagement = month.description; session.managementSection = "Entries"
                     }) { UpOnlySymbolBadge(symbol: "list.bullet", tint: UpOnlyTint.cashFlow, size: 28) }
-                    UpOnlyRow(title: "Import a statement", caption: "Transactions from a CSV file", divided: true, chevron: true, action: {
+                    UpOnlyRow(title: "Import a statement", caption: "Transactions from a CSV file", chevron: true, action: {
                         session.startImport(.statements)
                     }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28) }
-                    UpOnlyRow(title: "Add a transaction", divided: true, chevron: true, action: {
+                    UpOnlyRow(title: "Add a transaction", chevron: true, action: {
                         session.entryMonthForManagement = month.description; addEntry()
                     }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
                 }
@@ -168,7 +168,6 @@ struct UpOnlyDataAttention: View {
                                     .font(UpOnlyType.body.weight(.medium).monospacedDigit())
                             }
                         }.padding(.vertical, 6).accessibilityElement(children: .combine)
-                        if source.id != evidence.sources.last?.id { Divider().opacity(0.4) }
                     }
                 }
             }
@@ -180,7 +179,6 @@ struct UpOnlyDataAttention: View {
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(evidence.largest) { item in
                                 evidenceRow(item, document: document)
-                                if item.id != evidence.largest.last?.id { Divider().opacity(0.4) }
                             }
                         }.padding(.trailing, UpOnlyLayout.inset)
                     }.padding(.trailing, -UpOnlyLayout.inset)

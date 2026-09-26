@@ -40,9 +40,9 @@ extension UpOnlyManagement {
                         ManageCard {
                             ForEach(Array(keys.enumerated()), id: \.element) { index, key in
                                 if let members = groups[key], let first = members.first {
-                                    if members.count == 1 && first.externalProfileID == nil { accountRow(first, latest: latest[first.id], divided: index > 0) }
+                                    if members.count == 1 && first.externalProfileID == nil { accountRow(first, latest: latest[first.id]) }
                                     // The heading says whose it is, so a lone Wise profile is just "Wise".
-                                    else { profileRows(first, members: members, latest: latest, divided: index > 0, title: synced == 1 ? "Wise" : nil) }
+                                    else { profileRows(first, members: members, latest: latest, title: synced == 1 ? "Wise" : nil) }
                                 }
                             }
                         }
@@ -97,12 +97,12 @@ extension UpOnlyManagement {
         return try? MoneyInput.multiply(amount, rate, allowingRounding: true)
     }
     /// A manual bank account: its dollar value with its own balance under it, and when it's from. The row updates it.
-    func accountRow(_ account: Account, latest: BankBalanceObservation?, divided: Bool) -> some View {
+    func accountRow(_ account: Account, latest: BankBalanceObservation?) -> some View {
         let native = latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: account.currency) }
         let dollars = latest.flatMap { usd($0.amount.value, currency: account.currency) }.map(UpOnlyFormat.exactMoney)
         return UpOnlyRow(title: account.name, caption: accountCaption([account], date: latest?.observedAt, name: account.name),
                          value: account.currency == "USD" ? native ?? "Add balance" : dollars ?? native ?? "Add balance",
-                         valueDetail: account.currency == "USD" || dollars == nil ? nil : native, divided: divided,
+                         valueDetail: account.currency == "USD" || dollars == nil ? nil : native,
                          action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
             UpOnlyBankBadge(name: account.name, size: 28)
         } menu: {
@@ -120,7 +120,7 @@ extension UpOnlyManagement {
     }
     /// A synced profile is one row like any account: its total in dollars, with how many currencies hold money.
     /// Clicking it lists them. Balances come from the sync, so there's nothing to update by hand.
-    @ViewBuilder func profileRows(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation], divided: Bool, title: String? = nil) -> some View {
+    @ViewBuilder func profileRows(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation], title: String? = nil) -> some View {
         let name = title ?? (AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first))
         let key = first.externalProfileID ?? first.id.uuidString
         // Jars merge into their currency: one figure per currency for the whole profile.
@@ -142,8 +142,7 @@ extension UpOnlyManagement {
         let currencies = codes.count > 3 ? codes.prefix(2).joined(separator: " · ") + " +\(codes.count - 2)" : codes.joined(separator: " · ")
         UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
                   value: total.map(UpOnlyFormat.exactMoney) ?? (funded.isEmpty ? "No money" : "Rate needed"),
-                  valueDetail: funded.count > 1 ? currencies : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
-                  divided: divided, action: funded.count > 1 ? {
+                  valueDetail: funded.count > 1 ? currencies : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) }, action: funded.count > 1 ? {
                       withAnimation(.snappy(duration: 0.2)) { if open { expandedProfiles.remove(key) } else { expandedProfiles.insert(key) } }
                   } : nil) {
             // Your own profile is "Wise", with Wise's logo; a company's profile keeps its own.

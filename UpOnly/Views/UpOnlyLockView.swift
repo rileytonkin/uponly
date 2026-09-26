@@ -23,7 +23,7 @@ struct UpOnlyLockView: View {
                 Toggle("I’ve saved my recovery code somewhere safe", isOn: $savedCode).toggleStyle(.checkbox).font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true)
                 Text("Keep it separately from your encrypted backups.").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Back") { showsRecoveryCode = false }.buttonStyle(.bordered).disabled(session.isBusy)
+                    Button("Back") { showsRecoveryCode = false }.buttonStyle(.glass).disabled(session.isBusy)
                     Spacer(minLength: 4)
                     Button("Create encrypted vault") { Task { await session.create(recovery: recovery) } }
                         .buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction).disabled(session.isBusy || !savedCode)
@@ -51,7 +51,7 @@ struct UpOnlyLockView: View {
                 recoveryField("Recovery code").accessibilityLabel("Recovery code")
                 Button("Recover vault") { Task { await session.recover(code: recoveryText); if session.state == .unlocked { recoveryText = "" } } }
                     .buttonStyle(.glassProminent).disabled(session.isBusy || !codeIsComplete)
-                Button("Back to unlock") { showRecovery = false; recoveryText = ""; session.returnToUnlock() }.buttonStyle(.bordered).disabled(session.isBusy)
+                Button("Back to unlock") { showRecovery = false; recoveryText = ""; session.returnToUnlock() }.buttonStyle(.glass).disabled(session.isBusy)
             } else if session.state == .newVault {
                 UpOnlyWordmark()
                 VStack(alignment: .leading, spacing: 8) {
@@ -78,7 +78,7 @@ struct UpOnlyLockView: View {
                     }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
                     Button { showRestore = true } label: {
                         Text("Restore an encrypted backup…").fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity)
-                    }.buttonStyle(.bordered)
+                    }.buttonStyle(.glass)
                 }.controlSize(.large).disabled(session.isBusy)
             } else if session.canStartOver && session.state == .locked {
                 // Setup stopped after saving the recovery file and before the vault, so there is nothing to unlock.

@@ -40,7 +40,7 @@ struct UpOnlyImportView: View {
         VStack(alignment: .leading, spacing: 16) {
             if let batch = session.importDraft {
                 if usesSummary(batch) {
-                    Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.bordered)
+                    Button("Back to summary") { importDetails = false; beginReview() }.buttonStyle(.glass)
                 } else if !isBalanceUpdate(batch) { batchHeader(batch) }
                 if let message = session.importMessage { Text(message).fixedSize(horizontal: false, vertical: true).font(.callout).foregroundStyle(.secondary) }
                 if session.importLoading {
@@ -71,17 +71,16 @@ struct UpOnlyImportView: View {
                         }
                         ManageCard {
                             ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, row in
-                                if index > 0 { Divider().opacity(0.5) }
                                 rowEditor(row, batch: batch, compact: true)
                             }
-                            if review == nil { addRowItem(batch, divided: true) }
+                            if review == nil { addRowItem(batch) }
                         }
                     } else {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(visibleRows) { row in rowEditor(row, batch: batch, compact: false) }
                     }
                     // Another row is part of the list, not a button under it.
-                    if batch.mode != .statements, review == nil, !usesSummary(batch) { ManageCard { addRowItem(batch, divided: false) } }
+                    if batch.mode != .statements, review == nil, !usesSummary(batch) { ManageCard { addRowItem(batch) } }
                     }
                     if displayedRows(batch).count > pageSize {
                         HStack {
@@ -116,7 +115,7 @@ struct UpOnlyImportView: View {
                     Text("Bring in").font(UpOnlyType.section)
                     ManageCard {
                         ForEach(Array(orderedModes.filter { $0 != .statements }.enumerated()), id: \.element) { index, mode in
-                            UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), divided: index > 0, chevron: true, action: { openMode(mode, bulk: true) }) {
+                            UpOnlyRow(title: bulkTitle(mode), caption: bulkCaption(mode), chevron: true, action: { openMode(mode, bulk: true) }) {
                                 UpOnlySymbolBadge(symbol: mode == .statements ? "doc.text.fill" : mode.kind.symbol, tint: mode.kind.tint, size: 28)
                             }
                         }
@@ -129,8 +128,7 @@ struct UpOnlyImportView: View {
                         ManageCard {
                             ForEach(Array(tracked.enumerated()), id: \.element) { index, mode in
                                 UpOnlyRow(title: mode == .bankBalances ? "All balances" : mode == .holdings ? "All crypto" : "All metals",
-                                          caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table",
-                                          divided: index > 0, chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
+                                          caption: mode == .bankBalances ? "Every account’s balance, in one table" : mode == .holdings ? "Every coin’s quantity, in one table" : "Every metal’s weight, in one table", chevron: true, action: { session.startImport(mode, prefill: true); resetView() }) {
                                     UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: mode.kind.tint, size: 28)
                                 }
                             }
@@ -212,7 +210,6 @@ struct UpOnlyImportView: View {
                         }.padding(.vertical, 8).disabled(busy)
                         if statement, editingStatementAccount != source.id {
                             // One real balance anchors the history rebuilt from these transactions.
-                            Divider().opacity(0.5)
                             HStack(spacing: 8) {
                                 Text("Balance now").font(UpOnlyType.body).foregroundStyle(.secondary)
                                 Spacer(minLength: 8)
@@ -223,7 +220,6 @@ struct UpOnlyImportView: View {
                             }.padding(.vertical, 9).help("Lets Up Only work out the balance on every day these transactions cover.")
                         }
                         if editingStatementAccount == source.id {
-                            Divider().opacity(0.5)
                             VStack(alignment: .leading, spacing: 8) {
                                 UpOnlyOwnerPicker(owner: Binding(get: { source.account.ownerBusinessID }, set: { value in var account = source.account; account.ownerBusinessID = value; setStatementAccount(source, account) }))
                                 HStack(spacing: 8) {
@@ -231,7 +227,7 @@ struct UpOnlyImportView: View {
                                     // A new account starts in the file's own currency; left empty, it goes back to it.
                                     UpOnlyCurrencyField(code: Binding(get: { source.account.currency }, set: { value in var account = source.account; account.currency = value; setStatementAccount(source, account) }),
                                                         fallback: fileCurrency(source) ?? "USD", label: "Account currency").frame(width: 52).textFieldStyle(.roundedBorder)
-                                    Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.bordered)
+                                    Button("Done") { editingStatementAccount = nil; beginReview() }.buttonStyle(.glass)
                                 }
                             }.padding(.vertical, 9)
                         }
@@ -261,7 +257,7 @@ struct UpOnlyImportView: View {
                             UpOnlyNotice(review.globalError ?? review.sourceErrors.values.first ?? "Some rows need a correction.", style: .warning)
                             primaryAction("Fix rows") { showProblems(review) }
                         } else {
-                            Button("Check them one by one") { showProblems(review) }.buttonStyle(.bordered)
+                            Button("Check them one by one") { showProblems(review) }.buttonStyle(.glass)
                         }
                     } else if review.learnedDays > 0 && review.readyRows == 0 {
                         Text("Dates added for \(review.learnedDays.formatted()) saved transactions").font(UpOnlyType.section)
@@ -278,13 +274,13 @@ struct UpOnlyImportView: View {
                                 ForEach(Array(ready.enumerated()), id: \.element.id) { index, row in
                                     if batch.mode == .bankBalances {
                                         UpOnlyRow(title: row.bank.account.name, caption: row.bank.account.currency + " · " + row.bank.date,
-                                                  value: balanceText(row, in: batch) + " " + row.bank.account.currency, divided: index > 0) {
-                                            UpOnlyBankBadge(name: row.bank.account.name, size: 24)
+                                                  value: balanceText(row, in: batch) + " " + row.bank.account.currency) {
+                                            UpOnlyBankBadge(name: row.bank.account.name, size: 28)
                                         }
                                     } else {
                                         UpOnlyRow(title: row.holding.assetName.isEmpty ? row.holding.portfolioName : row.holding.assetName,
-                                                  caption: row.holding.portfolioName + " · " + (review.states[row.id]?.displayText(privacy: session.privacyMode) ?? ""), divided: index > 0) {
-                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 24)
+                                                  caption: row.holding.portfolioName + " · " + (review.states[row.id]?.displayText(privacy: session.privacyMode) ?? "")) {
+                                            UpOnlyAssetBadge(assetID: row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin, symbol: row.holding.assetName, size: 28)
                                         }
                                     }
                                 }
@@ -381,12 +377,12 @@ struct UpOnlyImportView: View {
             UpOnlyFlow(spacing: 8) {
                 if session.importLoading {
                     ProgressView().controlSize(.small)
-                    Button("Cancel reading") { session.cancelImport() }.buttonStyle(.bordered)
+                    Button("Cancel reading") { session.cancelImport() }.buttonStyle(.glass)
                 } else if reviewing {
                     ProgressView().controlSize(.small)
-                    Button("Cancel review") { invalidateReview() }.buttonStyle(.bordered)
+                    Button("Cancel review") { invalidateReview() }.buttonStyle(.glass)
                 } else if review != nil {
-                    Button("Back to editing") { invalidateReview() }.buttonStyle(.bordered)
+                    Button("Back to editing") { invalidateReview() }.buttonStyle(.glass)
                 }
             }.controlSize(.small).font(UpOnlyType.body)
             // The main action, full width like the rest of the app's.
@@ -400,7 +396,6 @@ struct UpOnlyImportView: View {
             }
         }.padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .top) { Divider() }
     }
     private var orderedModes: [ImportMode] {
         ImportMode.allCases.sorted { lhs, rhs in
@@ -432,9 +427,8 @@ struct UpOnlyImportView: View {
         if mode != .statements { addRow() }
     }
     /// The list's own last row for adding another account, coin or metal.
-    private func addRowItem(_ batch: ImportBatchDraft, divided: Bool) -> some View {
-        UpOnlyRow(title: addRowTitle(batch.mode), caption: batch.mode == .bankBalances ? "Another account and its balance" : batch.mode == .metals ? "Another metal and its weight" : "Another coin and its quantity",
-                  divided: divided, action: busy ? nil : { addRow() }) {
+    private func addRowItem(_ batch: ImportBatchDraft) -> some View {
+        UpOnlyRow(title: addRowTitle(batch.mode), caption: batch.mode == .bankBalances ? "Another account and its balance" : batch.mode == .metals ? "Another metal and its weight" : "Another coin and its quantity", action: busy ? nil : { addRow() }) {
             UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: batch.mode == .bankBalances ? 28 : 24)
         }
     }
@@ -534,7 +528,6 @@ struct UpOnlyImportView: View {
     /// one is chosen, and for a signed Amount column, which way positive amounts go. `all` shows every setting.
     @ViewBuilder private func fileQuestions(_ source: ImportSourceDraft, mode: ImportMode, all: Bool = false) -> some View {
         if !mode.isHolding, all || source.unconfirmedDate != nil {
-            Divider().opacity(0.5)
             if let example = source.unconfirmedDate { UpOnlyNotice(dateQuestion(example)).padding(.top, 9) }
             UpOnlyFormRow(label: "Dates") {
                 UpOnlyFormMenu(value: source.dateFormat.title, label: "Date format for " + source.filename) {
@@ -543,7 +536,6 @@ struct UpOnlyImportView: View {
             }
         }
         if all || source.unconfirmedNumber != nil {
-            Divider().opacity(0.5)
             if let example = source.unconfirmedNumber {
                 UpOnlyNotice("Amounts like " + example + " read differently in each number format. Choose the one this file uses.").padding(.top, 9)
             }
@@ -556,7 +548,7 @@ struct UpOnlyImportView: View {
         // The summary asks only when it's on (a card export) or nothing in the file is negative; known banks write
         // money out as negative. The details always show it.
         if mode == .statements, source.hasSignedAmount, all || source.positiveIsOutflow || !ImportParser.signsKnown(source.grid) && !source.hasNegativeAmount {
-            UpOnlyFormRow(label: "Positive amounts are money out", divided: true) {
+            UpOnlyFormRow(label: "Positive amounts are money out") {
                 Toggle("Positive amounts are money out", isOn: Binding(get: { source.positiveIsOutflow }, set: { value in updateSource(source) { $0.positiveIsOutflow = value } }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.mini)
             }.help("Card exports often list purchases as positive amounts and payments as negative.")
@@ -585,10 +577,10 @@ struct UpOnlyImportView: View {
             UpOnlyNotice(count == 1 ? "1 transaction has the same day, description and amount as another." : "\(count.formatted()) transactions have the same day, description and amount as others.")
             ManageCard {
                 UpOnlyRow(title: "Skip all duplicates", caption: "Leave them out of this import", action: busy ? nil : { settleDuplicates(keep: false) }) {
-                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 24)
+                    UpOnlySymbolBadge(symbol: "minus", tint: .secondary, size: 28)
                 }
-                UpOnlyRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", divided: true, action: busy ? nil : { settleDuplicates(keep: true) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 24)
+                UpOnlyRow(title: "Keep all as separate payments", caption: "Each one is a payment of its own", action: busy ? nil : { settleDuplicates(keep: true) }) {
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.cashFlow, size: 28)
                 }
             }
         }

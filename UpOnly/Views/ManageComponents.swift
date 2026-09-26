@@ -29,12 +29,12 @@ struct ManageEmptyState: View {
     }
 }
 
-/// `UpOnlyRow`s in one card, divided as the home list is. Every list uses it, on the dashboard and in Manage.
+/// `UpOnlyRow`s in one card, as the home list is. Every list uses it, on the dashboard and in Manage.
 struct ManageCard<Content: View>: View {
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(spacing: 0) { content() }
-            .padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 2).modifier(UpOnlyContentSurface())
+            .padding(.horizontal, UpOnlyLayout.cardInset).padding(.vertical, 4).modifier(UpOnlyContentSurface())
     }
 }
 /// The quiet "…" at the end of a row.
@@ -52,9 +52,7 @@ struct ManageAddButton: View {
     var label: String
     var action: () -> Void
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "plus").font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary).frame(width: 32, height: 32).contentShape(Circle())
-        }.buttonStyle(.plain).glassEffect(.regular, in: .circle).accessibilityLabel(label).help(label)
+        UpOnlyCircleButton(symbol: "plus", label: label, action: action)
     }
 }
 

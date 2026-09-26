@@ -80,7 +80,7 @@ struct UpOnlyGuidedEntry: View {
             if unchanged {
                 Text(mode == .bankBalances ? "This balance is already saved." : "This quantity is already saved.")
                     .font(UpOnlyType.body).foregroundStyle(.secondary)
-                Button("Done", action: back).buttonStyle(.bordered)
+                Button("Done", action: back).buttonStyle(.glass)
             }
             if let error { Label(error, systemImage: "exclamationmark.circle").font(UpOnlyType.body).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             if working { HStack(spacing: 8) { ProgressView().controlSize(.small); Text(step == 2 ? "Saving…" : "Checking…").font(UpOnlyType.body).foregroundStyle(.secondary) } }
@@ -139,19 +139,19 @@ struct UpOnlyGuidedEntry: View {
             if newAccount { newAccountForm }
             else {
                 let shown = activeAccounts.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
-                if activeAccounts.count > 4 { entryField("Find an account", text: $search, symbol: "magnifyingglass") }
+                if activeAccounts.count > 4 { UpOnlySearchField(placeholder: "Find an account", text: $search) }
                 ManageCard {
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, item in
                         // Each with its bank's logo, its latest balance and when that was.
                         let latest = session.document?.bankBalances.filter { $0.accountID == item.id }.max { $0.observedAt < $1.observedAt }
                         UpOnlyRow(title: item.name, caption: latest.map { "Updated " + UpOnlyManagement.when($0.observedAt) } ?? item.currency,
-                                  value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: item.currency) }, divided: index > 0, chevron: true, action: {
+                                  value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: item.currency) }, chevron: true, action: {
                             row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
                         }) {
                             UpOnlyBankBadge(name: item.name, size: 28)
                         }
                     }
-                    UpOnlyRow(title: "New account", caption: "Name it and pick its currency", divided: !shown.isEmpty, chevron: true, action: {
+                    UpOnlyRow(title: "New account", caption: "Name it and pick its currency", chevron: true, action: {
                         if row.bank.account.existingID != nil { row.bank.account.existingID = nil; row.bank.account.name = "" }
                         if row.bank.account.currency.isEmpty { row.bank.account.currency = "USD" }; newAccount = true
                     }) { addBadge }
@@ -160,7 +160,7 @@ struct UpOnlyGuidedEntry: View {
         } else if mode == .metals {
             ManageCard {
                 ForEach(Array(PreciousMetal.selectable.enumerated()), id: \.element) { index, metal in
-                    UpOnlyRow(title: metal.name, caption: metal.rawValue, divided: index > 0, chevron: true, action: {
+                    UpOnlyRow(title: metal.name, caption: metal.rawValue, chevron: true, action: {
                         row.holding.coin = metal.rawValue; row.holding.assetName = metal.name; chose()
                     }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
                 }
@@ -169,13 +169,13 @@ struct UpOnlyGuidedEntry: View {
             VStack(spacing: 16) {
                 ManageCard {
                     UpOnlyFormRow(label: "CoinGecko ID") { formField("e.g. bitcoin", text: $row.holding.resolvedCoinID).accessibilityLabel("CoinGecko ID") }
-                    UpOnlyFormRow(label: "Name", divided: true) { formField("e.g. Bitcoin", text: $row.holding.assetName).accessibilityLabel("Display name") }
+                    UpOnlyFormRow(label: "Name") { formField("e.g. Bitcoin", text: $row.holding.assetName).accessibilityLabel("Display name") }
                 }
                 primary("Continue") { row.holding.coin = row.holding.resolvedCoinID; chose() }.disabled(row.holding.resolvedCoinID.isEmpty)
             }
         } else {
             let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-            entryField("Search coins", text: $search, symbol: "magnifyingglass")
+            UpOnlySearchField(placeholder: "Search coins", text: $search)
                 .accessibilityLabel("Search coins").focused($searchFocused).onAppear { searchFocused = true }
                 .task(id: query.lowercased()) {
                     if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
@@ -184,7 +184,7 @@ struct UpOnlyGuidedEntry: View {
             let suggestions = query.isEmpty ? Array(ImportCoins.common.prefix(6)) : ImportCoins.suggestions(search, coins: coins)
             ManageCard {
                 ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, coin in
-                    UpOnlyRow(title: coin.name, caption: coin.symbol.uppercased(), divided: index > 0, chevron: true, action: {
+                    UpOnlyRow(title: coin.name, caption: coin.symbol.uppercased(), chevron: true, action: {
                         row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; chose()
                     }) {
                         UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
@@ -193,8 +193,7 @@ struct UpOnlyGuidedEntry: View {
                 }
                 // A coin the list doesn't know is found by its CoinGecko ID.
                 if !query.isEmpty {
-                    UpOnlyRow(title: "Another coin", caption: suggestions.isEmpty ? "No match here, so enter its CoinGecko ID" : "Enter its CoinGecko ID",
-                              divided: !suggestions.isEmpty, chevron: true, action: {
+                    UpOnlyRow(title: "Another coin", caption: suggestions.isEmpty ? "No match here, so enter its CoinGecko ID" : "Enter its CoinGecko ID", chevron: true, action: {
                         row.holding.resolvedCoinID = query.lowercased().replacingOccurrences(of: " ", with: "-"); exactCoin = true
                     }) { addBadge }
                 }
@@ -212,12 +211,12 @@ struct UpOnlyGuidedEntry: View {
                 }
                 // Banks matching what's typed, each with its logo; picking one fills in its name and usual currency.
                 ForEach(nameSuggestions) { bank in
-                    UpOnlyRow(title: bank.name, caption: bank.caption, divided: true, action: { choose(bank) }) {
-                        UpOnlyBankBadge(name: bank.name, size: 24)
+                    UpOnlyRow(title: bank.name, caption: bank.caption, action: { choose(bank) }) {
+                        UpOnlyBankBadge(name: bank.name, size: 28)
                     }
                     .accessibilityIdentifier("BankSuggestion-" + bank.id)
                 }
-                UpOnlyFormRow(label: "Currency", divided: true) {
+                UpOnlyFormRow(label: "Currency") {
                     UpOnlyCurrencyField(code: $row.bank.account.currency).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
                 }
                 ownerRow($row.bank.account.ownerBusinessID)
@@ -254,14 +253,14 @@ struct UpOnlyGuidedEntry: View {
                 }
                 if let buys {
                     // Several buys: each its amount and day, its cost from that day's average price.
-                    ForEach(Array(buys.enumerated()), id: \.element.id) { index, _ in buyRow(index, divided: mode == .metals || index > 0) }
-                    UpOnlyRow(title: "Add another buy", divided: true, action: { self.buys?.append(BuyLine()) }) { addBadge }
+                    ForEach(Array(buys.enumerated()), id: \.element.id) { index, _ in buyRow(index) }
+                    UpOnlyRow(title: "Add another buy", action: { self.buys?.append(BuyLine()) }) { addBadge }
                 } else {
-                    UpOnlyFormRow(label: "Date", divided: mode == .metals) { UpOnlyDateButton(date: mode == .bankBalances ? date : holdingDate) }
+                    UpOnlyFormRow(label: "Date") { UpOnlyDateButton(date: mode == .bankBalances ? date : holdingDate) }
                     if mode != .bankBalances {
                         // What it cost, if you like, so the app can show the gain since. Left empty with a past date,
                         // the cost is that day's average price times the amount, shown here until typed over.
-                        UpOnlyFormRow(label: "Cost", note: estimatedCost == nil ? "optional" : closeDay + " price", divided: true) {
+                        UpOnlyFormRow(label: "Cost", note: estimatedCost == nil ? "optional" : closeDay + " price") {
                             UpOnlyValueField(estimatedCost.map { readBack($0, fraction: 2...2) } ?? "0.00", text: $row.holding.paid).textFieldStyle(.plain).multilineTextAlignment(.trailing)
                                 .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 110).accessibilityLabel("Amount paid")
                             UpOnlyCurrencyField(code: $row.holding.paidCurrency, label: "Currency paid").textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium))
@@ -300,7 +299,7 @@ struct UpOnlyGuidedEntry: View {
             }
         }
         if !portfolios.isEmpty, row.holding.portfolioID == nil {
-            UpOnlyFormRow(label: "Name", divided: true) {
+            UpOnlyFormRow(label: "Name") {
                 formField(mode == .metals ? "Home safe" : "Ledger or Coinbase", text: $row.holding.portfolioName).accessibilityLabel("Portfolio name")
             }
         }
@@ -316,11 +315,11 @@ struct UpOnlyGuidedEntry: View {
     private var portfolioList: some View {
         ManageCard {
             ForEach(Array(portfolios.enumerated()), id: \.element.id) { index, portfolio in
-                UpOnlyRow(title: portfolioLabel(portfolio), caption: portfolioCaption(portfolio), divided: index > 0, chevron: true, action: {
+                UpOnlyRow(title: portfolioLabel(portfolio), caption: portfolioCaption(portfolio), chevron: true, action: {
                     row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name; choosingPortfolio = false; step = 1
                 }) { portfolioBadge }
             }
-            UpOnlyRow(title: "New portfolio", caption: "Name it on the next page", divided: true, chevron: true, action: {
+            UpOnlyRow(title: "New portfolio", caption: "Name it on the next page", chevron: true, action: {
                 row.holding.portfolioID = nil; row.holding.portfolioName = ""; choosingPortfolio = false; step = 1
             }) { addBadge }
         }
@@ -382,12 +381,11 @@ struct UpOnlyGuidedEntry: View {
             if let price = await PublicPrices.dayPrice(assetID: asset, symbol: coin?.symbol, day: day, today: unitPrice, key: settings.coinGeckoKey) { dayPrices[dayKey(day)] = price }
         }
     }
-    private func buyRow(_ index: Int, divided: Bool) -> some View {
+    private func buyRow(_ index: Int) -> some View {
         let quantity = Binding(get: { buys?.indices.contains(index) == true ? buys![index].quantity : "" }, set: { if buys?.indices.contains(index) == true { buys![index].quantity = $0 } })
         let day = Binding(get: { buys?.indices.contains(index) == true ? buys![index].date : UTCDay.today() }, set: { if buys?.indices.contains(index) == true { buys![index].date = $0 } })
         let line = buys?.indices.contains(index) == true ? buys![index] : BuyLine()
         return VStack(spacing: 0) {
-            if divided { Divider().opacity(0.5) }
             HStack(spacing: 8) {
                 UpOnlyDateButton(date: day)
                 Spacer(minLength: 8)
@@ -439,11 +437,11 @@ struct UpOnlyGuidedEntry: View {
             buysHero(review: true)
             ManageCard {
                 ForEach(Array((buys ?? []).filter { (parsed($0.quantity) ?? 0) > 0 }.sorted { $0.date < $1.date }.enumerated()), id: \.element.id) { index, line in
-                    UpOnlyFormRow(label: line.date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)), divided: index > 0) {
+                    UpOnlyFormRow(label: line.date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone))) {
                         formValue(readBack(parsed(line.quantity) ?? 0, fraction: 0...18) + " " + unitText + (buyCost(line).map { " · " + UpOnlyFormat.exactMoney($0) } ?? ""), isPrivate: true)
                     }
                 }
-                UpOnlyFormRow(label: "Portfolio", divided: true) { formValue(chosenPortfolioLabel, badge: row.holding.portfolioID == nil ? "New" : nil) }
+                UpOnlyFormRow(label: "Portfolio") { formValue(chosenPortfolioLabel, badge: row.holding.portfolioID == nil ? "New" : nil) }
             }
             ManageCard {
                 VStack(alignment: .leading, spacing: 10) {
@@ -658,11 +656,11 @@ struct UpOnlyGuidedEntry: View {
             ManageCard {
                 if mode == .bankBalances {
                     UpOnlyFormRow(label: "Account") { formValue(row.bank.account.name, badge: row.bank.account.existingID == nil ? "New" : nil) }
-                    UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
+                    UpOnlyFormRow(label: "Date") { formValue(asOf) }
                 } else {
                     UpOnlyFormRow(label: "Portfolio") { formValue(chosenPortfolioLabel, badge: row.holding.portfolioID == nil ? "New" : nil) }
-                    UpOnlyFormRow(label: "Date", divided: true) { formValue(asOf) }
-                    UpOnlyFormRow(label: "Cost", note: costFromClose ? closeDay + " price" : nil, divided: true) {
+                    UpOnlyFormRow(label: "Date") { formValue(asOf) }
+                    UpOnlyFormRow(label: "Cost", note: costFromClose ? closeDay + " price" : nil) {
                         formValue(paid.isEmpty ? "Not recorded" : paidValue + " " + row.holding.paidCurrency.uppercased(), muted: paid.isEmpty, isPrivate: !paid.isEmpty)
                     }
                 }
@@ -728,7 +726,7 @@ struct UpOnlyGuidedEntry: View {
     @ViewBuilder private func ownerRow(_ owner: Binding<String?>) -> some View {
         let books = session.document?.businessAccounting ?? []
         if !books.isEmpty || owner.wrappedValue != nil {
-            UpOnlyFormRow(label: "Owner", divided: true) {
+            UpOnlyFormRow(label: "Owner") {
                 UpOnlyFormMenu(value: owner.wrappedValue.map { id in books.first { $0.id == id }?.name ?? "Company unavailable" } ?? "Personal", label: "Asset owner") {
                     Button("Personal") { owner.wrappedValue = nil }
                     ForEach(books) { book in Button(book.name) { owner.wrappedValue = book.id } }
@@ -746,14 +744,6 @@ struct UpOnlyGuidedEntry: View {
     /// A text field inside a form row, typed at the right like the other rows' values.
     private func formField(_ placeholder: String, text: Binding<String>) -> some View {
         TextField(placeholder, text: text).textFieldStyle(.plain).multilineTextAlignment(.trailing).font(UpOnlyType.row.weight(.medium))
-    }
-    private func entryField(_ placeholder: String, text: Binding<String>, size: CGFloat = 14, symbol: String? = nil) -> some View {
-        HStack(spacing: 8) {
-            if let symbol { Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.secondary) }
-            TextField(placeholder, text: text, axis: .vertical)
-                .font(.system(size: size, weight: size > 18 ? .medium : .regular)).textFieldStyle(.plain)
-        }.padding(.vertical, 10)
-            .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.12)).frame(height: 1) }
     }
     private func primary(_ title: String, shortcut: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity).frame(height: 28) }

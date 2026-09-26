@@ -126,8 +126,8 @@ struct ImportRowEditor: View {
                 Text(issue).fixedSize(horizontal: false, vertical: true).font(.caption).foregroundStyle(.orange)
                 Button("I’ve corrected this row’s fields") { row.parseError = nil }.font(.caption)
             }
-        }.padding(mode == .statements ? 14 : 20).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-            .overlay(RoundedRectangle(cornerRadius: UpOnlyLayout.radius).strokeBorder(selected ? mode.kind.tint : Color.primary.opacity(0.06)))
+        }.padding(mode == .statements ? 14 : 20).modifier(UpOnlyContentSurface())
+            .overlay { if selected { RoundedRectangle(cornerRadius: UpOnlyLayout.radius, style: .continuous).strokeBorder(mode.kind.tint) } }
             .textFieldStyle(.roundedBorder)
     }
     private var statementFields: some View {
