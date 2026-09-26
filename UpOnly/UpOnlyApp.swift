@@ -11,6 +11,8 @@ import Observation
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    /// A recovery code copied less than a minute ago would otherwise outlive the app on the clipboard.
+    func applicationWillTerminate(_ notification: Notification) { UpOnlyRecoveryClipboard.clear() }
 }
 
 @main

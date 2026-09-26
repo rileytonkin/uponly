@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import UpOnly
@@ -209,3 +210,24 @@ struct PrivacyFormatTests {
         #expect(UpOnlyChartCanvas(points: small).axisWidth < UpOnlyChartCanvas(points: large).axisWidth)
     }
 }
+
+@MainActor struct RecoveryClipboardTests {
+    @Test("A copied recovery code is marked concealed and transient, and cleared on quit unless something else was copied since")
+    func copyAndClear() {
+        // A pasteboard of the test's own, so this Mac's clipboard is never touched. Only its types are read.
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("org.uponly.tests." + UUID().uuidString))
+        defer { pasteboard.releaseGlobally() }
+        let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"), transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+        #expect(UpOnlyRecoveryClipboard.copy(.random(), to: pasteboard))
+        #expect(Set(pasteboard.types ?? []).isSuperset(of: [.string, concealed, transient]))
+        UpOnlyRecoveryClipboard.clear()
+        #expect(pasteboard.types?.isEmpty != false)
+        // Something copied since stays.
+        #expect(UpOnlyRecoveryClipboard.copy(.random(), to: pasteboard))
+        pasteboard.clearContents(); pasteboard.setString("something else", forType: .string)
+        let change = pasteboard.changeCount
+        UpOnlyRecoveryClipboard.clear()
+        #expect(pasteboard.changeCount == change && pasteboard.types?.contains(.string) == true)
+    }
+}
+
