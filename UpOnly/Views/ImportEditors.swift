@@ -273,7 +273,7 @@ struct ImportRowEditor: View {
                     }
                     if matches.isEmpty { Text("No match. Try another name, or enter the exact coin ID in your form.").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 }
-            }.frame(height: min(280, CGFloat(max(matches.count, 1)) * 64))
+            }.scrollEdgeEffectStyle(.soft, for: .vertical).frame(height: min(280, CGFloat(max(matches.count, 1)) * 64))
             }
             Text("Select the exact asset; tickers can be shared.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(18).frame(width: 310)

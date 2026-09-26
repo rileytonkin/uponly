@@ -7,9 +7,8 @@ extension UpOnlyManagement {
             if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].ownerBusinessID = owner }
         } }
     }
-    /// Crypto and Metals share one layout: a card per portfolio, a row per holding. `nested` inside a Manage group,
-    /// whose heading already says Crypto or Metals, so each portfolio's own heading steps down.
-    func holdings(_ kind: TrackedKind, nested: Bool = false) -> some View {
+    /// Manage's Crypto and Metals groups: a card per portfolio under its own quiet heading, a row per holding.
+    func holdings(_ kind: TrackedKind) -> some View {
         let metals = kind == .metals
         let mode: ImportMode = metals ? .metals : .holdings
         let addTitle = metals ? "Add gold or silver" : "Add a coin"
@@ -24,7 +23,7 @@ extension UpOnlyManagement {
                                  symbol: kind.symbol, tint: kind.tint, actionTitle: addTitle) { session.startImport(mode) }
             }
             if let doc = session.document {
-                ForEach(active) { portfolio in portfolioCard(portfolio, mode: mode, document: doc, now: now, canMove: canMove, nested: nested) }
+                ForEach(active) { portfolio in portfolioCard(portfolio, mode: mode, document: doc, now: now, canMove: canMove) }
                 if metals {
                     ForEach(PreciousMetal.allCases.filter { metal in doc.holdings.contains { $0.assetID == metal.assetID && $0.isActive(at: now) && doc.portfolio(id: $0.portfolioID)?.isActive(at: now) == true } }, id: \.self) { metal in
                         DisclosureGroup(metal.name + " price history") {
@@ -37,7 +36,7 @@ extension UpOnlyManagement {
         }
     }
     /// A portfolio: its name and options above one card of its holdings, as the dashboard lists them.
-    func portfolioCard(_ portfolio: Portfolio, mode: ImportMode, document doc: VaultDocument, now: Date, canMove: Bool, nested: Bool = false) -> some View {
+    func portfolioCard(_ portfolio: Portfolio, mode: ImportMode, document doc: VaultDocument, now: Date, canMove: Bool) -> some View {
         let holdings = doc.activeHoldings(in: portfolio.id, at: now)
         // One valuation per portfolio; each row reads its own value from it.
         let values = NetWorthCalculator.value(at: now, scope: .portfolio(portfolio.id), document: doc).components
@@ -48,18 +47,15 @@ extension UpOnlyManagement {
         let plainName = portfolio.name.caseInsensitiveCompare(pageTitle) == .orderedSame
             || doc.portfolios.contains { !$0.isArchived && $0.id != portfolio.id && $0.kind == portfolio.kind && $0.name.caseInsensitiveCompare(portfolio.name) == .orderedSame }
         let total = values.isEmpty ? nil : AssetOwnership.sum(values)
+        let title = plainName ? owner ?? "Personal" : portfolio.name + (owner.map { " · " + $0 } ?? "")
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(plainName ? owner ?? "Personal" : portfolio.name).font(nested ? UpOnlyType.body.weight(.medium) : UpOnlyType.section)
-                    .foregroundStyle(nested ? .secondary : .primary).lineLimit(1)
-                if !plainName, let owner { Text(owner).font(UpOnlyType.body).foregroundStyle(.secondary).lineLimit(1) }
-                Spacer(minLength: 8)
-                if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
+            manageSubheader(title, total: total) {
                 ManageRowMenu(label: "More options for " + portfolio.name) {
                     Button(addTitle + "…") { session.startImport(mode, portfolioID: portfolio.id) }
                     if holdings.count > 1 { Button(mode == .metals ? "Update all weights…" : "Update all holdings…") { session.startImport(mode, prefill: true, portfolioID: portfolio.id) } }
                     Button("Rename…") { editor = .renamePortfolio(portfolio) }
                     ownerMenu(current: portfolio.ownerBusinessID?.nilIfEmpty) { setPortfolioOwner(portfolio, owner: $0) }
+                    Button("Show on dashboard") { showOnDashboard(.portfolio(portfolio.id)) }
                     Divider()
                     Button("Archive portfolio…", role: .destructive) { archive = portfolio }
                 }
@@ -76,12 +72,12 @@ extension UpOnlyManagement {
             }
         }
     }
-    /// A holding: its logo, name, quantity and what it cost on one line, and its value over its gain on what was paid.
-    /// The row updates it.
+    /// A holding: its logo, name and quantity, and its value over its gain on what was paid. The row updates it; what
+    /// was paid is under Purchases.
     func holdingRow(_ holding: Holding, mode: ImportMode, value: Decimal?, document doc: VaultDocument, now: Date, canMove: Bool, divided: Bool) -> some View {
         let quantity = ManageFormat.amount(doc.effectiveQuantity(holdingID: holding.id, at: now) ?? 0, of: holding, catalog: session.catalog)
         let summary = HoldingPerformance.summary(holdingID: holding.id, valueUSD: value, document: doc)
-        return UpOnlyRow(title: holding.assetName, caption: [quantity, UpOnlyFormat.paid(summary, metal: mode == .metals)].compactMap { $0 }.joined(separator: " · "), captionIsPrivate: true,
+        return UpOnlyRow(title: holding.assetName, caption: quantity, captionIsPrivate: true,
                          value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", change: summary.returnFraction, divided: divided,
                          action: { session.startImport(mode, prefill: true, holdingID: holding.id) }) {
             UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 24)
@@ -89,7 +85,8 @@ extension UpOnlyManagement {
             ManageRowMenu(label: "More options for " + holding.assetName) {
                 Button(mode == .metals ? "Update weight…" : "Update quantity…") { session.startImport(mode, prefill: true, holdingID: holding.id) }
                 Button("Purchases…") { editor = .purchases(holding) }
-                if canMove { Button("Move coins…") { editor = .move(holding) } }
+                if canMove { Button("Move to another portfolio…") { editor = .move(holding) } }
+                Button("Show on dashboard") { showOnDashboard(.portfolio(holding.portfolioID)) }
             }
         }
     }
