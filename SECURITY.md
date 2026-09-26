@@ -52,7 +52,7 @@ Vault files are capped at 128 MiB. A save that would exceed that limit is refuse
 
 ## Repository
 
-No personal or financial data, API credentials, signing certificates, recovery codes, vault files or user containers belong in this repository, including its tests and history; tests and the separate preview target use fictional names and figures only. Production starts empty. `.gitignore` excludes vault, backup, sealed-cache, diagnostics, statement and signing files, and CI refuses tracked files that look like them or like secrets, build-script phases, packages, and entitlements beyond sandbox, network client, user-selected files and the Keychain group.
+No personal or financial data, API credentials, signing certificates, recovery codes, vault files or user containers belong in this repository, including its tests and history; tests and the separate preview target use fictional names and figures only. Production starts empty. `.gitignore` excludes vault, backup, sealed-cache, diagnostics, statement and signing files, and CI refuses tracked files that look like them or like secrets, build-script phases, packages, and entitlements beyond sandbox, network client, user-selected files and the Keychain group. CI runs on a self-hosted runner on the owner's build Mac, registered to this repository only; because the repository is public, a fork pull request's workflow needs the owner's approval before it runs, its jobs skip pull requests from other repositories, and the workflow uses no secrets.
 
 ## Limits
 

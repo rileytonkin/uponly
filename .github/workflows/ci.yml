@@ -1,5 +1,18 @@
 name: CI
 
+# Runs on the workhorse mini, like Amora's CI: a self-hosted runner registered to this repository only (label
+# `uponly`, set up by scripts/mini_ci_runner_add.sh). Hosted spend stays $0 and nothing waits in GitHub's macOS queue.
+#
+# This repository is PUBLIC, and a self-hosted runner runs whatever a workflow says, on the mini. What keeps outside
+# code off it:
+#  * The control: repository settings require the owner's approval before a workflow from any outside contributor's
+#    fork runs (Settings, Actions, General). GitHub runs a fork PR's own copy of this file, so the `if:` below alone
+#    would not be enough.
+#  * Defence in depth: each job's `if:` skips pull requests from other repositories, so even an approved fork run
+#    reaches no runner. To test a contribution, push it to a branch here.
+#  * No secrets: none are used, checkout keeps no credentials, and the token is read-only.
+# Never add secrets, `pull_request_target`, `workflow_run` or `workflow_dispatch` here.
+
 on:
   pull_request:
   push:
@@ -15,7 +28,8 @@ concurrency:
 jobs:
   guard:
     name: Guard
-    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, uponly]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,21 +40,21 @@ jobs:
 
   test:
     name: Test and build
-    runs-on: macos-26
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, uponly]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Select the newest Xcode
+      # The mini's selected Xcode, never switched here: Amora's builds share the machine and its xcode-select.
+      - name: Check Xcode
         run: |
           set -euo pipefail
-          xcode=$(ls -d /Applications/Xcode_*.app | grep -viE 'beta|_rc' | sort -V | tail -n 1)
-          sudo xcode-select -s "$xcode/Contents/Developer"
           xcodebuild -version
           major=$(xcodebuild -version | awk 'NR == 1 { split($2, v, "."); print v[1] }')
           if [ "$major" -lt 26 ]; then
-            echo "::error::Xcode 26 or later is required; the newest here is $xcode"
+            echo "::error::Xcode 26 or later is required; the mini's selected Xcode is older"
             exit 1
           fi
       - name: Test (UpOnlyFixture)
