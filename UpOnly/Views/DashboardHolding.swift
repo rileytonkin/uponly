@@ -35,9 +35,10 @@ extension UpOnlyUnlockedPanel {
             } else {
                 Text(component?.missing == "quote" ? "Price needed" : "Quantity needed").font(UpOnlyType.title)
             }
-            // How much, at what price: the price is public, so privacy mode only hides the amount.
+            // How much, at what price, after the coin's logo: the price is public, so privacy mode only hides the amount.
             if let quantity {
                 HStack(spacing: 5) {
+                    UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: symbol, size: 16).padding(.trailing, 1)
                     UpOnlyPrivateText(UpOnlyFormat.quantityText(quantity, symbol: symbol, metal: metal))
                     if let value, let price = UpOnlyFormat.unitPrice(quantity: quantity, valueUSD: value, metal: metal) { Text("at " + price) }
                 }.font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).padding(.top, 4)
@@ -116,13 +117,12 @@ extension UpOnlyUnlockedPanel {
                               caption: UpOnlyFormat.quantityText(lot.quantity.value, symbol: symbol, metal: metal)
                                 + (buyPrice(lot, costUSD: costUSD, metal: metal).map { " at " + $0 } ?? ""),
                               captionIsPrivate: true,
-                              value: profit.map { UpOnlyFormat.movement($0, fraction: nil, cents: true) } ?? "Price needed", change: gain, divided: index > 0) {
+                              value: profit.map { UpOnlyFormat.movement($0, fraction: nil, cents: true) } ?? "Price needed", change: gain) {
                         UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: symbol, size: 28)
                     }
                 }
-                UpOnlyRow(title: lots.isEmpty ? "Add what you paid" : "Add a purchase", caption: lots.isEmpty ? "See the gain or loss on each buy" : nil,
-                          divided: !lots.isEmpty, chevron: true, action: { openHoldingEditor(.purchases(holding.id)) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 24)
+                UpOnlyRow(title: lots.isEmpty ? "Add what you paid" : "Add a purchase", caption: lots.isEmpty ? "See the gain or loss on each buy" : nil, chevron: true, action: { openHoldingEditor(.purchases(holding.id)) }) {
+                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
                 }
             }
         }
@@ -152,9 +152,8 @@ extension UpOnlyUnlockedPanel {
                         // The date is the title; amounts are hidden in privacy mode.
                         UpOnlyRow(title: UpOnlyFormat.utcDate(change.effectiveAt),
                                   caption: "Now " + UpOnlyFormat.quantityText(change.quantity.value, symbol: symbol, metal: metal), captionIsPrivate: true,
-                                  value: index == 0 ? "First" : (delta >= 0 ? "+" : "−") + UpOnlyFormat.quantityText(abs(delta), symbol: symbol, metal: metal),
-                                  divided: position > 0) {
-                            UpOnlySymbolBadge(symbol: delta >= 0 ? "arrow.up.right" : "arrow.down.right", tint: delta >= 0 ? UpOnlyTint.gain : UpOnlyTint.loss, size: 24)
+                                  value: index == 0 ? "First" : (delta >= 0 ? "+" : "−") + UpOnlyFormat.quantityText(abs(delta), symbol: symbol, metal: metal)) {
+                            UpOnlySymbolBadge(symbol: delta >= 0 ? "arrow.up.right" : "arrow.down.right", tint: delta >= 0 ? UpOnlyTint.gain : UpOnlyTint.loss, size: 28)
                         }
                     }
                 }

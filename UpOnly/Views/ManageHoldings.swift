@@ -61,24 +61,24 @@ extension UpOnlyManagement {
             ManageCard {
                 if holdings.isEmpty {
                     UpOnlyRow(title: addTitle, caption: "Nothing in this portfolio yet", action: { session.startImport(mode, portfolioID: portfolio.id) }) {
-                        UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 24)
+                        UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
                     }
                 }
                 ForEach(Array(holdings.enumerated()), id: \.element.id) { index, holding in
-                    holdingRow(holding, mode: mode, value: values.first { $0.id == holding.id }?.usdValue?.value, document: doc, now: now, canMove: canMove, divided: index > 0)
+                    holdingRow(holding, mode: mode, value: values.first { $0.id == holding.id }?.usdValue?.value, document: doc, now: now, canMove: canMove)
                 }
             }
         }
     }
     /// A holding: its logo, name and quantity, and its value over its gain on what was paid. The row updates it; what
     /// was paid is under Purchases.
-    func holdingRow(_ holding: Holding, mode: ImportMode, value: Decimal?, document doc: VaultDocument, now: Date, canMove: Bool, divided: Bool) -> some View {
+    func holdingRow(_ holding: Holding, mode: ImportMode, value: Decimal?, document doc: VaultDocument, now: Date, canMove: Bool) -> some View {
         let quantity = ManageFormat.amount(doc.effectiveQuantity(holdingID: holding.id, at: now) ?? 0, of: holding, catalog: session.catalog)
         let summary = HoldingPerformance.summary(holdingID: holding.id, valueUSD: value, document: doc)
         return UpOnlyRow(title: holding.assetName, caption: quantity, captionIsPrivate: true,
-                         value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", change: summary.returnFraction, divided: divided,
+                         value: value.map(UpOnlyFormat.exactMoney) ?? "Price needed", change: summary.returnFraction,
                          action: { session.startImport(mode, prefill: true, holdingID: holding.id) }) {
-            UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 24)
+            UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: quantity.split(separator: " ").last.map(String.init) ?? holding.assetName, size: 28)
         } menu: {
             ManageRowMenu(label: "More options for " + holding.assetName) {
                 Button(mode == .metals ? "Update weight…" : "Update quantity…") { session.startImport(mode, prefill: true, holdingID: holding.id) }

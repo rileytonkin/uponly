@@ -12,12 +12,7 @@ extension UpOnlyManagement {
         let searching = !entrySearch.isEmpty || !entryProfile.isEmpty || !entryAccount.isEmpty
         return VStack(alignment: .leading, spacing: 12) {
             // Adding is the + beside the title; search sits alone, like a list's own search field.
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search transactions", text: $entrySearch).textFieldStyle(.plain).accessibilityLabel("Search transactions")
-                    .onChange(of: entrySearch) { entryLimit = 100 }
-                if !entrySearch.isEmpty { Button { entrySearch = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search") }
-            }.font(UpOnlyType.body).padding(.horizontal, 10).padding(.vertical, 8).modifier(UpOnlyContentSurface())
+            UpOnlySearchField(placeholder: "Search transactions", text: $entrySearch).onChange(of: entrySearch) { entryLimit = 100 }
             UpOnlyFlow(spacing: 12) {
                 Picker("Month", selection: $entryMonth) {
                     Text("All months").tag("")
@@ -57,13 +52,12 @@ extension UpOnlyManagement {
                         Text(MonthKey(month)?.title ?? month).font(UpOnlyType.section)
                         ManageCard {
                             ForEach(rows) { entry in
-                                if entry.id != rows.first?.id { Divider().opacity(0.5) }
                                 transactionRow(entry, accountNames: accountNames)
                             }
                         }
                     }
                 }
-                if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.bordered) }
+                if matching.count > entryLimit { Button("Show more transactions") { entryLimit += 100 }.buttonStyle(.glass) }
             }
         }
     }

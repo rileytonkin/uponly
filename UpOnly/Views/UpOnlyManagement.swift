@@ -172,7 +172,7 @@ struct UpOnlyManagement: View {
             }
         }
         .environment(\.upOnlyScrollHeader, confirming ? nil : header)
-        .buttonStyle(.bordered).buttonBorderShape(.capsule)
+        .buttonStyle(.glass)
         .onAppear {
             // Reopening the menu shows this page again without recreating it; keep where it came from and the import's baseline.
             guard !configured else { return }
@@ -327,11 +327,11 @@ struct UpOnlyManagement: View {
                 ManageCard {
                     if hasData(.cashFlow) {
                         UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
-                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 24)
+                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 28)
                         }
                     }
-                    UpOnlyRow(title: "Settings", caption: sourcesSummary, divided: hasData(.cashFlow), chevron: true, action: { session.managementSection = "Security" }) {
-                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 24)
+                    UpOnlyRow(title: "Settings", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Security" }) {
+                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 28)
                     }
                 }
             }

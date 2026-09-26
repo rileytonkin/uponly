@@ -79,8 +79,7 @@ struct UpOnlyEntryFlow: View {
                     ManageCard {
                         ForEach(Array([ImportMode.bankBalances, .holdings, .metals].enumerated()), id: \.element) { index, mode in
                             UpOnlyRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Metals",
-                                      caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight",
-                                      divided: index > 0, chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
+                                      caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight", chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
                                 UpOnlyEntryBadge(mode: mode, size: 28)
                             }
                         }
@@ -89,7 +88,7 @@ struct UpOnlyEntryFlow: View {
                         UpOnlyRow(title: "Transaction", caption: "Spending or income, typed in", chevron: true, action: { addingEntry = true }) {
                             UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 28)
                         }
-                        UpOnlyRow(title: "Bank statement", caption: "Import transactions from a CSV file", divided: true, chevron: true, action: importStatement) {
+                        UpOnlyRow(title: "Bank statement", caption: "Import transactions from a CSV file", chevron: true, action: importStatement) {
                             UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28)
                         }
                     }
@@ -143,7 +142,7 @@ struct UpOnlyEntryFlow: View {
                         session.addingInMenu = false; session.managementInMenu = false
                     }) { summary.badge.view(size: 28) }
                 }
-                UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", divided: summary.destination != nil, chevron: true,
+                UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", chevron: true,
                           action: { saved = nil }) {
                     UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
                 }
@@ -313,11 +312,9 @@ struct UpOnlyFormMenu<Content: View>: View {
 struct UpOnlyFormRow<Trailing: View>: View {
     var label: String
     var note: String? = nil
-    var divided = false
     @ViewBuilder var trailing: () -> Trailing
     var body: some View {
         VStack(spacing: 0) {
-            if divided { Divider().opacity(0.5) }
             HStack(spacing: 8) {
                 Text(label).font(UpOnlyType.row).foregroundStyle(.secondary)
                 if let note { Text(note).font(UpOnlyType.caption).foregroundStyle(.tertiary) }

@@ -95,12 +95,13 @@ nonisolated enum UpOnlyStandIn {
     }
 }
 
-/// One track with the chosen segment raised, as market apps do: the dashboard's chart range and any other small
-/// choice of period.
+/// Plain labels with the chosen one in a soft pill that slides to the next choice, as market apps do: the chart's
+/// range and any other small choice of period.
 struct UpOnlySegments<Value: Hashable>: View {
     let options: [(value: Value, title: String, spoken: String)]
     @Binding var selection: Value
     var label: String
+    @Namespace private var pill
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.value) { option in
@@ -108,16 +109,30 @@ struct UpOnlySegments<Value: Hashable>: View {
                 Button { selection = option.value } label: {
                     Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
                         .foregroundStyle(chosen ? Color.primary : Color.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 22)
-                        .background {
-                            if chosen { Capsule().fill(Color(nsColor: .controlBackgroundColor)).shadow(color: .black.opacity(0.12), radius: 1, y: 0.5) }
-                        }
+                        .frame(maxWidth: .infinity, minHeight: 26)
+                        .background { if chosen { Capsule().fill(Color.primary.opacity(0.08)).matchedGeometryEffect(id: "pill", in: pill) } }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain)
                     .accessibilityLabel(option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
             }
-        }.padding(2).background(Color.primary.opacity(0.06), in: Capsule())
+        }.animation(.snappy(duration: 0.25), value: selection)
             .accessibilityElement(children: .contain).accessibilityLabel(label)
+    }
+}
+
+/// Every search: a filled pill with the magnifier, and a clear button once there's text.
+struct UpOnlySearchField: View {
+    var placeholder: String
+    @Binding var text: String
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(placeholder, text: $text).textFieldStyle(.plain).accessibilityLabel(placeholder)
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Clear search")
+            }
+        }.font(UpOnlyType.row).padding(.horizontal, 12).padding(.vertical, 8)
+            .background(UpOnlyContentSurface.fill, in: Capsule())
     }
 }
 
@@ -140,7 +155,7 @@ struct UpOnlyStatTile: View {
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .modifier(UpOnlyContentSurface())
             .accessibilityElement(children: .combine)
     }
 }
@@ -464,7 +479,6 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
     var change: Decimal? = nil
     /// A second amount under the value, such as a foreign balance under its dollar value. Hidden in privacy mode.
     var valueDetail: String? = nil
-    var divided = false
     var chevron = false
     /// Lightly tinted: the page showing, or the account a company page is focused on.
     var selected = false
@@ -476,7 +490,6 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
     @Environment(UpOnlySession.self) private var session
     var body: some View {
         VStack(spacing: 0) {
-            if divided { Divider().opacity(0.5) }
             HStack(spacing: 6) {
                 Button { action?() } label: {
                     HStack(spacing: 10) {
@@ -532,10 +545,9 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
 extension UpOnlyRow where Options == EmptyView {
     /// A row with nothing to offer beyond its own click (and any right-click options).
     init(title: String, caption: String? = nil, captionIsPrivate: Bool = false, value: String? = nil, change: Decimal? = nil,
-         valueDetail: String? = nil, divided: Bool = false, chevron: Bool = false, selected: Bool = false,
+         valueDetail: String? = nil, chevron: Bool = false, selected: Bool = false,
          options: [(title: String, action: () -> Void)] = [], action: (() -> Void)? = nil, @ViewBuilder badge: @escaping () -> Badge) {
-        self.init(title: title, caption: caption, captionIsPrivate: captionIsPrivate, value: value, change: change, valueDetail: valueDetail,
-                  divided: divided, chevron: chevron, selected: selected, options: options, action: action, badge: badge, menu: { EmptyView() })
+        self.init(title: title, caption: caption, captionIsPrivate: captionIsPrivate, value: value, change: change, valueDetail: valueDetail, chevron: chevron, selected: selected, options: options, action: action, badge: badge, menu: { EmptyView() })
     }
 }
 /// A source of personal transactions: a bank account, a Wise profile, or "Added by hand".

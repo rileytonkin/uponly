@@ -7,7 +7,7 @@ enum UpOnlyLayout {
     /// Side margin of every page in the menu panel: dashboard, Add, Manage, setup and unlock.
     static let inset: CGFloat = 16
     static let cardInset: CGFloat = 12
-    static let radius: CGFloat = 14
+    static let radius: CGFloat = 16
 }
 /// Type roles shared by every page, so the same kind of text looks the same everywhere.
 enum UpOnlyType {
@@ -26,6 +26,20 @@ enum UpOnlyType {
     /// Captions, eyebrows and secondary row lines.
     static let caption = Font.system(size: 11)
 }
+/// The round glass button every header uses: Back, +, and the eye and "…" beside them.
+struct UpOnlyCircleButton: View {
+    var symbol: String
+    var label: String
+    /// The tooltip, when it says more than the label (a shortcut).
+    var help: String? = nil
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
+                .frame(width: 32, height: 32).contentShape(Circle())
+        }.buttonStyle(.plain).glassEffect(.regular, in: .circle).accessibilityLabel(label).help(help ?? label)
+    }
+}
 struct UpOnlyPageHeader: View {
     let title: String
     var backLabel = "Back"
@@ -34,21 +48,15 @@ struct UpOnlyPageHeader: View {
     let back: () -> Void
     var subtitle: String?
     var trailing: AnyView?
-    /// The same header as the dashboard's: a small box to go back (or ✕ to cancel an editor) and the page's title
-    /// beside it at the dashboard's title size, with the page's own actions on the right.
+    /// The same header as the dashboard's: a round glass button to go back (or ✕ to cancel an editor) and the page's
+    /// title beside it at the dashboard's title size, with the page's own actions on the right.
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: back) {
-                HStack(spacing: 8) {
-                    Image(systemName: backTitle == "Cancel" ? "xmark" : backTitle == "Done" ? "checkmark" : "chevron.left")
-                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).frame(width: 26, height: 26)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(UpOnlyType.pageTitle).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
-                        if let subtitle { Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-                    }
-                }.contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel(backLabel).help(backLabel)
+        HStack(spacing: 10) {
+            UpOnlyCircleButton(symbol: backTitle == "Cancel" ? "xmark" : backTitle == "Done" ? "checkmark" : "chevron.left", label: backLabel, action: back)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(UpOnlyType.pageTitle).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
+                if let subtitle { Text(subtitle).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
             Spacer(minLength: 8)
             if let trailing { trailing }
         }.controlSize(.regular).frame(minHeight: 32)
@@ -75,10 +83,12 @@ struct UpOnlyConfirmation: View {
     }
 }
 
+/// Every card and tile: a soft filled shape with no outline or lines inside, so rows are grouped by the card and
+/// spaced apart rather than ruled off. The fill shows on the light and the dark panel alike.
 struct UpOnlyContentSurface: ViewModifier {
+    static let fill = Color.primary.opacity(0.05)
     func body(content: Content) -> some View {
-        content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius))
-            .overlay(RoundedRectangle(cornerRadius: UpOnlyLayout.radius).strokeBorder(Color.primary.opacity(0.06)))
+        content.background(Self.fill, in: RoundedRectangle(cornerRadius: UpOnlyLayout.radius, style: .continuous))
     }
 }
 /// One look for problems on every page: a warning asks for a fix; an error says something failed.
@@ -204,7 +214,7 @@ struct UpOnlySetup: View {
             UpOnlySetupHeader(step: 2, symbol: "arrow.triangle.2.circlepath", title: "Keep values current",
                               subtitle: "Up Only can fetch reference exchange rates and gold and silver prices while it runs. Your balances never leave this Mac.")
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 24)
+                UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", size: 28)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Automatic prices and exchange rates").font(UpOnlyType.row.weight(.medium))
                     Text(automatic ? "Updates while the app runs." : "You can turn this on later in Manage.").font(UpOnlyType.caption).foregroundStyle(.secondary)
@@ -221,12 +231,12 @@ struct UpOnlySetup: View {
                 }.buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction)
                 Button { Task { await finish(addData: false) } } label: {
                     Text("Skip for now").frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).controlSize(.large)
+                }.buttonStyle(.glass).controlSize(.large)
             }.disabled(saving || session.isBusy)
             if let error { UpOnlyNotice(error, style: .error) }
             if let message = session.setupProgressMessage {
                 UpOnlyNotice(message)
-                Button("Save progress again") { session.checkpointSetup(progress) }.buttonStyle(.bordered).controlSize(.small)
+                Button("Save progress again") { session.checkpointSetup(progress) }.buttonStyle(.glass).controlSize(.small)
             }
             if saving { ProgressView().controlSize(.small) }
         }.padding(UpOnlyLayout.inset).frame(maxWidth: 380).fixedSize(horizontal: false, vertical: true)
@@ -253,7 +263,6 @@ struct UpOnlySourceRow: View {
     enum Kind: Hashable { case wise, crypto, metals, fx }
     let kind: Kind
     @Binding var isOn: Bool
-    var divided = false
     @Environment(UpOnlySession.self) private var session
     private var title: String {
         switch kind { case .wise: "Wise"; case .crypto: "Crypto prices"; case .metals: "Gold & silver prices"; case .fx: "Exchange rates" }
@@ -324,9 +333,8 @@ struct UpOnlySourceRow: View {
     var body: some View {
         let status = self.status
         VStack(spacing: 0) {
-            if divided { Divider().opacity(0.5) }
             HStack(spacing: 10) {
-                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 24)
+                UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(UpOnlyType.row.weight(.medium)).lineLimit(1)
                     HStack(spacing: 5) {
@@ -405,7 +413,7 @@ struct UpOnlySources: View {
                 Text("Add an account or holding to see price options.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 ManageCard {
-                    ForEach(Array(kinds.enumerated()), id: \.element) { index, kind in UpOnlySourceRow(kind: kind, isOn: binding(kind), divided: index > 0) }
+                    ForEach(Array(kinds.enumerated()), id: \.element) { index, kind in UpOnlySourceRow(kind: kind, isOn: binding(kind)) }
                 }
                 // The arrow turns while anything is updating.
                 Button(action: updateNow) {
@@ -413,7 +421,7 @@ struct UpOnlySources: View {
                         Image(systemName: "arrow.clockwise").symbolEffect(.rotate, options: .repeat(.continuous), isActive: session.refreshing)
                     }.frame(maxWidth: .infinity)
                 }
-                    .buttonStyle(.bordered).controlSize(.large).disabled(session.isBusy || session.refreshing)
+                    .buttonStyle(.glass).controlSize(.large).disabled(session.isBusy || session.refreshing)
             }
             if let failure { UpOnlyNotice(failure, style: .error) }
             else if let status = message ?? session.sourceMessage {

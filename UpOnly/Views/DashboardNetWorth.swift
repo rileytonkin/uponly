@@ -78,7 +78,7 @@ extension UpOnlyUnlockedPanel {
             if let valuation, valuation.missing.contains(where: { $0.reason == "ownership" }) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(ownershipMessage(valuation, at: snapshot.interval.end)).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("Open Accounts") { manage("Accounts") }.buttonStyle(.bordered).controlSize(.small)
+                    Button("Open Accounts") { manage("Accounts") }.buttonStyle(.glass).controlSize(.small)
                 }.padding(.top, 12)
             }
             if let valuation, valuation.missing.contains(where: { $0.reason == "fx" }) {

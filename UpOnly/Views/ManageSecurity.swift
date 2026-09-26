@@ -15,27 +15,25 @@ extension UpOnlyManagement {
             ManageCard {
                 UpOnlyRow(title: "Lock now", caption: "Also locks after 5 idle minutes",
                           action: { session.lockAndClose() }) {
-                    UpOnlySymbolBadge(symbol: "lock.fill", size: 24)
+                    UpOnlySymbolBadge(symbol: "lock.fill", size: 28)
                 }
-                UpOnlyRow(title: "New recovery code", caption: "Replace it if someone may have seen it",
-                          divided: true, chevron: true, action: { openSecurityPage(.recoveryCode) }) {
-                    UpOnlySymbolBadge(symbol: "key.fill", size: 24)
+                UpOnlyRow(title: "New recovery code", caption: "Replace it if someone may have seen it", chevron: true, action: { openSecurityPage(.recoveryCode) }) {
+                    UpOnlySymbolBadge(symbol: "key.fill", size: 28)
                 }
             }
             ManageCard {
                 UpOnlyRow(title: "Export encrypted backup", caption: "Keep it apart from your recovery code",
                           action: { Task { await session.exportBackup() } }) {
-                    UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 24)
+                    UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 28)
                 }
-                UpOnlyRow(title: "Restore from a backup", caption: "Your current vault is kept beside it",
-                          divided: true, chevron: true, action: { openSecurityPage(.restore) }) {
-                    UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 24)
+                UpOnlyRow(title: "Restore from a backup", caption: "Your current vault is kept beside it", chevron: true, action: { openSecurityPage(.restore) }) {
+                    UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 28)
                 }
             }
             ManageCard {
                 UpOnlyRow(title: "Write diagnostics file", caption: "Names and dates, no amounts, unencrypted",
                           action: { diagnosticsMessage = session.writeDiagnostics() }) {
-                    UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 24)
+                    UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 28)
                 }
             }
             if let diagnosticsMessage { Text(diagnosticsMessage).font(UpOnlyType.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
