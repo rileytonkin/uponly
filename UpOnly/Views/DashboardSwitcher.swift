@@ -33,18 +33,17 @@ extension UpOnlyUnlockedPanel {
         guard let document = session.document else { return [] }
         let before = start?.components ?? []
         let groups = BankBalanceGroup.groups(current, document: document)
-        let groupsBefore = Dictionary(BankBalanceGroup.groups(before, document: document).map { ($0.id, $0.components) }, uniquingKeysWith: { first, _ in first })
         var rows = groups.map { group -> SelectionRow in
             let parts = group.components + (group.businessID.map { companyHoldings(current, companyID: $0) } ?? [])
-            let then = (groupsBefore[group.id] ?? []) + (group.businessID.map { companyHoldings(before, companyID: $0) } ?? [])
             let total = AssetOwnership.sum(parts)
             let name = group.businessID.map(companyName) ?? group.name
-            // A company's row shows the whole company; say when only part of it is yours, as All assets counts.
+            // A company's row shows the whole company; say when only part of it is yours, as All assets counts. A bank
+            // or company row has no change beside it: cash moves with deposits and spending, not with a market.
             let owned = group.businessID.flatMap { id in document.businessAccounting?.first { $0.id == id }?.ownership(at: AssetOwnership.month(at: date).description) }
                 .flatMap { $0.numerator < $0.denominator ? "You own " + $0.label : nil }
             return SelectionRow(id: group.id, selection: .bankGroup(group.id), section: group.businessID == nil ? "Accounts" : "Companies", name: name,
                                 image: group.businessID == nil ? session.personalImage : group.image, symbol: group.businessID == nil ? "building.columns.fill" : "building.2.fill", tint: group.businessID == nil ? UpOnlyTint.netWorth : UpOnlyTint.company,
-                                value: total, valueText: total.map(UpOnlyFormat.exactMoney) ?? Self.needed(parts), change: PeriodChange(parts: parts, then: then),
+                                value: total, valueText: total.map(UpOnlyFormat.exactMoney) ?? Self.needed(parts), change: nil,
                                 personal: AssetOwnership.personalTotal(parts, at: date, document: document), detail: owned)
         }
         let companies = Set(groups.compactMap(\.businessID))

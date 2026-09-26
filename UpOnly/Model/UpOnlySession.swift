@@ -1268,9 +1268,17 @@ final class UpOnlySession {
             }
             if preview == "missing-prices" { fixture.quotes = []; fixture.dailyValuations = [] }
             fixture.settings.privacyMode = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_PRIVACY"] == "1"
+            // Two crypto portfolios with one name, yours and a company's, as when each keeps its own "Crypto".
+            if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_TWIN_PORTFOLIO"] == "1", let first = fixture.portfolios.first(where: { $0.kind == .crypto }) {
+                for index in fixture.portfolios.indices where fixture.portfolios[index].id == first.id { fixture.portfolios[index].name = "Crypto" }
+                fixture.portfolios.append(Portfolio(name: "Crypto", kind: .crypto, ownerBusinessID: "northwind"))
+            }
             fixture.generation = opened.document.generation + 1
             try await vault.commit(fixture, expectedGeneration: opened.document.generation, sessionID: opened.sessionID)
             publish(fixture, freshUnlock: true)
+            if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_TWIN_PORTFOLIO"] == "1", let personal = fixture.portfolios.first(where: { $0.name == "Crypto" && $0.ownerBusinessID == nil }) {
+                dashboardSelection = .portfolio(personal.id)
+            }
             if preview.hasPrefix("performance") {
                 let selected = ProcessInfo.processInfo.environment["UPONLY_PERFORMANCE_SCOPE"] ?? "all"
                 monthModel?.selectScope(selected == "all" ? .all : selected == "personal" ? .personal : .business(selected))

@@ -145,7 +145,6 @@ extension PublicPrices {
             if (error as? PriceError) == .rateLimited { limited.insert(source) }
         }
         if includeCurrent && document.settings.automaticPrices && crypto.isEmpty { result.sourceIssues["crypto"] = "No coins are tracked yet. Add a crypto holding under Manage." }
-        if includeCurrent && document.settings.automaticMetals && metals.isEmpty { result.sourceIssues["metals"] = "No gold or silver is tracked yet. Add a holding under Manage." }
         if includeCurrent && document.settings.automaticPrices && !crypto.isEmpty {
             do {
                 // Each coin's last saved price, to check Binance's against.
