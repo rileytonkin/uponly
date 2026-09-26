@@ -266,6 +266,14 @@ final class UpOnlySession {
     @ObservationIgnored private var screenLockObserver: ScreenLockObserver?
     @ObservationIgnored private var inactivityTimer: DispatchSourceTimer?
     @ObservationIgnored private var eventMonitor: Any?
+    /// The preview app never streams; `UPONLY_PREVIEW_LIVE=1` shows the live dot anyway, to check how it looks.
+    var previewLive: Bool {
+        #if UPONLY_FIXTURE
+        ProcessInfo.processInfo.environment["UPONLY_PREVIEW_LIVE"] == "1"
+        #else
+        false
+        #endif
+    }
     /// How often streamed prices reach the screen while the menu is open: often enough to feel live, calm enough to read.
     /// Tests shorten it.
     @ObservationIgnored var livePublishInterval: Duration = .seconds(5)

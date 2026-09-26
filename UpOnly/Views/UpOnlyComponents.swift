@@ -48,13 +48,17 @@ struct UpOnlyAmount: View {
     }
 }
 
-/// The dot on 24H while a page's prices stream in with the menu open, as trading apps mark the live range: small, green,
-/// pulsing (still, with Reduce Motion). It says nothing about the figures, so it shows in privacy mode too. The segment's
-/// spoken label says "live" for it.
+/// Whether the page on show has prices streaming in: its headline sets it, the title reads it.
+struct UpOnlyLivePage: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+/// The dot after a page's name while its prices stream in with the menu open: small, green, pulsing (still, with Reduce
+/// Motion). It says nothing about the figures, so it shows in privacy mode too. The title's spoken label says "live".
 struct UpOnlyLiveDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Image(systemName: "circle.fill").font(.system(size: 5)).foregroundStyle(UpOnlyTint.gain)
+        Image(systemName: "circle.fill").font(.system(size: 7)).foregroundStyle(UpOnlyTint.gain)
             .symbolEffect(.pulse, options: .repeat(.continuous), isActive: !reduceMotion)
             .accessibilityHidden(true)
             .help("Live: prices update every 5 seconds while the menu is open")
@@ -67,26 +71,21 @@ struct UpOnlySegments<Value: Hashable>: View {
     let options: [(value: Value, title: String, spoken: String)]
     @Binding var selection: Value
     var label: String
-    /// The choice that shows live values right now, marked with a live dot.
-    var live: Value? = nil
     @Namespace private var pill
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.value) { option in
                 let chosen = selection == option.value
                 Button { selection = option.value } label: {
-                    HStack(spacing: 3) {
-                        Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
-                        if live == option.value { UpOnlyLiveDot().transition(.opacity) }
-                    }
+                    Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
                         .foregroundStyle(chosen ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity, minHeight: 26)
                         .background { if chosen { Capsule().fill(Color.white.opacity(0.12)).matchedGeometryEffect(id: "pill", in: pill) } }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain)
-                    .accessibilityLabel(live == option.value ? option.spoken + ", live" : option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
+                    .accessibilityLabel(option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
             }
-        }.animation(.snappy(duration: 0.25), value: selection).animation(.snappy(duration: 0.3), value: live)
+        }.animation(.snappy(duration: 0.25), value: selection)
             .accessibilityElement(children: .contain).accessibilityLabel(label)
     }
 }

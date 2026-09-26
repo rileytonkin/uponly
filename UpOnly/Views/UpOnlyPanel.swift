@@ -171,6 +171,8 @@ struct UpOnlyUnlockedPanel: View {
     /// Height a page other than All assets has spare below its content, given to its chart (at most 140 pt more).
     @State var chartRoom: CGFloat = 0
     @State var switcherListHeight: CGFloat = 0
+    /// The page's live state, from its headline.
+    @State var livePage = false
     enum CompanyChart { case balance, profit }
     /// The net worth scope of the current selection: a portfolio, or everything (bank groups have their own page).
     var scope: ValuationScope {
@@ -288,6 +290,7 @@ struct UpOnlyUnlockedPanel: View {
                 }
             }
         }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 16)
+        .onPreferenceChange(UpOnlyLivePage.self) { live in MainActor.assumeIsolated { livePage = live } }
         // A shorter page gives what's left of the height to its chart, rather than leaving it empty at the foot.
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
             let natural = height - (home ? 0 : chartRoom)
@@ -338,6 +341,8 @@ struct UpOnlyUnlockedPanel: View {
             }.frame(minHeight: 32)
         }
     }
+    /// Whether the page on show has prices streaming in, as its headline reports (`UpOnlyLivePage`).
+    var titleIsLive: Bool { !showingSwitcher && (livePage || session.previewLive) }
     /// The page's name is the switcher: a quiet chevron after it opens every page, and turns over while it's open.
     var switcherTitle: some View {
         Button { showingSwitcher.toggle() } label: {
@@ -348,13 +353,15 @@ struct UpOnlyUnlockedPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                    // Centred on the name's lowercase letters rather than sat on its baseline.
+                    if titleIsLive { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }.transition(.opacity) }
                     Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
                 }
                 if let owner = title.owner { Text(owner).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
-            }.contentShape(Rectangle())
+            }.contentShape(Rectangle()).animation(.snappy(duration: 0.3), value: titleIsLive)
         }.buttonStyle(.plain)
-            .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
+            .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle + (titleIsLive ? ", live prices" : "")).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
             .accessibilityIdentifier("DashboardSwitcher").keyboardShortcut("k", modifiers: .command)
             .help("Choose what to show (⌘K)")
     }
@@ -514,15 +521,14 @@ struct UpOnlyUnlockedPanel: View {
         }.frame(minHeight: 26)
     }
     /// 24H 7D 30D 1Y All above the chart.
-    /// With a live dot on 24H while the page's prices stream in (`UpOnlySession.isLive`), as trading apps mark the live range.
-    func rangeControl(live: Bool = false) -> some View {
+    var rangeControl: some View {
         UpOnlySegments(options: WorthRange.allCases.map { ($0, $0.title, $0.spokenTitle) },
-                       selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range",
-                       live: live ? .day : nil)
+                       selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range")
     }
-    /// A page's headline figure.
-    func headlineAmount(_ value: Decimal) -> some View {
-        UpOnlyAmount(value: value, cents: true)
+    /// A page's headline figure. Whether its prices are streaming in (`UpOnlySession.isLive`) goes up to the title,
+    /// which shows the live dot after the page's name.
+    func headlineAmount(_ value: Decimal, live: Bool) -> some View {
+        UpOnlyAmount(value: value, cents: true).preference(key: UpOnlyLivePage.self, value: live)
     }
     func eyebrow(_ title: String) -> some View {
         Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
