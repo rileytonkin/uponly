@@ -37,7 +37,7 @@ extension UpOnlyUnlockedPanel {
                     eyebrow(title).frame(minHeight: 22, alignment: .leading)
                 }
                 if let focusTotal {
-                    headlineAmount(focusTotal, live: session.isLive(focusParts))
+                    headlineAmount(focusTotal)
                     // A portfolio in focus moves with its market, so it keeps its percentage; cash doesn't.
                     let market = if case .portfolio = companyFocus { true } else { false }
                     let assets = change.map { changeStat($0, percent: market) }
@@ -75,7 +75,7 @@ extension UpOnlyUnlockedPanel {
             // One chart. Assets shows the selected account, portfolio or everything; Profit / loss shows the accounting months.
             if hasAssetChart || companyID != nil {
                 VStack(alignment: .leading, spacing: 8) {
-                    rangeControl
+                    rangeControl(live: session.isLive(focusParts))
                     if showProfit {
                         if let book {
                             let totals = rangeTotals(book)

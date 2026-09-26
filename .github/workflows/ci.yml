@@ -47,6 +47,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Builds share one DerivedData on the mini that outlives the run, so each run compiles only what changed (a clean
+      # build took most of the job). Only this repository's own branches reach this runner, the same trust as the code.
       # The mini's selected Xcode, never switched here: Amora's builds share the machine and its xcode-select.
       - name: Check Xcode
         run: |
@@ -62,19 +64,19 @@ jobs:
           xcodebuild test -quiet
           -project UpOnly.xcodeproj -scheme UpOnlyFixture
           -destination 'platform=macOS'
-          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          -derivedDataPath "$HOME/Library/Caches/uponly-ci/DerivedData"
       - name: Build the public app (UpOnly, Debug, unsigned)
         run: >-
           xcodebuild build -quiet
           -project UpOnly.xcodeproj -scheme UpOnly -configuration Debug
           -destination 'platform=macOS'
-          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          -derivedDataPath "$HOME/Library/Caches/uponly-ci/DerivedData"
           CODE_SIGNING_ALLOWED=NO
       - name: Build the private app (UpOnly + UPONLY_PERSONAL, Debug, unsigned)
         run: >-
           xcodebuild build -quiet
           -project UpOnly.xcodeproj -scheme UpOnly -configuration Debug
           -destination 'platform=macOS'
-          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          -derivedDataPath "$HOME/Library/Caches/uponly-ci/DerivedData"
           CODE_SIGNING_ALLOWED=NO
           SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) UPONLY_PERSONAL'
