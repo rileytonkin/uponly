@@ -60,6 +60,7 @@
 		84DF70ADD95669722498D825 /* UpOnlyComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 640C7860FF50431DB36B6B05 /* UpOnlyComponents.swift */; };
 		BA6DD83D18765F1301101FE7 /* UpOnlyLockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D667F68325B8F056D1DAF43 /* UpOnlyLockView.swift */; };
 		79918E8DC6B4C0A7077AAAB0 /* DashboardCompany.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF57952FC1E7E1B75B44786 /* DashboardCompany.swift */; };
+		B1C2D3E4F5A6B7C8D9E0F1A2 /* DashboardHolding.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* DashboardHolding.swift */; };
 		B66086C274E569640C8592E9 /* DashboardNetWorth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AC61ED88610A6AD031E464D /* DashboardNetWorth.swift */; };
 		4A0970D59C12FF7E7BA224C9 /* DashboardCashFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C688DE98A37CE631E5EDBDB6 /* DashboardCashFlow.swift */; };
 		70A047A9799C6518D4107A53 /* VaultDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5DDA7CD990580655671FCA1 /* VaultDependencies.swift */; };
@@ -93,6 +94,7 @@
 		543FAEF8B280DD3329EC073C /* UpOnlyComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 640C7860FF50431DB36B6B05 /* UpOnlyComponents.swift */; };
 		A52B8830596CED800CA5961B /* UpOnlyLockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D667F68325B8F056D1DAF43 /* UpOnlyLockView.swift */; };
 		FF4D600AFA77B638227B06D0 /* DashboardCompany.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF57952FC1E7E1B75B44786 /* DashboardCompany.swift */; };
+		C1D2E3F4A5B6C7D8E9F0A1B2 /* DashboardHolding.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* DashboardHolding.swift */; };
 		DBCA022A515059B82CECF375 /* DashboardNetWorth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AC61ED88610A6AD031E464D /* DashboardNetWorth.swift */; };
 		7FDBC4F9E2E368973EAAAA32 /* DashboardCashFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C688DE98A37CE631E5EDBDB6 /* DashboardCashFlow.swift */; };
 		DE6608A0C1C8539CB3E6DE2D /* NetWorthCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A96F7B1FE84B960918B4DF7 /* NetWorthCalculator.swift */; };
@@ -155,6 +157,7 @@
 		640C7860FF50431DB36B6B05 /* UpOnlyComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyComponents.swift; path = Views/UpOnlyComponents.swift; sourceTree = "<group>"; };
 		8D667F68325B8F056D1DAF43 /* UpOnlyLockView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = UpOnlyLockView.swift; path = Views/UpOnlyLockView.swift; sourceTree = "<group>"; };
 		7BF57952FC1E7E1B75B44786 /* DashboardCompany.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DashboardCompany.swift; path = Views/DashboardCompany.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* DashboardHolding.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DashboardHolding.swift; path = Views/DashboardHolding.swift; sourceTree = "<group>"; };
 		6AC61ED88610A6AD031E464D /* DashboardNetWorth.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DashboardNetWorth.swift; path = Views/DashboardNetWorth.swift; sourceTree = "<group>"; };
 		C688DE98A37CE631E5EDBDB6 /* DashboardCashFlow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DashboardCashFlow.swift; path = Views/DashboardCashFlow.swift; sourceTree = "<group>"; };
 		2F61E0FC8DB57B2ABA69756A /* UpOnly.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = UpOnly.entitlements; sourceTree = "<group>"; };
@@ -278,6 +281,7 @@
 				640C7860FF50431DB36B6B05 /* UpOnlyComponents.swift */,
 				8D667F68325B8F056D1DAF43 /* UpOnlyLockView.swift */,
 				7BF57952FC1E7E1B75B44786 /* DashboardCompany.swift */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* DashboardHolding.swift */,
 				6AC61ED88610A6AD031E464D /* DashboardNetWorth.swift */,
 				C688DE98A37CE631E5EDBDB6 /* DashboardCashFlow.swift */,
 				299AEE2C5DAF4B1624371F8C /* UpOnlyManagement.swift */,
@@ -481,6 +485,7 @@
 				543FAEF8B280DD3329EC073C /* UpOnlyComponents.swift in Sources */,
 				A52B8830596CED800CA5961B /* UpOnlyLockView.swift in Sources */,
 				FF4D600AFA77B638227B06D0 /* DashboardCompany.swift in Sources */,
+				C1D2E3F4A5B6C7D8E9F0A1B2 /* DashboardHolding.swift in Sources */,
 				DBCA022A515059B82CECF375 /* DashboardNetWorth.swift in Sources */,
 				7FDBC4F9E2E368973EAAAA32 /* DashboardCashFlow.swift in Sources */,
 				1E8A9C8FA6DFAB2ABA41A75D /* UpOnlyManagement.swift in Sources */,
@@ -544,6 +549,7 @@
 				84DF70ADD95669722498D825 /* UpOnlyComponents.swift in Sources */,
 				BA6DD83D18765F1301101FE7 /* UpOnlyLockView.swift in Sources */,
 				79918E8DC6B4C0A7077AAAB0 /* DashboardCompany.swift in Sources */,
+				B1C2D3E4F5A6B7C8D9E0F1A2 /* DashboardHolding.swift in Sources */,
 				B66086C274E569640C8592E9 /* DashboardNetWorth.swift in Sources */,
 				4A0970D59C12FF7E7BA224C9 /* DashboardCashFlow.swift in Sources */,
 				02B0B7026E9B8FD38D282227 /* UpOnlyManagement.swift in Sources */,

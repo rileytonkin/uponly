@@ -81,7 +81,9 @@ final class UpOnlySession {
     private(set) var sourceIssues: [String: String] { get { unlocked.sourceIssues } set { unlocked.sourceIssues = newValue } }
     /// What the dashboard shows, chosen with the switcher: everything, one bank group ("personal" or a company's
     /// id), one portfolio, or cash flow. Kept here so a trip to Manage or Add returns to the same page.
-    enum DashboardSelection: Equatable { case all, bankGroup(String), portfolio(UUID), cashFlow }
+    enum DashboardSelection: Equatable { case all, bankGroup(String), portfolio(UUID), holding(UUID), cashFlow }
+    /// A form on Manage asked for from a dashboard page: a holding's purchases, or moving it.
+    enum HoldingRequest: Equatable { case purchases(UUID), move(UUID) }
     var dashboardSelection: DashboardSelection { get { unlocked.dashboardSelection } set { unlocked.dashboardSelection = newValue } }
     /// The switcher sheet over the dashboard. Esc closes it before the menu, and closing the menu closes it.
     var showingSwitcher: Bool { get { unlocked.showingSwitcher } set { unlocked.showingSwitcher = newValue } }
@@ -154,6 +156,7 @@ final class UpOnlySession {
     var managementSection: String { get { unlocked.managementSection } set { unlocked.managementSection = newValue } }
     var entryMonthForManagement: String { get { unlocked.entryMonthForManagement } set { unlocked.entryMonthForManagement = newValue } }
     var requestedRateCurrency: String? { get { unlocked.requestedRateCurrency } set { unlocked.requestedRateCurrency = newValue } }
+    var requestedHoldingEditor: HoldingRequest? { get { unlocked.requestedHoldingEditor } set { unlocked.requestedHoldingEditor = newValue } }
     private var vault: VaultStore
     @ObservationIgnored private var liveAuthenticator: LiveAuthenticator?
     private(set) var authenticationContext: LAContext?
@@ -595,6 +598,9 @@ final class UpOnlySession {
         switch selection {
         case .all, .cashFlow: return true
         case .portfolio(let id): return document.portfolio(id: id)?.isActive(at: date) == true
+        case .holding(let id):
+            guard let holding = document.holdings.first(where: { $0.id == id }) else { return false }
+            return holding.isActive(at: date) && document.portfolio(id: holding.portfolioID)?.isActive(at: date) == true
         case .bankGroup(let id):
             return document.accounts.contains { document.isBankTracked($0.id, at: date) && (AssetOwnership.businessID(for: $0, in: document) ?? "personal") == id }
         }
@@ -1268,6 +1274,17 @@ final class UpOnlySession {
             }
             if preview == "missing-prices" { fixture.quotes = []; fixture.dailyValuations = [] }
             fixture.settings.privacyMode = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_PRIVACY"] == "1"
+            // Two purchases of the first coin, a year and four months ago, for the holding page's buys.
+            if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_PURCHASES"] == "1", let coin = fixture.holdings.first(where: { PreciousMetal.asset($0.assetID) == nil }) {
+                let now = Date()
+                fixture.purchases = [
+                    PurchaseLot(holdingID: coin.id, quantity: PreciseDecimal(Decimal(string: "0.06")!), paid: PreciseDecimal(2400), currency: "USD", at: now.addingTimeInterval(-365 * 86400)),
+                    PurchaseLot(holdingID: coin.id, quantity: PreciseDecimal(Decimal(string: "0.04")!), paid: PreciseDecimal(2700), currency: "USD", at: now.addingTimeInterval(-120 * 86400)),
+                ]
+                if let gold = fixture.holdings.first(where: { $0.assetID == PreciousMetal.gold.assetID }) {
+                    fixture.purchases?.append(PurchaseLot(holdingID: gold.id, quantity: PreciseDecimal(PreciousMetal.gramsPerTroyOunce), paid: PreciseDecimal(95), currency: "USD", at: now.addingTimeInterval(-200 * 86400)))
+                }
+            }
             // Two crypto portfolios with one name, yours and a company's, as when each keeps its own "Crypto".
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_TWIN_PORTFOLIO"] == "1", let first = fixture.portfolios.first(where: { $0.kind == .crypto }) {
                 for index in fixture.portfolios.indices where fixture.portfolios[index].id == first.id { fixture.portfolios[index].name = "Crypto" }
@@ -2106,6 +2123,7 @@ final class UnlockedSession {
     var managementSection = "Accounts"
     var entryMonthForManagement = ""
     var requestedRateCurrency: String?
+    var requestedHoldingEditor: UpOnlySession.HoldingRequest?
     var dropZoneVisible = false
     // Drafts and editors: imports, and a backup being restored or exported.
     var importDraft: ImportBatchDraft?
