@@ -36,11 +36,7 @@ extension UpOnlyManagement {
                     let totals = keys.map { usdTotal(groups[$0] ?? [], latest: latest) }
                     let synced = keys.filter { $0.hasPrefix("wise:") }.count
                     VStack(alignment: .leading, spacing: 6) {
-                        manageSubheader(AssetOwnership.ownerName(owner, in: document), total: totals.contains { $0 == nil } ? nil : totals.compactMap { $0 }.reduce(0, +)) {
-                            ManageRowMenu(label: "More options for " + AssetOwnership.ownerName(owner, in: document)) {
-                                Button("Show on dashboard") { showOnDashboard(.bankGroup(owner ?? "personal")) }
-                            }
-                        }
+                        manageSubheader(AssetOwnership.ownerName(owner, in: document), total: totals.contains { $0 == nil } ? nil : totals.compactMap { $0 }.reduce(0, +))
                         ManageCard {
                             ForEach(Array(keys.enumerated()), id: \.element) { index, key in
                                 if let members = groups[key], let first = members.first {
@@ -141,11 +137,12 @@ extension UpOnlyManagement {
         let dollars = funded.map { usd($0.1, currency: $0.0.currency) }
         let total = dollars.contains { $0 == nil } ? nil : dollars.compactMap { $0 }.reduce(Decimal(0), +)
         let open = expandedProfiles.contains(key)
-        // Several currencies are named in the caption ("USD, EUR"), and the row opens their balances.
-        let currencies = funded.count > 1 ? " · " + funded.map(\.0.currency).joined(separator: ", ") : ""
-        UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name) + currencies,
+        // Several currencies are named under the total ("USD · EUR"), and the row opens their balances.
+        let codes = funded.map(\.0.currency)
+        let currencies = codes.count > 3 ? codes.prefix(2).joined(separator: " · ") + " +\(codes.count - 2)" : codes.joined(separator: " · ")
+        UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
                   value: total.map(UpOnlyFormat.exactMoney) ?? (funded.isEmpty ? "No money" : "Rate needed"),
-                  valueDetail: funded.count > 1 ? nil : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
+                  valueDetail: funded.count > 1 ? currencies : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
                   divided: divided, action: funded.count > 1 ? {
                       withAnimation(.snappy(duration: 0.2)) { if open { expandedProfiles.remove(key) } else { expandedProfiles.insert(key) } }
                   } : nil) {

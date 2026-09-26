@@ -14,8 +14,8 @@ extension UpOnlyUnlockedPanel {
                 }
                 businessDetails(row).padding(.top, 14)
             } else {
-            // With no companies the title already says Income & spending, so the eyebrow says what the figure is.
-            if model.books.isEmpty { headline(eyebrow(performanceBasis)) } else { headline(performanceScopeSelector) }
+            // The figure's name; Personal and each company are the rows below, each opening its own page.
+            headline(eyebrow(performanceBasis))
             if let totals = model.availableTotals {
                 UpOnlyAmount(value: totals.net, signed: true, tint: UpOnlyTint.signed(totals.net)).padding(.top, 10)
                 if let caption = performanceCaption { Text(caption).font(UpOnlyType.body).foregroundStyle(.secondary).padding(.top, 6) }
@@ -71,7 +71,11 @@ extension UpOnlyUnlockedPanel {
         var rows = [AssetRow(id: "personal", name: "Personal", value: model.personalState.totals.map { UpOnlyFormat.exactMoney($0.net) } ?? "Not recorded",
                              image: session.personalImage, symbol: "person.fill", tint: UpOnlyTint.cashFlow) { detail = "personal" }]
         for row in model.state.businesses {
-            rows.append(AssetRow(id: row.id, name: row.book.name, value: shareValue(row), image: session.companyImage(row.book.id), symbol: "building.2.fill", tint: UpOnlyTint.company) { detail = "business:" + row.id })
+            // A company with accounts opens its own page on its profit, rather than a second, smaller profit page.
+            let hasPage = session.document.map { doc in doc.accounts.contains { AssetOwnership.businessID(for: $0, in: doc) == row.book.id } } ?? false
+            rows.append(AssetRow(id: row.id, name: row.book.name, value: shareValue(row), image: session.companyImage(row.book.id), symbol: "building.2.fill", tint: UpOnlyTint.company) {
+                if hasPage { companyChart = .profit; select(.bankGroup(row.book.id), .drill) } else { detail = "business:" + row.id }
+            })
         }
         return rows
     }
@@ -84,8 +88,7 @@ extension UpOnlyUnlockedPanel {
         let missing = model.state.missingMonths
         let partial: String? = missing > 0 ? "\(missing) month\(missing == 1 ? "" : "s") not recorded"
             : model.state.totals == nil && model.availableTotals != nil ? "Partial" : nil
-        if model.books.isEmpty { return partial }
-        return performanceBasis + (partial.map { " · " + $0 } ?? "")
+        return partial
     }
     func shareLabel(_ row: BusinessContribution) -> String {
         row.ownershipLabel == "Historical ownership" ? "Your share" : "Your share · " + row.ownershipLabel
