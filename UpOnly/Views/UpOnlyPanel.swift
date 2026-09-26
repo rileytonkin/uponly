@@ -715,8 +715,6 @@ struct UpOnlyUnlockedPanel: View {
         var value: String
         var tint: Color
         var detail: String? = nil
-        /// A small mark after the label when the tooltip qualifies the figure (only some holdings have a cost).
-        var qualified = false
         var help = ""
         var spoken: String
         var id: String { label }
@@ -727,10 +725,7 @@ struct UpOnlyUnlockedPanel: View {
         HStack(alignment: .top, spacing: 12) {
             ForEach(stats) { stat in
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(stat.label).lineLimit(1)
-                        if stat.qualified { Image(systemName: "info.circle").font(.system(size: 9)).foregroundStyle(.tertiary) }
-                    }.font(UpOnlyType.caption).foregroundStyle(.secondary)
+                    Text(stat.label).lineLimit(1).font(UpOnlyType.caption).foregroundStyle(.secondary)
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(stat.value).font(UpOnlyType.body.weight(.semibold).monospacedDigit()).foregroundStyle(stat.tint)
                             .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: stat.value)

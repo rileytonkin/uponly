@@ -141,9 +141,9 @@ extension UpOnlyUnlockedPanel {
             .compactMap { $0 }.joined(separator: " · ")
         let spoken = [session.privacyMode ? "amount hidden" : UpOnlyFormat.movement(allTime.gain, fraction: nil, cents: false), fraction.map(UpOnlyFormat.percent), note.isEmpty ? nil : note]
             .compactMap { $0 }.joined(separator: ", ")
-        guard let fraction else { return HeadlineStat(label: "All-time", value: amount, tint: UpOnlyTint.signed(allTime.gain), qualified: partial, help: note, spoken: spoken) }
+        guard let fraction else { return HeadlineStat(label: "All-time", value: amount, tint: UpOnlyTint.signed(allTime.gain), help: note, spoken: spoken) }
         return HeadlineStat(label: "All-time", value: UpOnlyFormat.arrowPercent(fraction), tint: UpOnlyTint.signed(allTime.gain), detail: amount,
-                            qualified: partial, help: note, spoken: "All-time profit, " + spoken)
+                            help: note, spoken: "All-time profit, " + spoken)
     }
     /// Green when the line ends at or above where it starts, red when below, the neutral tint with too little data.
     func trendTint(_ points: [UpOnlyChartPoint]) -> Color {
