@@ -21,7 +21,8 @@ extension UpOnlyUnlockedPanel {
         let metal = PreciousMetal.asset(holding.assetID) != nil
         let symbol = holdingSymbol(holding)
         let scope = ValuationScope.portfolio(holding.portfolioID)
-        let valuation = document.map { NetWorthCalculator.value(at: interval.end, scope: scope, document: $0) }
+        // Valued at its live price while the menu is open.
+        let valuation = session.pricedDocument().map { NetWorthCalculator.value(at: interval.end, scope: scope, document: $0) }
         let component = valuation?.components.first { $0.id == holding.id }
         let value = component?.usdValue?.value
         let quantity = component?.nativeAmount?.value ?? document?.effectiveQuantity(holdingID: holding.id, at: interval.end)
@@ -31,7 +32,7 @@ extension UpOnlyUnlockedPanel {
         let stats = [change.map { changeStat($0) }, performance.flatMap { HoldingPerformance.total([$0]) }.map(allTimeStat)].compactMap { $0 }
         return VStack(alignment: .leading, spacing: 0) {
             if let value {
-                UpOnlyAmount(value: value, cents: true)
+                headlineAmount(value, live: session.isLive(component.map { [$0] } ?? []))
             } else {
                 Text(component?.missing == "quote" ? "Price needed" : "Quantity needed").font(UpOnlyType.title)
             }
@@ -73,7 +74,8 @@ extension UpOnlyUnlockedPanel {
     /// average, what was paid in all, and how long it has been held.
     func holdingDetails(_ holding: Holding, document: VaultDocument, quantity: Decimal?, value: Decimal?, performance: HoldingPerformance, metal: Bool) -> some View {
         let price = quantity.flatMap { q in value.flatMap { UpOnlyFormat.unitPrice(quantity: q, valueUSD: $0, metal: metal) } }
-        let move = (session.chartEstimates() ?? ChartEstimates(document: document)).priceChange(holding.assetID, since: selectedInterval.start, now: selectedInterval.end)
+        let move = (session.chartEstimates() ?? ChartEstimates(document: document)).priceChange(holding.assetID, since: selectedInterval.start, now: selectedInterval.end,
+                                                                                               live: session.livePrices[holding.assetID])
         // What one unit cost on average, over the part of the holding the purchases cover.
         let covered = performance.coveredQuantity ?? quantity
         let average = performance.costUSD.flatMap { cost in covered.flatMap { q in q > 0 ? UpOnlyFormat.unitPrice(quantity: q, valueUSD: cost, metal: metal) : nil } }

@@ -1168,10 +1168,13 @@ nonisolated struct ChartEstimates {
         }
         return (total, estimated)
     }
-    /// A coin or metal's price now against its price nearest `start`, as a fraction; nil without both.
-    func priceChange(_ assetID: CanonicalAssetID, since start: Date, now: Date) -> Decimal? {
-        guard let series = quotes[assetID.rawValue], let then = Self.nearest(series, to: start), then.value > 0,
-              let latest = series.last(where: { $0.time <= now }), latest.time > then.time else { return nil }
+    /// A coin or metal's price now against its price nearest `start`, as a fraction; nil without both. A live price
+    /// (streamed while the menu is open) stands for now when it's newer than the latest saved one.
+    func priceChange(_ assetID: CanonicalAssetID, since start: Date, now: Date, live: LivePrice? = nil) -> Decimal? {
+        guard let series = quotes[assetID.rawValue], let then = Self.nearest(series, to: start), then.value > 0 else { return nil }
+        var latest = series.last(where: { $0.time <= now })
+        if let live, live.time <= now, live.time > latest?.time ?? .distantPast { latest = (time: live.time, value: live.price) }
+        guard let latest, latest.time > then.time else { return nil }
         return (latest.value - then.value) / then.value
     }
     static func dayName(_ date: Date) -> String { dayFormatter.string(from: date) }

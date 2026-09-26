@@ -6,7 +6,8 @@ extension UpOnlyUnlockedPanel {
     func companyContent(_ groupID: String) -> some View {
         let document = session.document
         let interval = selectedInterval
-        let raw = document.map { NetWorthCalculator.value(at: interval.end, scope: .allTracked, document: $0) }
+        // Today's figures at the live prices while the menu is open.
+        let raw = session.pricedDocument().map { NetWorthCalculator.value(at: interval.end, scope: .allTracked, document: $0) }
         let companyID = groupID == "personal" ? nil : groupID
         let bankValues = (raw?.components ?? []).filter { component in
             guard component.kind == .bank, let document else { return false }
@@ -36,7 +37,7 @@ extension UpOnlyUnlockedPanel {
                     eyebrow(title).frame(minHeight: 22, alignment: .leading)
                 }
                 if let focusTotal {
-                    UpOnlyAmount(value: focusTotal, cents: true)
+                    headlineAmount(focusTotal, live: session.isLive(focusParts))
                     // A portfolio in focus moves with its market, so it keeps its percentage; cash doesn't.
                     let market = if case .portfolio = companyFocus { true } else { false }
                     let assets = change.map { changeStat($0, percent: market) }

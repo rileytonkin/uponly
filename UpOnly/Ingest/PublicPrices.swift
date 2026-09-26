@@ -22,6 +22,19 @@ nonisolated enum PriceError: LocalizedError {
 final class NoPriceRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
+/// A connection to Binance's live stream (`PublicPrices.openLiveStream`): its messages one at a time, and closing it.
+private final class BinanceLiveSocket: LivePriceSocket, @unchecked Sendable {
+    private let task: URLSessionWebSocketTask
+    init(task: URLSessionWebSocketTask) { self.task = task }
+    func receive() async throws -> Data {
+        switch try await task.receive() {
+        case .data(let data): return data
+        case .string(let text): return Data(text.utf8)
+        @unknown default: throw PriceError.invalidResponse
+        }
+    }
+    func close() { task.cancel(with: .goingAway, reason: nil) }
+}
 /// Hosts that answered 429, and when they may be called again.
 private final class ProviderPauses: @unchecked Sendable {
     private let lock = NSLock()
@@ -36,6 +49,10 @@ private final class ProviderPauses: @unchecked Sendable {
     }
 }
 nonisolated enum PublicPrices {
+    /// Every host the app asks anything of: requests go to these, and nowhere else.
+    static let requestHosts: Set<String> = ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com", "api.binance.com", "forex-data-feed.swissquote.com"]
+    /// Binance's live price stream, the one host a socket is opened to (`openLiveStream`), at a URL only `liveStream` builds.
+    static let streamHost = "stream.binance.com"
     /// One session for every provider call, so up to 80 exchange-rate requests share connections.
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -44,6 +61,27 @@ nonisolated enum PublicPrices {
         configuration.timeoutIntervalForRequest = 20; configuration.timeoutIntervalForResource = 40
         return URLSession(configuration: configuration, delegate: NoPriceRedirects(), delegateQueue: nil)
     }()
+    /// The live stream's own session, set up as `session` is (ephemeral, no cookies or cache, redirects refused) but
+    /// without its 40-second limit on a whole request, which would end every connection; Binance ends one itself after
+    /// 24 hours. A minute without a message (Binance pings every 20 seconds) counts as a dropped connection.
+    private static let liveSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil; configuration.httpCookieStorage = nil; configuration.httpShouldSetCookies = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForRequest = 60
+        return URLSession(configuration: configuration, delegate: NoPriceRedirects(), delegateQueue: nil)
+    }()
+    /// Opens Binance's live stream: `stream.binance.com` on port 443 only, at the path `liveStream` builds, with the
+    /// requests' fixed User-Agent, each message capped at 64 KiB. URLSession answers Binance's pings.
+    static func openLiveStream(_ url: URL) throws -> any LivePriceSocket {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.scheme == "wss", components.host == streamHost,
+              components.port == 443, components.path == "/stream", components.user == nil, components.password == nil, components.fragment == nil else { throw PriceError.invalidResponse }
+        var request = URLRequest(url: url); request.setValue("UpOnly/1.0 (macOS)", forHTTPHeaderField: "User-Agent")
+        let task = liveSession.webSocketTask(with: request)
+        task.maximumMessageSize = liveMessageLimit
+        task.resume()
+        return BinanceLiveSocket(task: task)
+    }
     private static let pauses = ProviderPauses()
     /// Being offline or cancelled says nothing about a source, so it must never count as a failed attempt.
     static func isOffline(_ error: Error) -> Bool {
@@ -54,7 +92,7 @@ nonisolated enum PublicPrices {
     }
     /// `path` comes percent-encoded: fixed text, with any segment built from an asset ID made by `pathSegment`.
     static func request(host: String, path: String, query: [URLQueryItem], key: String = "", limit: Int = 2 * 1024 * 1024) async throws -> Data {
-        guard ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com", "api.binance.com", "forex-data-feed.swissquote.com"].contains(host), key.utf8.count <= 512,
+        guard requestHosts.contains(host), key.utf8.count <= 512,
               !key.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PriceError.invalidResponse }
         // Checked first: URLComponents stops the app on a path that isn't properly percent-encoded.
         guard path.hasPrefix("/"), path.removingPercentEncoding != nil,

@@ -205,6 +205,9 @@ final class UpOnlySession {
     private var priceRequestIsAutomatic: Bool { get { unlocked.priceRequestIsAutomatic } set { unlocked.priceRequestIsAutomatic = newValue } }
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
     @ObservationIgnored private var networkAvailable = true
+    /// Where live prices come from while the menu is open: the network in the app, nothing in the fixture build (so it
+    /// never streams) unless a test hands in fakes. How the app is built, not vault data, so it outlives a lock.
+    @ObservationIgnored var liveSources: LivePriceSources?
     private var catalogRequest: Task<[CatalogCoin], Error>? { get { unlocked.catalogRequest } set { unlocked.catalogRequest = newValue } }
     private var sourceRevision: UUID { get { unlocked.sourceRevision } set { unlocked.sourceRevision = newValue } }
     private(set) var catalog: [CatalogCoin] { get { unlocked.catalog } set { unlocked.catalog = newValue } }
@@ -284,6 +287,7 @@ final class UpOnlySession {
         #endif
         state = layout.holdsVault(vault.io) ? .locked : .newVault
         if !isFixture {
+            liveSources = .network
             installLockObservers()
             let monitor = NWPathMonitor()
             monitor.pathUpdateHandler = { [weak self] path in
@@ -546,6 +550,8 @@ final class UpOnlySession {
         state = .unlocked
         if freshUnlock { recordActivity(); startInactivityTimer(); scheduleRefresh(); startRequestWatcher() }
         else if !isFixture { Task { await Task.yield(); await self.configureBackground() } }
+        // Unlocking with the menu open, finishing setup, switching prices off or adding a coin: the stream follows.
+        updateLivePrices()
     }
 
     /// Ranges whose intraday prices have all been fetched at least once: until then their chart stays on saved
@@ -840,6 +846,7 @@ final class UpOnlySession {
             // A note from an earlier visit ("Couldn't save…") no longer describes what's on screen.
             message = nil
             Task { await self.applyBackgroundCache() }
+            updateLivePrices()
         }
     }
     func surfaceOpened() { financeSurfaces += 1; handleActivity() }
@@ -847,8 +854,9 @@ final class UpOnlySession {
         dropZoneVisible = false
         showingSwitcher = false
         financeSurfaces = max(0, financeSurfaces - 1)
-        // Dismissing a popover keeps the vault available for the remaining idle period.
+        // Dismissing a popover keeps the vault available for the remaining idle period, and ends the live prices.
         if financeSurfaces == 0, authenticationContext != nil { lock() }
+        updateLivePrices()
     }
     private func pickerFinished() {
         pickerDepth = max(0, pickerDepth - 1)
@@ -2195,6 +2203,91 @@ extension UpOnlySession {
     }
 }
 
+// MARK: Live prices while the menu is open
+
+extension UpOnlySession {
+    /// Prices that arrived while the menu was open, the newest per coin. In memory only (`UnlockedSession`), so lock
+    /// discards them; they're never saved, and the vault's prices keep their hourly schedule.
+    private(set) var livePrices: [CanonicalAssetID: LivePrice] { get { unlocked.livePrices } set { unlocked.livePrices = newValue } }
+    /// Binance's stream is delivering: the dashboard says "Live" beside a total that moves with it.
+    private(set) var liveStreaming: Bool { get { unlocked.liveStreaming } set { unlocked.liveStreaming = newValue } }
+    /// The document with the live prices laid over it (`PublicPrices.overlaying`), for today's figures: totals, rows,
+    /// the chart's last point and the moves against it. Worked out once per change of either; the saved document is
+    /// untouched.
+    func pricedDocument() -> VaultDocument? {
+        guard let document else { return nil }
+        let live = livePrices
+        guard !live.isEmpty else { return document }
+        if let cache = unlocked.pricedCache, cache.revision == documentRevision, cache.live == live { return cache.value }
+        let value = PublicPrices.overlaying(live, on: document)
+        unlocked.pricedCache = (documentRevision, live, value)
+        return value
+    }
+    /// Whether a figure made of `components` (from `pricedDocument`) moves with the stream: it's delivering, and some
+    /// holding in the figure is valued at a streamed price rather than a saved one.
+    func isLive(_ components: [ValuationComponent]) -> Bool {
+        guard liveStreaming, let document else { return false }
+        let live = livePrices
+        return components.contains { component in
+            guard component.kind == .holding, let time = component.quoteTime,
+                  let asset = document.holdings.first(where: { $0.id == component.id })?.assetID, let price = live[asset] else { return false }
+            return price.streamed && price.time == time
+        }
+    }
+    /// The held, active coins the live prices are for, each with its latest saved price.
+    static func liveCoins(in document: VaultDocument, now: Date = Date()) -> [LiveCoin] {
+        let held = Set(document.holdings.filter { $0.isActive(at: now) && document.portfolio(id: $0.portfolioID)?.isActive(at: now) == true && PreciousMetal.asset($0.assetID) == nil }.map(\.assetID))
+        var saved: [CanonicalAssetID: QuoteObservation] = [:]
+        for quote in document.quotes where held.contains(quote.assetID) && (saved[quote.assetID].map { $0.providerTime <= quote.providerTime } ?? true) {
+            saved[quote.assetID] = quote
+        }
+        return held.sorted { $0.rawValue < $1.rawValue }.map { LiveCoin(id: $0, saved: saved[$0]?.priceUSD.value) }
+    }
+    /// Starts, restarts or stops the live prices to match: they run only while the menu is open, the vault unlocked,
+    /// setup complete and crypto prices on, for the coins held now. Called as the menu opens and closes and whenever the
+    /// document changes, so switching prices off, or adding a coin, takes effect at once. Lock stops them with the rest
+    /// of the unlock (`UnlockedSession.retire`), sleep and screen lock by locking.
+    func updateLivePrices() {
+        guard let sources = liveSources, state == .unlocked, financeSurfaces > 0, let document, document.settings.allowsLookups(.crypto) else {
+            stopLivePrices()
+            // With prices switched off, what streamed goes too.
+            if document?.settings.allowsLookups(.crypto) == false, !livePrices.isEmpty { livePrices = [:] }
+            return
+        }
+        let coins = Self.liveCoins(in: document), ids = coins.map(\.id.rawValue), key = document.settings.coinGeckoKey
+        guard !coins.isEmpty else { stopLivePrices(); return }
+        if unlocked.liveTask != nil, let running = unlocked.liveFor, running.coins == ids, running.key == key { return }
+        stopLivePrices()
+        let token = sessionToken, feed = LivePriceFeed(checkedAt: unlocked.liveCheckedAt)
+        unlocked.liveFor = (ids, key)
+        // The network side runs off the main thread and only ever writes to `feed`.
+        unlocked.liveWork = Task.detached(priority: .utility) { await PublicPrices.streamLivePrices(coins, key: key, sources: sources, feed: feed) }
+        // Once a second, whatever arrived goes to the dashboard in one change, if it's still this unlock's.
+        unlocked.liveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                self.publishLive(feed.take(), streaming: feed.isStreaming(), checkedAt: feed.checkedAt, token: token)
+            }
+        }
+    }
+    private func stopLivePrices() {
+        unlocked.liveTask?.cancel(); unlocked.liveWork?.cancel()
+        unlocked.liveTask = nil; unlocked.liveWork = nil; unlocked.liveFor = nil
+        if liveStreaming { liveStreaming = false }
+    }
+    /// Publishes a second's live prices, each only if it's newer than the one shown. Nothing from an earlier unlock
+    /// reaches a later one: `token` must still be the session's.
+    func publishLive(_ prices: [CanonicalAssetID: LivePrice], streaming: Bool, checkedAt: Date? = nil, token: UUID) {
+        guard token == sessionToken, state == .unlocked else { return }
+        if let checkedAt { unlocked.liveCheckedAt = checkedAt }
+        if liveStreaming != streaming { liveStreaming = streaming }
+        var next = livePrices
+        for (asset, price) in prices where next[asset].map({ $0.time < price.time }) ?? true { next[asset] = price }
+        if next != livePrices { livePrices = next }
+    }
+}
+
 /// Locks the vault the moment the screen locks. AppKit holds distributed notifications back while an app is inactive,
 /// and a menu-bar app is inactive nearly all the time, so this asks for immediate delivery, which only the
 /// selector-based registration offers.
@@ -2233,6 +2326,14 @@ final class UnlockedSession {
     fileprivate(set) var intraday: [String: ChartEstimates.Series] = [:]
     @ObservationIgnored fileprivate var intradayFetchedAt: [String: Date] = [:]
     fileprivate(set) var intradayReady: Set<String> = []
+    // Live prices while the menu is open (`updateLivePrices`): in memory only and never saved, so a lock discards them.
+    fileprivate(set) var livePrices: [CanonicalAssetID: LivePrice] = [:]
+    fileprivate(set) var liveStreaming = false
+    @ObservationIgnored fileprivate var liveTask: Task<Void, Never>?
+    @ObservationIgnored fileprivate var liveWork: Task<Void, Never>?
+    @ObservationIgnored fileprivate var liveFor: (coins: [String], key: String)?
+    @ObservationIgnored fileprivate var liveCheckedAt: Date?
+    @ObservationIgnored fileprivate var pricedCache: (revision: Int, live: [CanonicalAssetID: LivePrice], value: VaultDocument)?
     fileprivate var privacyOverride: Bool?
     @ObservationIgnored fileprivate var privacyAttempt = UUID()
     @ObservationIgnored fileprivate(set) var unlockTiming: UnlockTiming?
@@ -2305,6 +2406,7 @@ final class UnlockedSession {
         writers.close()
         importTask?.cancel(); preparedMutation?.cancel(); historyRebuildTask?.cancel(); setupProgressTask?.cancel()
         refreshTask?.cancel(); requestWatcher?.cancel(); backgroundCacheRequest?.cancel(); priceRequest?.cancel(); catalogRequest?.cancel()
+        liveTask?.cancel(); liveWork?.cancel()
         #if UPONLY_PERSONAL
         accountingRequest?.cancel(); wiseRequest?.cancel()
         #endif

@@ -48,6 +48,22 @@ struct UpOnlyAmount: View {
     }
 }
 
+/// "● Live" beside a headline figure whose prices are streaming in while the menu is open, as exchange apps mark a live
+/// price: a small green dot that pulses (still, with Reduce Motion) and a quiet word. It says nothing about the figure,
+/// so it shows in privacy mode too, where the figure stays ••••.
+struct UpOnlyLiveBadge: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(UpOnlyTint.gain)
+                .symbolEffect(.pulse, options: .repeat(.continuous), isActive: !reduceMotion)
+            Text("Live").font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore).accessibilityLabel("Live prices")
+        .help("Prices update every few seconds while the menu is open")
+    }
+}
+
 /// Plain labels with the chosen one in a soft pill that slides to the next choice, as market apps do: the chart's
 /// range and any other small choice of period.
 struct UpOnlySegments<Value: Hashable>: View {
