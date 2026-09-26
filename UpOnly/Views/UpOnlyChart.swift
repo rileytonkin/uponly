@@ -229,16 +229,23 @@ struct UpOnlyChartCanvas: View {
     private let plotHeight: CGFloat
     /// Room past the last point for the largest marker, so it isn't clipped at the right edge.
     private let edge: CGFloat = 6
+    /// A value chart drawn as market apps draw one: the line alone, glowing, with its high and low written at their
+    /// points and no axes or gridlines. Cash-flow charts (around zero, by month) keep their axes.
+    private let market: Bool
+    /// Room above the line for its high and below for its low.
+    private var inset: CGFloat { market ? 18 : 6 }
     /// `bridgesGaps` is for daily history: straight segments, running across a few days without a value. Off for
     /// monthly charts, which are gently smoothed and keep a missing month as a gap.
     init(points: [UpOnlyChartPoint], includesZero: Bool = false, showsAllMarkers: Bool = false, selected: String? = nil,
          tint: Color = .accentColor, onSelect: ((String) -> Void)? = nil, bridgesGaps: Bool = false, standIn: Bool = false, plotHeight: CGFloat = 120) {
         self.points = points; self.includesZero = includesZero; self.selected = selected; self.tint = tint; self.onSelect = onSelect
         self.bridgesGaps = bridgesGaps; self.standIn = standIn; self.plotHeight = plotHeight
+        let market = bridgesGaps && !includesZero
+        self.market = market
         let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, bridgesGaps: bridgesGaps)
         self.layout = layout
         let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular), labelFont = NSFont.systemFont(ofSize: 10)
-        axisWidth = (layout.scale.ticks.map { (UpOnlyChartScale.label($0) as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
+        axisWidth = market ? 0 : (layout.scale.ticks.map { (UpOnlyChartScale.label($0) as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
         labelWidths = layout.visible.map { point in
             guard let text = layout.labelled == nil ? point.label : point.axisLabel else { return 0 }
             return (text as NSString).size(withAttributes: [.font: labelFont]).width
@@ -247,7 +254,7 @@ struct UpOnlyChartCanvas: View {
     private func x(_ i: Int, width: CGFloat) -> CGFloat {
         layout.visible.count > 1 ? CGFloat(i) / CGFloat(layout.visible.count - 1) * width : 12
     }
-    private func y(_ value: Decimal) -> CGFloat { 6 + (1 - layout.scale.fraction(value)) * (plotHeight - 12) }
+    private func y(_ value: Decimal) -> CGFloat { inset + (1 - layout.scale.fraction(value)) * (plotHeight - inset * 2) }
     private func nearest(_ location: CGFloat, width: CGFloat) -> Int? {
         guard !layout.visible.isEmpty else { return nil }
         return max(0, min(layout.visible.count - 1, Int((location / max(width, 1) * CGFloat(layout.visible.count - 1)).rounded())))
@@ -340,14 +347,14 @@ struct UpOnlyChartCanvas: View {
             ZStack(alignment: .topLeading) {
                 Canvas { context, size in
                     // A faint line at each marked day or hour, as quiet as the value gridlines.
-                    if layout.labelled != nil {
+                    if layout.labelled != nil, !market {
                         for tick in ticks {
                             let xx = axisWidth + x(tick.index, width: plotWidth)
                             var mark = Path(); mark.move(to: CGPoint(x: xx, y: 0)); mark.addLine(to: CGPoint(x: xx, y: plotHeight))
                             context.stroke(mark, with: .color(.primary.opacity(contrast == .increased ? 0.12 : 0.05)), lineWidth: 1)
                         }
                     }
-                    for tick in layout.scale.ticks where !layout.runs.isEmpty {
+                    for tick in layout.scale.ticks where !layout.runs.isEmpty && !market {
                         let yy = y(Decimal(tick))
                         var grid = Path(); grid.move(to: CGPoint(x: axisWidth, y: yy)); grid.addLine(to: CGPoint(x: axisWidth + plotWidth + edge, y: yy))
                         // Gridlines at 4.5% (the admin's rgba(255,255,255,0.045)); the zero line a little firmer on cash-flow charts.
@@ -396,6 +403,13 @@ struct UpOnlyChartCanvas: View {
                             let cut = hovered.map { x($0, width: plotWidth) } ?? plotWidth + edge * 2
                             var upTo = plot; upTo.clip(to: Path(CGRect(x: -edge, y: -edge, width: cut + edge, height: plotHeight + edge * 2)))
                             upTo.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.22), tint.opacity(0)]), startPoint: .zero, endPoint: CGPoint(x: 0, y: plotHeight)))
+                            // The line glows softly, as a market app's does.
+                            if market {
+                                upTo.drawLayer { glow in
+                                    glow.addFilter(.blur(radius: 5))
+                                    glow.stroke(solid, with: .color(tint.opacity(0.7)), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                                }
+                            }
                             upTo.stroke(solid, with: .color(tint), style: solidStyle)
                             if let tail { upTo.stroke(tail, with: .color(tint), style: dashedStyle) }
                             if hovered != nil {
@@ -417,7 +431,28 @@ struct UpOnlyChartCanvas: View {
                             }
                             let dot = Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2))
                             plot.fill(dot, with: .color(colour))
-                            if isActive { plot.stroke(dot, with: .color(Color(nsColor: .windowBackgroundColor)), lineWidth: 2) }
+                            if isActive { plot.stroke(dot, with: .color(UpOnlyBackdrop.base), lineWidth: 2) }
+                        }
+                    }
+                    if market {
+                        let values = visible.indices.filter { visible[$0].value != nil }
+                        // Today's value as a dot in a soft halo, unless the pointer is on another day.
+                        if hovered == nil, let last = values.last, let lastValue = visible[last].value {
+                            let centre = CGPoint(x: x(last, width: plotWidth), y: y(lastValue))
+                            plot.fill(Path(ellipseIn: CGRect(x: centre.x - 8, y: centre.y - 8, width: 16, height: 16)), with: .color(tint.opacity(0.22)))
+                            plot.fill(Path(ellipseIn: CGRect(x: centre.x - 3.5, y: centre.y - 3.5, width: 7, height: 7)), with: .color(tint))
+                        }
+                        // The range's high above its point and its low below, kept inside the plot.
+                        let high = values.max { (visible[$0].value ?? 0) < (visible[$1].value ?? 0) }
+                        let low = values.min { (visible[$0].value ?? 0) < (visible[$1].value ?? 0) }
+                        let marks = [high.map { ($0, true) }, low != high ? low.map { ($0, false) } : nil].compactMap { $0 }
+                        for (index, above) in marks {
+                            guard let value = visible[index].value else { continue }
+                            let px = x(index, width: plotWidth), py = y(value) + (above ? -6 : 6)
+                            let side: UnitPoint = px < 44 ? (above ? .bottomLeading : .topLeading) : px > plotWidth - 44 ? (above ? .bottomTrailing : .topTrailing) : (above ? .bottom : .top)
+                            let label = hidden ? "••••" : UpOnlyFormat.exactMoney(value)
+                            plot.draw(Text(label).font(.system(size: 10, weight: .medium).monospacedDigit()).foregroundStyle(.secondary),
+                                      at: CGPoint(x: min(max(px, 0), plotWidth), y: py), anchor: side)
                         }
                     }
                     if let active = hovered ?? visible.firstIndex(where: { $0.id == selected }), visible.indices.contains(active) {
@@ -445,7 +480,7 @@ struct UpOnlyChartCanvas: View {
                 // Anywhere in a point's column counts, dates included: only the pointer's x picks the point. The axis
                 // is padding outside the hover area (an offset would move the area but not its coordinates, picking
                 // a point an axis-width right of the pointer).
-                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight + 20)
+                Rectangle().fill(.clear).contentShape(Rectangle()).frame(width: plotWidth + edge, height: plotHeight + (market ? 0 : 20))
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location): hovered = nearest(location.x, width: plotWidth); pointer = location
@@ -454,15 +489,15 @@ struct UpOnlyChartCanvas: View {
                     }
                     .gesture(SpatialTapGesture().onEnded { value in if let index = nearest(value.location.x, width: plotWidth) { onSelect?(visible[index].id) } })
                     .padding(.leading, axisWidth)
-                ZStack(alignment: .topLeading) {
+                if !market { ZStack(alignment: .topLeading) {
                     ForEach(ticks) { tick in
                         Text(layout.labelled == nil ? visible[tick.index].label : visible[tick.index].axisLabel ?? "").font(.system(size: 10))
                             .foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.5)).fixedSize()
                             .position(x: tick.center, y: 6)
                     }
-                }.frame(width: plotWidth, height: 14).offset(x: axisWidth, y: plotHeight + 6)
+                }.frame(width: plotWidth, height: 14).offset(x: axisWidth, y: plotHeight + 6) }
             }
-        }.frame(height: plotHeight + 20)
+        }.frame(height: plotHeight + (market ? 0 : 20))
             .onChange(of: points) { hovered = nil }
             #if UPONLY_FIXTURE
             .onAppear { if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_CHART_HOVER"] == "1", !layout.visible.isEmpty { hovered = layout.visible.count / 2 } }
@@ -667,10 +702,12 @@ enum UpOnlyFormat {
 }
 
 enum UpOnlyTint {
+    /// Up Only's green, from the wordmark: the glow behind every page, selections and gains.
+    static let brand = Color(red: 0.086, green: 0.784, blue: 0.471)
     static let metals = Color(red: 0.60, green: 0.47, blue: 0.23)
     static let cashFlow = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.36, green: 0.78, blue: 0.62, alpha: 1)
+            ? NSColor(srgbRed: 0.086, green: 0.784, blue: 0.471, alpha: 1)
             : NSColor(srgbRed: 0.13, green: 0.51, blue: 0.39, alpha: 1)
     })
     static let netWorth = Color(nsColor: NSColor(name: nil) { appearance in

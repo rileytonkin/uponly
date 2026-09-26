@@ -56,8 +56,8 @@ struct UpOnlyDataAttention: View {
                         UpOnlyRow(title: account.name, caption: "Add its balance", chevron: true, action: {
                             session.startImport(.bankBalances, prefill: true, accountID: account.id)
                         }) {
-                            if let image = account.profileImage { UpOnlyProfileImage(data: image, name: account.name, size: 28) }
-                            else { UpOnlyBankBadge(name: account.name, size: 28) }
+                            if let image = account.profileImage { UpOnlyProfileImage(data: image, name: account.name, size: 32) }
+                            else { UpOnlyBankBadge(name: account.name, size: 32) }
                         }
                     }
                 }
@@ -69,8 +69,8 @@ struct UpOnlyDataAttention: View {
                         UpOnlyRow(title: holding.assetName, caption: metals ? "Add its weight" : "Add its quantity", chevron: true, action: {
                             session.startImport(metals ? .metals : .holdings, prefill: true, holdingID: holding.id)
                         }) {
-                            if let metal = PreciousMetal.asset(holding.assetID) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
-                            else { UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: holding.assetName, size: 28) }
+                            if let metal = PreciousMetal.asset(holding.assetID) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 32) }
+                            else { UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: holding.assetName, size: 32) }
                         }
                     }
                 }
@@ -83,7 +83,7 @@ struct UpOnlyDataAttention: View {
                         if !report.accountingNames.isEmpty { note(report.accountingNames.joined(separator: ", ") + ": accounting is incomplete for this period.") }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10)
                     UpOnlyRow(title: "Open Settings", chevron: true, action: { session.managementSection = "Sources" }) {
-                        UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 28)
+                        UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 32)
                     }
                 }
             }
@@ -104,13 +104,13 @@ struct UpOnlyDataAttention: View {
                 ManageCard {
                     UpOnlyRow(title: "All of " + month.title + "’s transactions", chevron: true, action: {
                         session.entryMonthForManagement = month.description; session.managementSection = "Entries"
-                    }) { UpOnlySymbolBadge(symbol: "list.bullet", tint: UpOnlyTint.cashFlow, size: 28) }
+                    }) { UpOnlySymbolBadge(symbol: "list.bullet", tint: UpOnlyTint.cashFlow, size: 32) }
                     UpOnlyRow(title: "Import a statement", caption: "Transactions from a CSV file", chevron: true, action: {
                         session.startImport(.statements)
-                    }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28) }
+                    }) { UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 32) }
                     UpOnlyRow(title: "Add a transaction", chevron: true, action: {
                         session.entryMonthForManagement = month.description; addEntry()
-                    }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
+                    }) { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32) }
                 }
                 if case .exchangeRates(let currencies)? = state.unavailable {
                     note("A dated " + currencies.joined(separator: ", ") + " exchange rate is also needed.")
@@ -126,10 +126,10 @@ struct UpOnlyDataAttention: View {
                     }.menuStyle(.borderedButton).fixedSize()
                 } else if state.unavailable == .noEntries {
                     note("No transactions are recorded for " + month.title + ". If there was nothing to record, say so and it won’t be asked again.")
-                    Button("Nothing to record this month") { confirm(month) }.buttonStyle(.glassProminent)
+                    Button("Nothing to record this month") { confirm(month) }.buttonStyle(.upOnlyPrimary)
                 } else if state.totals != nil {
                     note("Is all of your income and spending for " + month.title + " recorded?")
-                    Button("Yes, it’s complete") { confirm(month) }.buttonStyle(.glassProminent)
+                    Button("Yes, it’s complete") { confirm(month) }.buttonStyle(.upOnlyPrimary)
                 } else {
                     note("Add the missing transactions or rates first.")
                 }

@@ -45,9 +45,9 @@ extension UpOnlyUnlockedPanel {
             }
             if !stats.isEmpty { headlineStats(stats).padding(.top, 10) }
             if points.contains(where: { $0.value != nil }) {
-                VStack(alignment: .leading, spacing: 10) {
-                    rangeControl
+                VStack(alignment: .leading, spacing: 12) {
                     UpOnlyChart(points: points, tint: trendTint(points), plotHeight: chartPlotHeight, bridgesGaps: true)
+                    rangeControl
                 }.padding(.top, 18)
             }
             if let document, let performance {
@@ -118,11 +118,11 @@ extension UpOnlyUnlockedPanel {
                                 + (buyPrice(lot, costUSD: costUSD, metal: metal).map { " at " + $0 } ?? ""),
                               captionIsPrivate: true,
                               value: profit.map { UpOnlyFormat.movement($0, fraction: nil, cents: true) } ?? "Price needed", change: gain) {
-                        UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: symbol, size: 28)
+                        UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: symbol, size: 32)
                     }
                 }
                 UpOnlyRow(title: lots.isEmpty ? "Add what you paid" : "Add a purchase", caption: lots.isEmpty ? "See the gain or loss on each buy" : nil, chevron: true, action: { openHoldingEditor(.purchases(holding.id)) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32)
                 }
             }
         }
@@ -153,7 +153,7 @@ extension UpOnlyUnlockedPanel {
                         UpOnlyRow(title: UpOnlyFormat.utcDate(change.effectiveAt),
                                   caption: "Now " + UpOnlyFormat.quantityText(change.quantity.value, symbol: symbol, metal: metal), captionIsPrivate: true,
                                   value: index == 0 ? "First" : (delta >= 0 ? "+" : "−") + UpOnlyFormat.quantityText(abs(delta), symbol: symbol, metal: metal)) {
-                            UpOnlySymbolBadge(symbol: delta >= 0 ? "arrow.up.right" : "arrow.down.right", tint: delta >= 0 ? UpOnlyTint.gain : UpOnlyTint.loss, size: 28)
+                            UpOnlySymbolBadge(symbol: delta >= 0 ? "arrow.up.right" : "arrow.down.right", tint: delta >= 0 ? UpOnlyTint.gain : UpOnlyTint.loss, size: 32)
                         }
                     }
                 }

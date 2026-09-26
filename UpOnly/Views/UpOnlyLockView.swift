@@ -23,10 +23,10 @@ struct UpOnlyLockView: View {
                 Toggle("I’ve saved my recovery code somewhere safe", isOn: $savedCode).toggleStyle(.checkbox).font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true)
                 Text("Keep it separately from your encrypted backups.").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Back") { showsRecoveryCode = false }.buttonStyle(.glass).disabled(session.isBusy)
+                    Button("Back") { showsRecoveryCode = false }.buttonStyle(.upOnlySecondary).disabled(session.isBusy)
                     Spacer(minLength: 4)
                     Button("Create encrypted vault") { Task { await session.create(recovery: recovery) } }
-                        .buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction).disabled(session.isBusy || !savedCode)
+                        .buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(.defaultAction).disabled(session.isBusy || !savedCode)
                 }
                 Text("Touch ID or your Mac password will protect the vault key.").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
             } else if showRestore {
@@ -50,8 +50,8 @@ struct UpOnlyLockView: View {
                 Text("Up Only generated this code during setup. On this Mac, you can also try unlocking with Touch ID or your Mac password.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 recoveryField("Recovery code").accessibilityLabel("Recovery code")
                 Button("Recover vault") { Task { await session.recover(code: recoveryText); if session.state == .unlocked { recoveryText = "" } } }
-                    .buttonStyle(.glassProminent).disabled(session.isBusy || !codeIsComplete)
-                Button("Back to unlock") { showRecovery = false; recoveryText = ""; session.returnToUnlock() }.buttonStyle(.glass).disabled(session.isBusy)
+                    .buttonStyle(.upOnlyPrimary).disabled(session.isBusy || !codeIsComplete)
+                Button("Back to unlock") { showRecovery = false; recoveryText = ""; session.returnToUnlock() }.buttonStyle(.upOnlySecondary).disabled(session.isBusy)
             } else if session.state == .newVault {
                 UpOnlyWordmark()
                 VStack(alignment: .leading, spacing: 8) {
@@ -75,10 +75,10 @@ struct UpOnlyLockView: View {
                 VStack(spacing: 10) {
                     Button { if recovery == nil { recovery = RecoveryCode.random(); savedCode = false }; showsRecoveryCode = true } label: {
                         Text("Get started").fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity)
-                    }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                    }.buttonStyle(.upOnlyPrimary).keyboardShortcut(.defaultAction)
                     Button { showRestore = true } label: {
                         Text("Restore an encrypted backup…").fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity)
-                    }.buttonStyle(.glass)
+                    }.buttonStyle(.upOnlySecondary)
                 }.controlSize(.large).disabled(session.isBusy)
             } else if session.canStartOver && session.state == .locked {
                 // Setup stopped after saving the recovery file and before the vault, so there is nothing to unlock.
@@ -90,7 +90,7 @@ struct UpOnlyLockView: View {
                 } else {
                     Text("Setup didn’t finish").font(UpOnlyType.title)
                     Text("No vault was saved, so there’s nothing to unlock.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("Start over…") { confirmingStartOver = true }.buttonStyle(.glassProminent).disabled(session.isBusy)
+                    Button("Start over…") { confirmingStartOver = true }.buttonStyle(.upOnlyPrimary).disabled(session.isBusy)
                 }
             } else {
                 // The logo and the fingerprint side by side in a small pill, nothing between them.

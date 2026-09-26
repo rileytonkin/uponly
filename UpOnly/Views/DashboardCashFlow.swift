@@ -29,7 +29,7 @@ extension UpOnlyUnlockedPanel {
                     Text(nothing ? "Add a transaction or import a bank statement." : !gaps.isEmpty ? "Some months can’t be shown in USD until their rates are added." : "The selected period has no recorded result.")
                         .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if nothing {
-                        Button("Add") { session.addingInMenu = true }.buttonStyle(.glassProminent).padding(.top, 4)
+                        Button("Add") { session.addingInMenu = true }.buttonStyle(.upOnlyPrimary).padding(.top, 4)
                     }
                 }.padding(.top, 18)
             }
@@ -43,7 +43,7 @@ extension UpOnlyUnlockedPanel {
                     Text(model.pendingAccounting.joined(separator: ", ") + " · " + model.month.title + " not reported yet")
                         .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if let latest = model.latestAccountingMonth, latest != model.month {
-                        Button("View " + latest.title) { model.select(latest) }.buttonStyle(.glass).controlSize(.small)
+                        Button("View " + latest.title) { model.select(latest) }.buttonStyle(.upOnlySecondary).controlSize(.small)
                     }
                 }.padding(.top, 8)
             }
@@ -204,7 +204,7 @@ extension UpOnlyUnlockedPanel {
                 ManageCard {
                     if latest.isEmpty {
                         UpOnlyRow(title: "Add a transaction", caption: "Or import a bank statement", chevron: true, action: { session.addingInMenu = true }) {
-                            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                            UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32)
                         }
                     } else {
                         let byMonth = Dictionary(grouping: latest, by: \.month)

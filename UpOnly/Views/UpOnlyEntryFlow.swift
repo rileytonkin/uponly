@@ -34,9 +34,9 @@ struct UpOnlyDateCalendar: View {
             HStack {
                 Button("Today") { date = UTCDay.today() }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
                 Spacer()
-                Button("Done", action: done).buttonStyle(.glassProminent).buttonBorderShape(.capsule).keyboardShortcut(.defaultAction)
+                Button("Done", action: done).buttonStyle(.upOnlyPrimary).keyboardShortcut(.defaultAction)
             }.font(.system(size: 12))
-        }.padding(16).fixedSize().background(Color(nsColor: .windowBackgroundColor))
+        }.padding(16).fixedSize().background(UpOnlyBackdrop.base)
             .onExitCommand(perform: done)
     }
 }
@@ -80,16 +80,16 @@ struct UpOnlyEntryFlow: View {
                         ForEach(Array([ImportMode.bankBalances, .holdings, .metals].enumerated()), id: \.element) { index, mode in
                             UpOnlyRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Metals",
                                       caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight", chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
-                                UpOnlyEntryBadge(mode: mode, size: 28)
+                                UpOnlyEntryBadge(mode: mode, size: 32)
                             }
                         }
                     }
                     ManageCard {
                         UpOnlyRow(title: "Transaction", caption: "Spending or income, typed in", chevron: true, action: { addingEntry = true }) {
-                            UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 28)
+                            UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 32)
                         }
                         UpOnlyRow(title: "Bank statement", caption: "Import transactions from a CSV file", chevron: true, action: importStatement) {
-                            UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28)
+                            UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 32)
                         }
                     }
                     // Many at once is its own row, not a line of grey text.
@@ -97,7 +97,7 @@ struct UpOnlyEntryFlow: View {
                         UpOnlyRow(title: session.importDraft == nil ? "Several at once" : "Continue your import",
                                   caption: session.importDraft == nil ? "Paste a spreadsheet, or update everything you track" : "Your unfinished import is still here",
                                   chevron: true, action: showBulk) {
-                            UpOnlySymbolBadge(symbol: "tablecells", tint: UpOnlyTint.netWorth, size: 28)
+                            UpOnlySymbolBadge(symbol: "tablecells", tint: UpOnlyTint.netWorth, size: 32)
                         }
                         .accessibilityIdentifier("BulkImport")
                     }
@@ -106,7 +106,7 @@ struct UpOnlyEntryFlow: View {
         }.frame(maxWidth: .infinity)
             .padding(UpOnlyLayout.inset)
             .frame(maxWidth: .infinity, alignment: .top)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(UpOnlyBackdrop())
             // Esc: out of the transaction form, else off the Add page. A guided form handles its own steps.
             .onChange(of: session.backRequests) {
                 guard session.addingInMenu, session.importDraft == nil else { return }
@@ -140,11 +140,11 @@ struct UpOnlyEntryFlow: View {
                     UpOnlyRow(title: destination.title, caption: "See it on the dashboard", chevron: true, action: {
                         session.showDashboard(destination.selection)
                         session.addingInMenu = false; session.managementInMenu = false
-                    }) { summary.badge.view(size: 28) }
+                    }) { summary.badge.view(size: 32) }
                 }
                 UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", chevron: true,
                           action: { saved = nil }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
+                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32)
                 }
             }
             Spacer(minLength: 0)
@@ -186,7 +186,7 @@ struct UpOnlyEntryFlow: View {
     }
     private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).frame(maxWidth: .infinity).frame(minHeight: 24) }
-            .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.large)
+            .buttonStyle(.upOnlyPrimary).controlSize(.large)
     }
 }
 
@@ -347,7 +347,7 @@ struct UpOnlyEntryBadge: View {
             if mode == .metals {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: size * 0.46, weight: .medium))
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.6), tint], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: size, height: size).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: size * 0.28))
+                    .frame(width: size, height: size).background(tint.opacity(0.16), in: Circle())
             } else if mode == .holdings, let assetID, NSImage(named: "CoinLogos/" + assetID) != nil {
                 UpOnlyAssetBadge(assetID: assetID, symbol: symbol, size: size)
             } else if mode == .holdings, !symbol.isEmpty {

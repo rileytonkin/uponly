@@ -15,25 +15,25 @@ extension UpOnlyManagement {
             ManageCard {
                 UpOnlyRow(title: "Lock now", caption: "Also locks after 5 idle minutes",
                           action: { session.lockAndClose() }) {
-                    UpOnlySymbolBadge(symbol: "lock.fill", size: 28)
+                    UpOnlySymbolBadge(symbol: "lock.fill", size: 32)
                 }
                 UpOnlyRow(title: "New recovery code", caption: "Replace it if someone may have seen it", chevron: true, action: { openSecurityPage(.recoveryCode) }) {
-                    UpOnlySymbolBadge(symbol: "key.fill", size: 28)
+                    UpOnlySymbolBadge(symbol: "key.fill", size: 32)
                 }
             }
             ManageCard {
                 UpOnlyRow(title: "Export encrypted backup", caption: "Keep it apart from your recovery code",
                           action: { Task { await session.exportBackup() } }) {
-                    UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 28)
+                    UpOnlySymbolBadge(symbol: "square.and.arrow.up", size: 32)
                 }
                 UpOnlyRow(title: "Restore from a backup", caption: "Your current vault is kept beside it", chevron: true, action: { openSecurityPage(.restore) }) {
-                    UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 28)
+                    UpOnlySymbolBadge(symbol: "clock.arrow.circlepath", size: 32)
                 }
             }
             ManageCard {
                 UpOnlyRow(title: "Write diagnostics file", caption: "Names and dates, no amounts, unencrypted",
                           action: { diagnosticsMessage = session.writeDiagnostics() }) {
-                    UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 28)
+                    UpOnlySymbolBadge(symbol: "stethoscope", tint: Color.secondary, size: 32)
                 }
             }
             if let diagnosticsMessage { Text(diagnosticsMessage).font(UpOnlyType.caption).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
@@ -50,7 +50,7 @@ extension UpOnlyManagement {
                 Text("Backups you’ve already exported still open with the code that was current when you exported them. Export a new backup after this.")
                     .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button { Task { await replaceRecoveryCode(code) } } label: { Text("Replace recovery code").frame(maxWidth: .infinity) }
-                    .buttonStyle(.glassProminent).controlSize(.large).keyboardShortcut(.defaultAction)
+                    .buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(.defaultAction)
                     .disabled(!savedNewCode || session.isBusy)
                 Text("Touch ID or your Mac password confirms the change.")
                     .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -68,7 +68,7 @@ extension UpOnlyManagement {
             Text("Use the code that was current when the backup was exported.")
                 .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Button { Task { await restoreFromBackup(confirmed: false) } } label: { Label("Choose backup…", systemImage: "folder") }
-                .buttonStyle(.glassProminent).disabled(session.isBusy || (try? RecoveryCode(canonical: restoreCode)) == nil)
+                .buttonStyle(.upOnlyPrimary).disabled(session.isBusy || (try? RecoveryCode(canonical: restoreCode)) == nil)
             if session.isBusy { ProgressView().controlSize(.small) }
         }
     }

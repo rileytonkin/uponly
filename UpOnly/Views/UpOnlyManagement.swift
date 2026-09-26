@@ -172,7 +172,7 @@ struct UpOnlyManagement: View {
             }
         }
         .environment(\.upOnlyScrollHeader, confirming ? nil : header)
-        .buttonStyle(.glass)
+        .buttonStyle(.upOnlySecondary)
         .onAppear {
             // Reopening the menu shows this page again without recreating it; keep where it came from and the import's baseline.
             guard !configured else { return }
@@ -327,11 +327,11 @@ struct UpOnlyManagement: View {
                 ManageCard {
                     if hasData(.cashFlow) {
                         UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
-                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 28)
+                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 32)
                         }
                     }
                     UpOnlyRow(title: "Settings", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Security" }) {
-                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 28)
+                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 32)
                     }
                 }
             }
@@ -366,17 +366,21 @@ struct UpOnlyManagement: View {
         HStack(alignment: .center, spacing: 6) {
             Menu { actions() } label: {
                 HStack(spacing: 4) {
-                    Text(title).font(UpOnlyType.body.weight(.medium)).lineLimit(1)
+                    Text(title).font(UpOnlyType.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
                 }.foregroundStyle(.secondary).contentShape(Rectangle())
-            }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityLabel(title + " options")
+            // A long portfolio name shortens rather than pushing the page wider than the menu.
+            }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true).accessibilityLabel(title + " options")
             Spacer(minLength: 8)
             subheaderTotal(total)
         }.padding(.horizontal, UpOnlyLayout.cardInset)
     }
     /// Lined up with the row values below, which sit left of each row's "…" (22 pt wide, 6 pt away).
     @ViewBuilder private func subheaderTotal(_ total: Decimal?) -> some View {
-        if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).padding(.trailing, 28) }
+        if let total {
+            UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                .minimumScaleFactor(0.7).layoutPriority(1).padding(.trailing, 28)
+        }
     }
     /// Settings: where prices and rates come from, then locking, the recovery code and backups, on one page.
     @ViewBuilder var settings: some View {

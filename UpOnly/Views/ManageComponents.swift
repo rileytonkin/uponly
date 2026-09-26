@@ -24,7 +24,7 @@ struct ManageEmptyState: View {
             UpOnlySymbolBadge(symbol: symbol, tint: tint, size: 30)
             Text(title).font(UpOnlyType.title).fixedSize(horizontal: false, vertical: true)
             Text(detail).font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if let actionTitle { Button(actionTitle, action: action).buttonStyle(.glassProminent).padding(.top, 4) }
+            if let actionTitle { Button(actionTitle, action: action).buttonStyle(.upOnlyPrimary).padding(.top, 4) }
         }.padding(UpOnlyLayout.cardInset).frame(maxWidth: .infinity, alignment: .leading).modifier(UpOnlyContentSurface())
     }
 }
