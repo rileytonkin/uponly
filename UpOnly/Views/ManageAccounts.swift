@@ -2,9 +2,12 @@ import SwiftUI
 
 /// Manage → Accounts: manual accounts and connected profiles, their balances, owners and net-worth switch.
 extension UpOnlyManagement {
+    /// Bank accounts by whose they are: Personal first, then each company, each with its total. A manual account's
+    /// row updates its balance; a synced profile's row opens its currencies.
     var accounts: some View {
-        let all = session.document?.accounts ?? []
-        // Synced Wise currencies fold into one card per profile; manual accounts keep their own card.
+        let document = session.document
+        let all = document?.accounts ?? []
+        // Synced Wise currencies fold into one row per profile; manual accounts keep their own row.
         var order: [String] = [], groups: [String: [Account]] = [:]
         for account in all {
             let key = account.externalProfileID.map { "wise:" + $0 } ?? account.id.uuidString
@@ -12,35 +15,69 @@ extension UpOnlyManagement {
             groups[key, default: []].append(account)
         }
         var latest: [UUID: BankBalanceObservation] = [:]
-        for observation in session.document?.bankBalances ?? [] where latest[observation.accountID].map({ $0.observedAt < observation.observedAt }) ?? true {
+        for observation in document?.bankBalances ?? [] where latest[observation.accountID].map({ $0.observedAt < observation.observedAt }) ?? true {
             latest[observation.accountID] = observation
         }
-        return VStack(alignment: .leading, spacing: 12) {
+        let ownerOf: [String: String?] = Dictionary(uniqueKeysWithValues: order.map { key in
+            (key, groups[key]?.first.flatMap { account in document.flatMap { AssetOwnership.businessID(for: account, in: $0) } })
+        })
+        var owners: [String?] = []
+        for key in order where !owners.contains(ownerOf[key] ?? nil) { owners.append(ownerOf[key] ?? nil) }
+        let ownerName = { (owner: String?) in document.map { AssetOwnership.ownerName(owner, in: $0) } ?? "" }
+        owners.sort { a, b in a == nil ? b != nil : b == nil ? false : ownerName(a) < ownerName(b) }
+        return VStack(alignment: .leading, spacing: 14) {
             if all.isEmpty {
-                ManageEmptyState(title: "No accounts yet", detail: "Add a balance or import a statement to begin.", symbol: TrackedKind.banks.symbol, actionTitle: "Add account") {
+                ManageEmptyState(title: "No bank accounts yet", detail: "Add a balance or import a statement to begin.", symbol: TrackedKind.banks.symbol, actionTitle: "Add a bank account") {
                     session.startImport(.bankBalances, newAccount: true)
                 }
-            } else {
-                // One list: a manual account's row updates its balance; a synced profile's row opens its currencies.
-                ManageCard {
-                    ForEach(Array(order.enumerated()), id: \.element) { index, key in
-                        if let members = groups[key], let first = members.first {
-                            if members.count == 1 && first.externalProfileID == nil { accountRow(first, latest: latest[first.id], divided: index > 0) }
-                            else { profileRows(first, members: members, latest: latest, divided: index > 0) }
+            } else if let document {
+                ForEach(owners, id: \.self) { owner in
+                    let keys = order.filter { (ownerOf[$0] ?? nil) == owner }
+                    let totals = keys.map { usdTotal(groups[$0] ?? [], latest: latest) }
+                    let synced = keys.filter { $0.hasPrefix("wise:") }.count
+                    VStack(alignment: .leading, spacing: 6) {
+                        manageSubheader(AssetOwnership.ownerName(owner, in: document), total: totals.contains { $0 == nil } ? nil : totals.compactMap { $0 }.reduce(0, +)) {
+                            ManageRowMenu(label: "More options for " + AssetOwnership.ownerName(owner, in: document)) {
+                                Button("Show on dashboard") { showOnDashboard(.bankGroup(owner ?? "personal")) }
+                            }
+                        }
+                        ManageCard {
+                            ForEach(Array(keys.enumerated()), id: \.element) { index, key in
+                                if let members = groups[key], let first = members.first {
+                                    if members.count == 1 && first.externalProfileID == nil { accountRow(first, latest: latest[first.id], divided: index > 0) }
+                                    // The heading says whose it is, so a lone Wise profile is just "Wise".
+                                    else { profileRows(first, members: members, latest: latest, divided: index > 0, title: synced == 1 ? "Wise" : nil) }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+    /// What an account or profile holds in dollars at the latest rates; nil while a rate is missing.
+    func usdTotal(_ members: [Account], latest: [UUID: BankBalanceObservation]) -> Decimal? {
+        var total = Decimal(0)
+        for account in members {
+            guard let observation = latest[account.id] else { continue }
+            guard let dollars = usd(observation.amount.value, currency: account.currency) else { return nil }
+            total += dollars
+        }
+        return total
+    }
+    /// A dashboard page, leaving Manage for it.
+    func showOnDashboard(_ selection: UpOnlySession.DashboardSelection) {
+        session.showDashboard(selection)
+        leaveManage()
+    }
     /// "Synced today · Studio · Outside net worth": when the balance is from, who owns it (unless the name already
     /// says), and whether it counts.
-    func accountCaption(_ members: [Account], date: Date?, synced: Bool = false, name: String = "") -> String {
+    func accountCaption(_ members: [Account], date: Date?, synced: Bool = false, name: String = "", showsOwner: Bool = false) -> String {
         var parts: [String] = []
         if let date { parts.append((synced ? "Synced " : "Updated ") + Self.when(date, synced: synced)) }
         else { parts.append(synced ? "Not synced yet" : "Balance needed") }
         if let document = session.document, let first = members.first {
-            if let owner = AssetOwnership.businessID(for: first, in: document) {
+            if showsOwner, let owner = AssetOwnership.businessID(for: first, in: document) {
                 let company = document.businessAccounting?.first { $0.id == owner }?.name ?? "Company unavailable"
                 if company.caseInsensitiveCompare(name) != .orderedSame { parts.append(company) }
             }
@@ -73,19 +110,22 @@ extension UpOnlyManagement {
                          action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
             UpOnlyBankBadge(name: account.name, size: 28)
         } menu: {
+            let owner = session.document.flatMap { AssetOwnership.businessID(for: account, in: $0) }
             ManageRowMenu(label: "More options for " + account.name) {
                 Button("Update balance…") { session.startImport(.bankBalances, prefill: true, accountID: account.id) }
-                Button("Rename…") { editor = .renameAccount(account) }
                 Button("Import statement…") { session.startImport(.statements, accountID: account.id) }
-                ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: account, in: $0) }) { setAccountOwner(account, owner: $0) }
-                trackingToggle([account])
+                Button("Rename…") { editor = .renameAccount(account) }
+                ownerMenu(current: owner) { setAccountOwner(account, owner: $0) }
+                Button("Show on dashboard") { showOnDashboard(.bankGroup(owner ?? "personal")) }
+                Divider()
+                netWorthButton([account])
             }
         }
     }
     /// A synced profile is one row like any account: its total in dollars, with how many currencies hold money.
     /// Clicking it lists them. Balances come from the sync, so there's nothing to update by hand.
-    @ViewBuilder func profileRows(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation], divided: Bool) -> some View {
-        let name = AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first)
+    @ViewBuilder func profileRows(_ first: Account, members: [Account], latest: [UUID: BankBalanceObservation], divided: Bool, title: String? = nil) -> some View {
+        let name = title ?? (AssetOwnership.profileName(first).caseInsensitiveCompare("Personal") == .orderedSame ? "Wise" : AssetOwnership.profileName(first))
         let key = first.externalProfileID ?? first.id.uuidString
         // Jars merge into their currency: one figure per currency for the whole profile.
         let byCurrency: [String: (Account, Decimal, Date?)] = members.reduce(into: [:]) { result, account in
@@ -101,9 +141,11 @@ extension UpOnlyManagement {
         let dollars = funded.map { usd($0.1, currency: $0.0.currency) }
         let total = dollars.contains { $0 == nil } ? nil : dollars.compactMap { $0 }.reduce(Decimal(0), +)
         let open = expandedProfiles.contains(key)
-        UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name),
+        // Several currencies are named in the caption ("USD, EUR"), and the row opens their balances.
+        let currencies = funded.count > 1 ? " · " + funded.map(\.0.currency).joined(separator: ", ") : ""
+        UpOnlyRow(title: name, caption: accountCaption(members, date: byCurrency.values.compactMap { $0.2 }.max(), synced: true, name: name) + currencies,
                   value: total.map(UpOnlyFormat.exactMoney) ?? (funded.isEmpty ? "No money" : "Rate needed"),
-                  valueDetail: funded.count > 1 ? "\(funded.count) currencies" : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
+                  valueDetail: funded.count > 1 ? nil : funded.first.flatMap { $0.0.currency == "USD" ? nil : UpOnlyFormat.currencyMoney($0.1, currency: $0.0.currency) },
                   divided: divided, action: funded.count > 1 ? {
                       withAnimation(.snappy(duration: 0.2)) { if open { expandedProfiles.remove(key) } else { expandedProfiles.insert(key) } }
                   } : nil) {
@@ -111,9 +153,15 @@ extension UpOnlyManagement {
             if name == "Wise" { UpOnlyBankBadge(name: name, synced: true, size: 28) }
             else { UpOnlyProfileImage(data: first.profileImage, name: name, size: 28) }
         } menu: {
+            let owner = session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }
             ManageRowMenu(label: "More options for " + name) {
-                ownerMenu(current: session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }) { setAccountOwner(first, owner: $0) }
-                trackingToggle(members)
+                #if UPONLY_PERSONAL
+                Button("Sync now") { Task { await session.refreshWise() } }.disabled(session.wiseRefreshing)
+                #endif
+                ownerMenu(current: owner) { setAccountOwner(first, owner: $0) }
+                Button("Show on dashboard") { showOnDashboard(.bankGroup(owner ?? "personal")) }
+                Divider()
+                netWorthButton(members)
             }
         }
         if open {

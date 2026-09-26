@@ -17,6 +17,8 @@ struct UpOnlyMenuScroll<Content: View>: View {
                     if height.isFinite && height > 0 { contentHeight = ceil(height) }
                 }
         }.scrollBounceBehavior(.basedOnSize)
+            // The system's soft fade where content scrolls under the page's header, not a hard line.
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .frame(height: min(contentHeight, maxHeight))
     }
 }
@@ -141,15 +143,12 @@ struct UpOnlyManagement: View {
                             Label("Updating past values…", systemImage: "clock.arrow.circlepath").font(UpOnlyType.caption).foregroundStyle(.secondary)
                         }
                         switch session.managementSection {
-                        case "Manage": navigation
+                        case "Manage", "Accounts", "Portfolios", "Precious metals": navigation
                         case "Needs attention":
                             if let review {
                                 UpOnlyDataAttention(report: review.report, months: review.months, month: month, selection: $reviewSelection,
                                                     addEntry: { editor = .entry }, addRate: { editor = .exchangeRate })
                             }
-                        case "Accounts": accounts
-                        case "Portfolios": holdings(.crypto)
-                        case "Precious metals": holdings(.metals)
                         case "Entries": entries
                         default: settings
                         }
@@ -227,8 +226,7 @@ struct UpOnlyManagement: View {
     func sectionTitle(_ section: String) -> String {
         switch section {
         case "Entries": "Transactions"
-        case "Portfolios": "Crypto"
-        case "Precious metals": "Metals"
+        case "Accounts", "Portfolios", "Precious metals": "Manage"
         case "Sources", "Security": "Settings"
         case "Add your info": "Add"
         default: section
@@ -246,7 +244,7 @@ struct UpOnlyManagement: View {
             if session.importReturnsHome || origin == section { return "Back to overview" }
             return session.importDraft == nil ? "Back to Manage" : "Back to " + sectionTitle(session.importReturnSection)
         }
-        if section == "Manage" || section == "Needs attention" || section == origin { return "Back to overview" }
+        if Self.manageGroups.contains(section) || section == "Needs attention" || section == origin { return "Back to overview" }
         return returnToReview ? "Back to Needs attention" : "Back to Manage"
     }
     func back() {
@@ -269,7 +267,7 @@ struct UpOnlyManagement: View {
     }
     func leaveSection() {
         let section = session.managementSection
-        if section == "Manage" || section == "Needs attention" || section == origin { leaveManage() }
+        if Self.manageGroups.contains(section) || section == "Needs attention" || section == origin { leaveManage() }
         else { session.managementSection = returnToReview ? "Needs attention" : "Manage" }
     }
     func leaveManage() {
@@ -281,48 +279,80 @@ struct UpOnlyManagement: View {
     }
     /// Manage's first page, in the home list's style: what you've recorded in one card, how it's kept in another,
     /// each row saying what's inside.
-    /// Manage is the things themselves: every account, portfolio and metal with its actions, then transactions and
-    /// settings. Nothing sits a page away behind a one-line row.
+    /// Manage is the things themselves: every bank account, portfolio and metal with its actions, grouped by whose
+    /// it is, then transactions and settings. Opened for one group (Accounts, Crypto, Metals), it starts there.
     var navigation: some View {
         let doc = session.document
         let crypto = hasData(.crypto) || hasArchived(.crypto), metals = hasData(.metals) || hasArchived(.metals)
         let banks = hasData(.banks)
-        return VStack(alignment: .leading, spacing: 22) {
-            if !banks && !crypto && !metals && !hasData(.cashFlow) {
-                Text("Accounts, crypto, gold and silver, and transactions appear here once you add them with the plus button.")
-                    .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if banks {
-                manageGroup("Accounts") {
-                    if (doc?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1 {
-                        ManageRowMenu(label: "More account options") { Button("Update all balances…") { session.startImport(.bankBalances, prefill: true) } }
+        return ScrollViewReader { proxy in
+            VStack(alignment: .leading, spacing: 22) {
+                if !banks && !crypto && !metals && !hasData(.cashFlow) {
+                    Text("Bank accounts, crypto, gold and silver, and transactions appear here once you add them with the plus button.")
+                        .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if banks {
+                    manageGroup("Bank accounts") {
+                        ManageRowMenu(label: "Bank account options") {
+                            Button("Add a bank account…") { session.startImport(.bankBalances, newAccount: true) }
+                            if (doc?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1 {
+                                Button("Update all balances…") { session.startImport(.bankBalances, prefill: true) }
+                            }
+                            Button("Import a statement…") { session.startImport(.statements) }
+                        }
+                    } content: { accounts }.id("Accounts")
+                }
+                if crypto {
+                    manageGroup("Crypto") {
+                        ManageRowMenu(label: "Crypto options") { Button("Add a coin…") { session.startImport(.holdings) } }
+                    } content: { holdings(.crypto) }.id("Portfolios")
+                }
+                if metals {
+                    manageGroup("Metals") {
+                        ManageRowMenu(label: "Metal options") { Button("Add gold or silver…") { session.startImport(.metals) } }
+                    } content: { holdings(.metals) }.id("Precious metals")
+                }
+                ManageCard {
+                    if hasData(.cashFlow) {
+                        UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
+                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 24)
+                        }
                     }
-                } content: { accounts }
-            }
-            if crypto { manageGroup("Crypto") { EmptyView() } content: { holdings(.crypto, nested: true) } }
-            if metals { manageGroup("Metals") { EmptyView() } content: { holdings(.metals, nested: true) } }
-            ManageCard {
-                if hasData(.cashFlow) {
-                    UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
-                        UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 24)
+                    UpOnlyRow(title: "Settings", caption: sourcesSummary, divided: hasData(.cashFlow), chevron: true, action: { session.managementSection = "Security" }) {
+                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 24)
                     }
                 }
-                UpOnlyRow(title: "Settings", caption: sourcesSummary, divided: hasData(.cashFlow), chevron: true, action: { session.managementSection = "Security" }) {
-                    UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 24)
-                }
             }
+            .onAppear { scrollToGroup(proxy) }
+            .onChange(of: session.managementSection) { scrollToGroup(proxy) }
         }
     }
-    /// One of Manage's groups: its name, any options beside it, then its cards.
+    /// The pages Manage replaced (Accounts, Crypto, Metals) open Manage at their group.
+    static let manageGroups: Set<String> = ["Manage", "Accounts", "Portfolios", "Precious metals"]
+    func scrollToGroup(_ proxy: ScrollViewProxy) {
+        let section = session.managementSection
+        guard section != "Manage", Self.manageGroups.contains(section) else { return }
+        Task { @MainActor in proxy.scrollTo(section, anchor: .top) }
+    }
+    /// One of Manage's groups: its name, its options lined up with the rows' own "…", then its cards.
     func manageGroup<Options: View, Content: View>(_ title: String, @ViewBuilder options: () -> Options, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(title).font(UpOnlyType.group)
                 Spacer(minLength: 8)
-                options()
+                options().padding(.trailing, UpOnlyLayout.cardInset)
             }
             content()
         }
+    }
+    /// A heading inside a group: whose it is, or a portfolio's name, and its total, lined up with the rows below.
+    func manageSubheader<Options: View>(_ title: String, total: Decimal?, @ViewBuilder options: () -> Options) -> some View {
+        HStack(alignment: .center, spacing: 6) {
+            Text(title).font(UpOnlyType.body.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 8)
+            if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
+            options()
+        }.padding(.horizontal, UpOnlyLayout.cardInset)
     }
     /// Settings: where prices and rates come from, then locking, the recovery code and backups, on one page.
     @ViewBuilder var settings: some View {
@@ -368,15 +398,7 @@ struct UpOnlyManagement: View {
     var sectionActions: AnyView? {
         switch session.managementSection {
         // Manage lists everything, so its + adds anything, as the dashboard's does.
-        case "Manage": return AnyView(ManageAddButton(label: "Add") { session.addingInMenu = true })
-        case "Accounts":
-            let many = (session.document?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1
-            return AnyView(HStack(spacing: 8) {
-                if many { ManageRowMenu(label: "More account options") { Button("Update all balances…") { session.startImport(.bankBalances, prefill: true) } } }
-                ManageAddButton(label: "Add account") { session.startImport(.bankBalances, newAccount: true) }
-            })
-        case "Portfolios": return AnyView(ManageAddButton(label: "Add a coin") { session.startImport(.holdings) })
-        case "Precious metals": return AnyView(ManageAddButton(label: "Add gold or silver") { session.startImport(.metals) })
+        case "Manage", "Accounts", "Portfolios", "Precious metals": return AnyView(ManageAddButton(label: "Add") { session.managementSection = "Add your info" })
         case "Entries": return AnyView(ManageAddButton(label: "Add a transaction") { editor = .entry })
         case "Add your info":
             // A table of balances or holdings: paste, files and the template live in the header, not above the rows.
@@ -400,7 +422,7 @@ struct UpOnlyManagement: View {
     @ViewBuilder func ownerMenu(current: String?, choose: @escaping (String?) -> Void) -> some View {
         let books = session.document?.businessAccounting ?? []
         if !books.isEmpty || !(current ?? "").isEmpty {
-            Menu("Owner") {
+            Menu("Belongs to") {
                 Toggle("Personal", isOn: Binding(get: { current == nil }, set: { if $0 { choose(nil) } }))
                 ForEach(books) { book in
                     Toggle(book.name, isOn: Binding(get: { current == book.id }, set: { if $0 { choose(book.id) } }))
@@ -416,12 +438,14 @@ struct UpOnlyManagement: View {
             }
         } }
     }
-    func trackingToggle(_ accounts: [Account]) -> some View {
-        Toggle("Include in net worth", isOn: Binding(get: { session.document.map { doc in accounts.allSatisfy { doc.isBankTracked($0.id, at: Date()) } } ?? false }, set: { tracked in
+    /// Every account counts in net worth unless left out, as for money kept for someone else; its history is kept.
+    func netWorthButton(_ accounts: [Account]) -> some View {
+        let counted = session.document.map { doc in accounts.allSatisfy { doc.isBankTracked($0.id, at: Date()) } } ?? true
+        return Button(counted ? "Leave out of net worth" : "Count in net worth") {
             let now = Date()
             Task { await session.perform { doc in
-                for account in accounts where doc.isBankTracked(account.id, at: now) != tracked { doc.setBankTracked(account.id, tracked: tracked, at: now) }
+                for account in accounts where doc.isBankTracked(account.id, at: now) == counted { doc.setBankTracked(account.id, tracked: !counted, at: now) }
             } }
-        }))
+        }
     }
 }

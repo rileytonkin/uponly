@@ -99,7 +99,7 @@ struct UpOnlyGuidedEntry: View {
             }
         }
         // On the Add page, the amount and review pages fill the menu's height (Manage has its own header and scroll).
-        .frame(minHeight: step > 0 && session.addingInMenu && !session.managementInMenu ? max(0, (session.dashboardHeight ?? 0) - 2 * UpOnlyLayout.inset) : nil, alignment: .top)
+        .frame(minHeight: step > 0 && session.addingInMenu ? max(0, (session.dashboardHeight ?? 0) - 2 * UpOnlyLayout.inset) : nil, alignment: .top)
         }
         }
         .disabled(working || session.isBusy)
@@ -108,7 +108,7 @@ struct UpOnlyGuidedEntry: View {
         .onChange(of: step) { _, next in if next == 1, costFromClose { row.holding.paid = ""; costFromClose = false } }
         .onChange(of: step) { _, _ in unchanged = false }
         // Esc is Back when this form is the Add page (in Manage, Manage's own Back handles it).
-        .onChange(of: session.backRequests) { if session.addingInMenu, !session.managementInMenu, !working { goBack() } }
+        .onChange(of: session.backRequests) { if session.addingInMenu, !working { goBack() } }
         .onAppear {
             // The modifier sits on a Group whose branches swap with the discard prompt (and the menu can reopen), so
             // set up once; running again would take the typed value as the starting one.

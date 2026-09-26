@@ -69,8 +69,9 @@ struct UpOnlyEntryFlow: View {
                 ProgressView().controlSize(.small).onAppear(perform: openTable)
             } else {
                 VStack(alignment: .leading, spacing: 16) {
-                    if !session.managementInMenu {
-                        UpOnlyPageHeader(title: "Add", backLabel: "Back to overview") { session.addingInMenu = false }
+                    // On its own (from a +), Add has its own Back; inside Manage's Add page, Manage's header is Back.
+                    if session.addingInMenu || !session.managementInMenu {
+                        UpOnlyPageHeader(title: "Add", backLabel: session.managementInMenu ? "Back to Manage" : "Back to overview") { session.addingInMenu = false }
                     }
                     // One list in the home style: what you have, then what came in and went out.
                     ManageCard {
@@ -107,7 +108,7 @@ struct UpOnlyEntryFlow: View {
             .background(Color(nsColor: .windowBackgroundColor))
             // Esc: out of the transaction form, else off the Add page. A guided form handles its own steps.
             .onChange(of: session.backRequests) {
-                guard session.addingInMenu, !session.managementInMenu, session.importDraft == nil else { return }
+                guard session.addingInMenu, session.importDraft == nil else { return }
                 if addingEntry { addingEntry = false } else { session.addingInMenu = false }
             }
     }
