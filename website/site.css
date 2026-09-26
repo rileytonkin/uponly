@@ -1,0 +1,20 @@
+html{scroll-behavior:smooth;background:#09090A}
+body{margin:0;background:#09090A;color:rgba(255,255,255,.85);font-family:var(--font-sans);-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+a{color:#3AB57F;text-decoration:none}a:hover{text-decoration:underline}
+a:focus-visible,[role=button]:focus-visible,[role=switch]:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #3AB57F;outline-offset:3px;border-radius:999px}
+@media (max-width:640px){[data-navlink]{display:none!important}}
+::selection{background:rgba(58,181,127,.35)}
+@keyframes uoDrift{0%{transform:translateX(-14%) scale(1)}50%{transform:translateX(0) scale(1.06)}100%{transform:translateX(14%) scale(1)}}
+@keyframes uoPulse{0%{box-shadow:0 0 0 0 rgba(58,181,127,.55)}70%{box-shadow:0 0 0 14px rgba(58,181,127,0)}100%{box-shadow:0 0 0 0 rgba(58,181,127,0)}}
+@keyframes uoBreathe{0%,100%{opacity:1}50%{opacity:.72}}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important}}
+
+/* Hover states the design wrote as style-hover */
+.uo-home:hover{text-decoration:none}
+.uo-nav:hover{color:#fff!important;text-decoration:none}
+.uo-foot:hover{color:rgba(255,255,255,.85)!important;text-decoration:none}
+
+/* Shown only before the page script runs, or without it */
+.uo-fallback{max-width:620px;margin:0 auto;padding:96px 22px;text-align:center}
+.uo-fallback h1{margin:0;font:700 48px/1.05 var(--font-display);letter-spacing:-.03em;color:#fff}
+.uo-fallback p{margin:20px 0 0;font-size:19px;line-height:1.4;color:rgba(255,255,255,.55)}

@@ -1,0 +1,127 @@
+/* Up Only design system tokens, from the Claude Design project "Up Only design system".
+   The SF Pro font files are not shipped: Apple's licence does not allow serving them.
+   The type stack below falls back to -apple-system, which is SF Pro on Apple devices. */
+
+/* Colour: always dark, there is no light theme. Values lifted from UpOnlyTint / UpOnlyBackdrop / UpOnlyContentSurface. */
+:root{
+--uo-black:#09090A;
+--uo-white:#FFFFFF;
+--uo-green:#3AB57F;
+--uo-green-wordmark:#16C878;
+--uo-red:#FF453A;
+--uo-orange:#FF9F0A;
+--uo-blue:#85A3F0;
+--uo-crypto:#D1852E;
+--uo-bronze:#99783B;
+--uo-purple:#8F6BDB;
+--uo-gold:#D4A838;--uo-silver:#8C949E;--uo-platinum:#738594;--uo-palladium:#948070;
+--uo-badge-0:#F2941A;--uo-badge-1:#617DEB;--uo-badge-2:#29A88F;--uo-badge-3:#DB4D5C;--uo-badge-4:#8C5CDB;
+--uo-badge-5:#2199D6;--uo-badge-6:#D670B3;--uo-badge-7:#669E3D;--uo-badge-8:#9E7A4D;--uo-badge-9:#5C708A;
+--uo-label-1:rgba(255,255,255,0.85);
+--uo-label-2:rgba(255,255,255,0.55);
+--uo-label-3:rgba(255,255,255,0.25);
+--uo-label-4:rgba(255,255,255,0.10);
+--uo-fill-05:rgba(255,255,255,0.05);
+--uo-fill-06:rgba(255,255,255,0.06);
+--uo-fill-07:rgba(255,255,255,0.07);
+--uo-fill-08:rgba(255,255,255,0.08);
+--uo-fill-10:rgba(255,255,255,0.10);
+--uo-fill-12:rgba(255,255,255,0.12);
+--uo-fill-14:rgba(255,255,255,0.14);
+--surface-page:var(--uo-black);
+--surface-card:var(--uo-fill-07);
+--surface-row-hover:var(--uo-fill-05);
+--surface-row-selected:var(--uo-fill-08);
+--surface-pill-secondary:var(--uo-fill-10);
+--surface-pill-primary:var(--uo-white);
+--surface-segment:var(--uo-fill-12);
+--text-primary:var(--uo-label-1);
+--text-secondary:var(--uo-label-2);
+--text-tertiary:var(--uo-label-3);
+--text-on-primary:#000000;
+--text-disabled:rgba(255,255,255,0.35);
+--color-brand:var(--uo-green);
+--color-gain:var(--uo-green);
+--color-loss:var(--uo-red);
+--color-warning:var(--uo-orange);
+--color-error:var(--uo-red);
+--tint-net-worth:var(--uo-blue);
+--tint-banks:var(--uo-blue);
+--tint-crypto:var(--uo-crypto);
+--tint-metals:var(--uo-bronze);
+--tint-company:var(--uo-purple);
+--tint-cash-flow:var(--uo-green);
+}
+
+/* Type: every figure uses tabular digits. Roles from UpOnlyType. */
+:root{
+--font-sans:"SF Pro Text",-apple-system,BlinkMacSystemFont,"Helvetica Neue",system-ui,sans-serif;
+--font-display:"SF Pro Display","SF Pro Text",-apple-system,system-ui,sans-serif;
+--font-rounded:"SF Pro Rounded",ui-rounded,-apple-system,system-ui,sans-serif;
+--font-mono:ui-monospace,"SF Mono",Menlo,monospace;
+--figure-numeric:tabular-nums;
+--text-headline-size:40px;--text-headline-weight:700;--text-headline-tracking:-1.3px;
+--text-headline-currency-size:24px;
+--text-setup-title-size:22px;--text-setup-title-tracking:-0.4px;
+--text-page-title-size:20px;--text-page-title-weight:700;
+--text-title-size:18px;--text-title-weight:700;
+--text-bar-title-size:17px;--text-bar-title-weight:600;
+--text-stat-size:16px;
+--text-group-size:15px;--text-group-weight:600;
+--text-section-size:13px;--text-section-weight:600;
+--text-row-size:13px;
+--text-body-size:12px;
+--text-caption-size:11px;
+--text-micro-size:10px;
+--weight-regular:400;--weight-medium:500;--weight-semibold:600;--weight-bold:700;
+}
+
+/* Spacing: exact points from UpOnlyLayout, not snapped to a grid. */
+:root{
+--panel-width:344px;--panel-max-height:600px;
+--space-page:16px;
+--space-card:12px;
+--space-1:2px;--space-2:4px;--space-3:6px;--space-4:8px;--space-5:10px;--space-6:12px;--space-7:14px;--space-8:16px;--space-9:18px;--space-10:20px;--space-11:22px;
+--row-padding-y:8px;--row-min-height:30px;--row-gap:10px;
+--list-card-padding:4px 12px;
+--section-gap:14px;
+--group-gap:22px;
+--chart-plot-height:120px;
+--size-header-button:32px;--size-badge:28px;--size-badge-lg:36px;--size-status-dot:6px;
+--pill-h-small:26px;--pill-h-regular:32px;--pill-h-large:40px;
+--segment-h:26px;
+}
+
+/* Shape */
+:root{
+--radius-card:16px;
+--radius-hover-card:11px;
+--radius-row-highlight:8px;
+--radius-badge-ratio:0.28;
+--radius-badge-28:7.84px;--radius-badge-36:10.08px;
+--radius-legend-swatch:2.5px;
+--radius-pill:999px;
+}
+
+/* Glass, shadows, glow and motion */
+:root{
+--glass-bg:rgba(255,255,255,0.08);
+--glass-bg-hover:rgba(255,255,255,0.12);
+--glass-border:inset 0 0 0 0.5px rgba(255,255,255,0.16),inset 0 1px 0 rgba(255,255,255,0.10);
+--glass-shadow:0 1px 2px rgba(0,0,0,0.25);
+--glass-blur:blur(20px) saturate(1.6);
+--material-bg:rgba(40,40,44,0.78);
+--material-border:inset 0 0 0 0.5px rgba(255,255,255,0.10);
+--shadow-hover-card:0 5px 12px rgba(0,0,0,0.16);
+--glow-inner:rgba(58,181,127,0.22);
+--glow-mid:rgba(58,181,127,0.07);
+--backdrop:radial-gradient(62% 186px at 50% -24px,var(--glow-inner) 0%,var(--glow-mid) 50%,transparent 100%),var(--uo-black);
+--chart-line-width:2px;--chart-glow-blur:5px;--chart-area-top:0.22;
+--ease-snappy:cubic-bezier(0.2,0.9,0.3,1);
+--dur-fast:200ms;--dur-segment:250ms;--dur-numeric:350ms;--dur-amount:400ms;--dur-donut:700ms;
+--pressed-opacity:0.75;
+}
+
+html{color-scheme:dark}
+body{margin:0;background:var(--surface-page);color:var(--text-primary);font-family:var(--font-sans);font-size:var(--text-body-size);-webkit-font-smoothing:antialiased}
+a{color:var(--uo-green);text-decoration:none}a:hover{color:var(--uo-green-wordmark);text-decoration:underline}
