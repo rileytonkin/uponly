@@ -1545,6 +1545,14 @@ struct WiseInputTests {
         session.surfaceOpened()
         #expect(session.state == .locked && session.document == nil)
     }
+    @Test("The idle check runs by itself while unlocked: an idle vault locks without a click or the menu opening")
+    func idleTimerLocks() async throws {
+        let (session, _, _) = harness()
+        await session.create(recovery: .random())
+        session.recordActivity(at: Date().addingTimeInterval(-UpOnlySession.inactivityInterval))
+        for _ in 0..<50 where session.state == .unlocked { try await Task.sleep(for: .milliseconds(100)) }
+        #expect(session.state == .locked && session.document == nil)
+    }
     @Test("Privacy defaults safely and survives an encrypted save and unlock without changing financial data")
     func privacyPersistence() async throws {
         #expect(try VaultJSON.decode(AppSettings.self, from: Data("{}".utf8)).privacyMode == false)

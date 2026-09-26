@@ -260,7 +260,8 @@ final class UpOnlySession {
         }
     }
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
-    @ObservationIgnored private var inactivityTimer: Timer?
+    @ObservationIgnored private var screenLockObserver: ScreenLockObserver?
+    @ObservationIgnored private var inactivityTimer: DispatchSourceTimer?
     @ObservationIgnored private var eventMonitor: Any?
     #if UPONLY_FIXTURE
     @ObservationIgnored private var previewWindow: NSWindow?
@@ -491,7 +492,7 @@ final class UpOnlySession {
         passwordUnlockRequested = false
         authenticationFailed = false
         unlocked.retire(); unlocked = UnlockedSession()
-        inactivityTimer?.invalidate(); inactivityTimer = nil
+        inactivityTimer?.cancel(); inactivityTimer = nil
         if lockingVault { vault.lock() }
         sessionToken = UUID()
         // The lock screen's own state: no note from the unlocked app, and nothing in progress.
@@ -776,8 +777,9 @@ final class UpOnlySession {
         recordActivity(at: date)
     }
     func checkInactivity(at date: Date = Date()) {
-        // Activity inside the out-of-process file dialog isn't seen here, so an open dialog gets longer before locking.
-        guard state == .unlocked, date.timeIntervalSince(lastActivity) >= (filePickerIsOpen ? 3 : 1) * Self.inactivityInterval else { return }
+        // Activity inside the out-of-process file dialog isn't seen here, so a dialog gets no longer than anything
+        // else: past the deadline it's cancelled and closed with the lock (`endSession`).
+        guard state == .unlocked, date.timeIntervalSince(lastActivity) >= Self.inactivityInterval else { return }
         lock()
     }
     /// The eye button and ⇧⌘P. A choice that can't be saved still leaves values hidden: hiding holds for the rest of
@@ -1081,9 +1083,7 @@ final class UpOnlySession {
                 MainActor.assumeIsolated { self?.lock() }
             })
         }
-        observers.append(DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.lock() } })
+        screenLockObserver = ScreenLockObserver { [weak self] in self?.lock() }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .scrollWheel]) { [weak self] event in
             self?.handleActivity()
             return event
@@ -1091,15 +1091,15 @@ final class UpOnlySession {
     }
 
     /// The idle lock's once-a-second check, which only an unlocked vault needs: it starts with each unlock and stops at
-    /// the lock, so a locked app isn't woken for it.
+    /// the lock, so a locked app isn't woken for it. A strict dispatch timer, so App Nap can't coalesce or put it off
+    /// while the menu is closed, as it may an ordinary timer.
     private func startInactivityTimer() {
-        inactivityTimer?.invalidate()
-        inactivityTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkInactivity()
-            }
-        }
-        if let inactivityTimer { RunLoop.main.add(inactivityTimer, forMode: .common) }
+        inactivityTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(deadline: .now() + 1, repeating: .seconds(1), leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.checkInactivity() } }
+        timer.resume()
+        inactivityTimer = timer
     }
 
     #if UPONLY_FIXTURE
@@ -2085,6 +2085,27 @@ extension UpOnlySession {
             catch { failed = true }
         }
         if failed, token == sessionToken { backgroundIssues = Array(Set(backgroundIssues + ["Cached updates"])) }
+    }
+}
+
+/// Locks the vault the moment the screen locks. AppKit holds distributed notifications back while an app is inactive,
+/// and a menu-bar app is inactive nearly all the time, so this asks for immediate delivery, which only the
+/// selector-based registration offers.
+private final class ScreenLockObserver: NSObject {
+    private let screenLocked: @MainActor @Sendable () -> Void
+    init(_ screenLocked: @escaping @MainActor @Sendable () -> Void) {
+        self.screenLocked = screenLocked
+        super.init()
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(received(_:)), name: NSNotification.Name("com.apple.screenIsLocked"),
+                                                            object: nil, suspensionBehavior: .deliverImmediately)
+    }
+    deinit { DistributedNotificationCenter.default().removeObserver(self) }
+    @objc private func received(_ notification: Notification) {
+        // Delivered on the main thread, so the vault is locked before this returns; from anywhere else, as soon as the
+        // main thread can.
+        let lock = self.screenLocked
+        if Thread.isMainThread { MainActor.assumeIsolated { lock() } }
+        else { Task { @MainActor in lock() } }
     }
 }
 
