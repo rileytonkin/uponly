@@ -3008,6 +3008,9 @@ private final class CallCounter: @unchecked Sendable {
             doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("bitcoin"), assetName: "Bitcoin", quantity: 2, at: held, document: doc)
             doc.quotes.append(QuoteObservation(assetID: CanonicalAssetID(rawValue: "bitcoin"), priceUSD: PreciseDecimal(60000), providerTime: saved, fetchedAt: saved, provider: "Binance"))
         }
+        // The backdated holding queues its past days for rebuilding, which saves in chunks; let that finish first, so
+        // any save after this is the test's.
+        try await waitFor { !session.historyRebuilding }
         return session
     }
     private func waitFor(_ condition: () -> Bool) async throws {
@@ -3098,6 +3101,7 @@ private final class CallCounter: @unchecked Sendable {
         #expect(valuation.total == Decimal(string: "122001") && session.isLive(valuation.components))
         // Nothing is saved for it: the vault keeps its one saved price and generation.
         #expect(session.document?.generation == generation && session.document?.quotes.count == 1)
+        #expect(session.document?.quotes.contains { $0.provider.hasSuffix("live") } == false)
         // A dropped connection (Binance ends each after a day) reconnects after a second.
         sockets.opened[0].close()
         try await waitFor { sockets.opened.count == 2 }
