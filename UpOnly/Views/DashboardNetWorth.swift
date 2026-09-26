@@ -90,7 +90,7 @@ extension UpOnlyUnlockedPanel {
                     let unpriced = valuation.components.filter { $0.missing == "quote" }
                     if !unpriced.isEmpty {
                         Text("Prices needed").font(UpOnlyType.section)
-                        Text("No price yet for " + unpriced.map(\.label).joined(separator: ", ") + ". Check that Crypto prices are on in Data sources.").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Text("No price yet for " + unpriced.map(\.label).joined(separator: ", ") + ". Check that Crypto prices are on in Settings.").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Button("Set up prices") { manage("Sources") }
                             .buttonStyle(.glassProminent).buttonBorderShape(.capsule).controlSize(.regular)
                     }

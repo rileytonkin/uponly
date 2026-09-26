@@ -58,7 +58,6 @@ struct UpOnlyManagement: View {
     /// Synced profiles opened to show their currencies on Manage → Accounts.
     @State var expandedProfiles: Set<String> = []
     @State var sourceEditsPending = false
-    @State var discardSources = false
     @State var discardingImport = false
     /// The import's rows when it opened, so Back only asks before throwing away something the user entered.
     @State var importBaseline: [ImportRowContent] = []
@@ -134,16 +133,6 @@ struct UpOnlyManagement: View {
                     }.modifier(UpOnlyHiddenWhile(hidden: discardingImport))
                 }
             }
-            else if session.managementSection == "Sources" {
-                VStack(spacing: 0) {
-                    if discardSources {
-                        UpOnlyConfirmation(title: "Discard source changes?", confirmTitle: "Discard changes", cancelTitle: "Keep editing",
-                            confirm: { sourceEditsPending = false; discardSources = false; leaveSection() }, cancel: { discardSources = false }).padding(UpOnlyLayout.inset)
-                    }
-                    // Keep the editor mounted while confirming so Cancel preserves its draft.
-                    UpOnlySources(pendingChanges: $sourceEditsPending).modifier(UpOnlyHiddenWhile(hidden: discardSources))
-                }
-            }
             else {
                 UpOnlyMenuScroll {
                     VStack(alignment: .leading, spacing: 16) {
@@ -162,7 +151,7 @@ struct UpOnlyManagement: View {
                         case "Portfolios": holdings(.crypto)
                         case "Precious metals": holdings(.metals)
                         case "Entries": entries
-                        default: security
+                        default: settings
                         }
                     }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset)
                 }
@@ -240,8 +229,7 @@ struct UpOnlyManagement: View {
         case "Entries": "Transactions"
         case "Portfolios": "Crypto"
         case "Precious metals": "Metals"
-        case "Sources": "Data sources"
-        case "Security": "Backup & security"
+        case "Sources", "Security": "Settings"
         case "Add your info": "Add"
         default: section
         }
@@ -252,7 +240,7 @@ struct UpOnlyManagement: View {
     }
     var backLabel: String {
         if editor != nil { return backTitle }
-        if securityPage != nil { return "Back to Backup & security" }
+        if securityPage != nil { return "Back to Settings" }
         let section = session.managementSection
         if section == "Add your info" {
             if session.importReturnsHome || origin == section { return "Back to overview" }
@@ -262,14 +250,12 @@ struct UpOnlyManagement: View {
         return returnToReview ? "Back to Needs attention" : "Back to Manage"
     }
     func back() {
-        if discardSources { discardSources = false }
-        else if discardingImport { discardingImport = false }
+        if discardingImport { discardingImport = false }
         else if archive != nil { archive = nil }
         else if entryToRemove != nil { entryToRemove = nil }
         else if confirmingRestore { cancelRestore() }
         else if securityPage != nil { session.message = nil; closeSecurityPage() }
         else if editor != nil { finishEditing() }
-        else if session.managementSection == "Sources", sourceEditsPending { discardSources = true }
         else if session.managementSection == "Add your info" { leaveImport() }
         else { leaveSection() }
     }
@@ -295,33 +281,60 @@ struct UpOnlyManagement: View {
     }
     /// Manage's first page, in the home list's style: what you've recorded in one card, how it's kept in another,
     /// each row saying what's inside.
+    /// Manage is the things themselves: every account, portfolio and metal with its actions, then transactions and
+    /// settings. Nothing sits a page away behind a one-line row.
     var navigation: some View {
         let doc = session.document
         let crypto = hasData(.crypto) || hasArchived(.crypto), metals = hasData(.metals) || hasArchived(.metals)
-        var records: [(title: String, caption: String, symbol: String, tint: Color, section: String)] = []
-        if hasData(.banks) { records.append(("Accounts", count(doc?.accounts.count ?? 0, "account"), TrackedKind.banks.symbol, UpOnlyTint.netWorth, "Accounts")) }
-        if crypto { records.append(("Crypto", holdingsSummary(.crypto), TrackedKind.crypto.symbol, UpOnlyTint.crypto, "Portfolios")) }
-        if metals { records.append(("Metals", holdingsSummary(.metals), TrackedKind.metals.symbol, UpOnlyTint.metals, "Precious metals")) }
-        if hasData(.cashFlow) { records.append(("Transactions", count(doc?.entries.count ?? 0, "transaction"), "list.bullet.rectangle.fill", UpOnlyTint.cashFlow, "Entries")) }
-        return VStack(alignment: .leading, spacing: 14) {
-            if records.isEmpty {
+        let banks = hasData(.banks)
+        return VStack(alignment: .leading, spacing: 22) {
+            if !banks && !crypto && !metals && !hasData(.cashFlow) {
                 Text("Accounts, crypto, gold and silver, and transactions appear here once you add them with the plus button.")
                     .font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            } else {
-                ManageCard {
-                    ForEach(Array(records.enumerated()), id: \.element.section) { index, record in
-                        UpOnlyRow(title: record.title, caption: record.caption, divided: index > 0, chevron: true, action: { session.managementSection = record.section }) {
-                            UpOnlySymbolBadge(symbol: record.symbol, tint: record.tint, size: 24)
-                        }
+            }
+            if banks {
+                manageGroup("Accounts") {
+                    if (doc?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1 {
+                        ManageRowMenu(label: "More account options") { Button("Update all balances…") { session.startImport(.bankBalances, prefill: true) } }
+                    }
+                } content: { accounts }
+            }
+            if crypto { manageGroup("Crypto") { EmptyView() } content: { holdings(.crypto, nested: true) } }
+            if metals { manageGroup("Metals") { EmptyView() } content: { holdings(.metals, nested: true) } }
+            ManageCard {
+                if hasData(.cashFlow) {
+                    UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
+                        UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 24)
                     }
                 }
-            }
-            ManageCard {
-                UpOnlyRow(title: "Data sources", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Sources" }) {
-                    UpOnlySymbolBadge(symbol: "arrow.triangle.2.circlepath", tint: UpOnlyTint.netWorth, size: 24)
+                UpOnlyRow(title: "Settings", caption: sourcesSummary, divided: hasData(.cashFlow), chevron: true, action: { session.managementSection = "Security" }) {
+                    UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 24)
                 }
-                UpOnlyRow(title: "Backup & security", caption: "Touch ID, recovery code and backups", divided: true, chevron: true, action: { session.managementSection = "Security" }) {
-                    UpOnlySymbolBadge(symbol: "lock.shield.fill", tint: UpOnlyTint.netWorth, size: 24)
+            }
+        }
+    }
+    /// One of Manage's groups: its name, any options beside it, then its cards.
+    func manageGroup<Options: View, Content: View>(_ title: String, @ViewBuilder options: () -> Options, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(title).font(UpOnlyType.group)
+                Spacer(minLength: 8)
+                options()
+            }
+            content()
+        }
+    }
+    /// Settings: where prices and rates come from, then locking, the recovery code and backups, on one page.
+    @ViewBuilder var settings: some View {
+        if securityPage != nil { security } else {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Data sources").font(UpOnlyType.group)
+                    UpOnlySources(pendingChanges: $sourceEditsPending, embedded: true)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Security & backups").font(UpOnlyType.group)
+                    securityOverview
                 }
             }
         }
@@ -354,6 +367,8 @@ struct UpOnlyManagement: View {
     /// A section's own actions, beside its title: Add, and for accounts, updating every balance at once.
     var sectionActions: AnyView? {
         switch session.managementSection {
+        // Manage lists everything, so its + adds anything, as the dashboard's does.
+        case "Manage": return AnyView(ManageAddButton(label: "Add") { session.addingInMenu = true })
         case "Accounts":
             let many = (session.document?.accounts.filter { $0.externalProfileID == nil }.count ?? 0) > 1
             return AnyView(HStack(spacing: 8) {

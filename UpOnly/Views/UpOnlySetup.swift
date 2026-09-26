@@ -15,6 +15,8 @@ enum UpOnlyType {
     static let pageTitle = Font.system(size: 20, weight: .semibold)
     /// Page and empty-state titles ("Which account?", "Nothing here yet").
     static let title = Font.system(size: 18, weight: .semibold)
+    /// A page's own groups, above the sections inside them ("Accounts", "Crypto" on Manage).
+    static let group = Font.system(size: 15, weight: .semibold)
     /// Section headings inside a page or card ("Holdings", "Bank accounts", "Transactions").
     static let section = Font.system(size: 13, weight: .semibold)
     /// Row names and row amounts.
@@ -342,6 +344,8 @@ struct UpOnlySourceRow: View {
 
 struct UpOnlySources: View {
     @Binding var pendingChanges: Bool
+    /// Inside Settings, which scrolls and pads its own page; on its own, the list scrolls and pads itself.
+    var embedded = false
     @Environment(UpOnlySession.self) private var session
     @State private var wise = false
     @State private var prices = false
@@ -373,7 +377,28 @@ struct UpOnlySources: View {
         switch kind { case .wise: $wise; case .crypto: $prices; case .metals: $metals; case .fx: $fx }
     }
     var body: some View {
-        UpOnlyMenuScroll {
+        Group {
+            if embedded { list } else {
+                UpOnlyMenuScroll { list.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset) }
+            }
+        }.task(id: message) {
+            if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
+        }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
+        // Switches save themselves. No source asks for a key: the app's providers work without one.
+        .onChange(of: wise) { if loaded { save() } }
+        .onChange(of: fx) { if loaded { save() } }
+        .onChange(of: metals) { if loaded { save() } }
+        .onChange(of: prices) { if loaded { save() } }
+        .onAppear {
+            if let settings = session.document?.settings {
+                #if UPONLY_PERSONAL
+                wise = settings.automaticWise
+                #endif
+                prices = settings.automaticPrices; fx = settings.automaticFX; metals = settings.automaticMetals }
+            Task { @MainActor in loaded = true }
+        }
+    }
+    private var list: some View {
         VStack(alignment: .leading, spacing: 12) {
             let kinds = self.kinds
             if kinds.isEmpty {
@@ -392,23 +417,7 @@ struct UpOnlySources: View {
             if !kinds.isEmpty {
                 Text(sourcesNote).font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
             }
-        }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, UpOnlyLayout.inset).frame(maxWidth: .infinity, alignment: .leading)
-        }.task(id: message) {
-            if message == "Changes saved." { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { message = nil } }
-        }.onChange(of: hasChanges) { _, changed in pendingChanges = changed }
-        // Switches save themselves. No source asks for a key: the app's providers work without one.
-        .onChange(of: wise) { if loaded { save() } }
-        .onChange(of: fx) { if loaded { save() } }
-        .onChange(of: metals) { if loaded { save() } }
-        .onChange(of: prices) { if loaded { save() } }
-        .onAppear {
-            if let settings = session.document?.settings {
-                #if UPONLY_PERSONAL
-                wise = settings.automaticWise
-                #endif
-                prices = settings.automaticPrices; fx = settings.automaticFX; metals = settings.automaticMetals }
-            Task { @MainActor in loaded = true }
-        }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     /// Everything switched on, now: Wise, then prices and rates.
     private func updateNow() {

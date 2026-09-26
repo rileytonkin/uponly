@@ -7,8 +7,9 @@ extension UpOnlyManagement {
             if let index = doc.portfolios.firstIndex(where: { $0.id == portfolio.id }) { doc.portfolios[index].ownerBusinessID = owner }
         } }
     }
-    /// Crypto and Metals share one layout: a card per portfolio, a row per holding.
-    func holdings(_ kind: TrackedKind) -> some View {
+    /// Crypto and Metals share one layout: a card per portfolio, a row per holding. `nested` inside a Manage group,
+    /// whose heading already says Crypto or Metals, so each portfolio's own heading steps down.
+    func holdings(_ kind: TrackedKind, nested: Bool = false) -> some View {
         let metals = kind == .metals
         let mode: ImportMode = metals ? .metals : .holdings
         let addTitle = metals ? "Add gold or silver" : "Add a coin"
@@ -23,7 +24,7 @@ extension UpOnlyManagement {
                                  symbol: kind.symbol, tint: kind.tint, actionTitle: addTitle) { session.startImport(mode) }
             }
             if let doc = session.document {
-                ForEach(active) { portfolio in portfolioCard(portfolio, mode: mode, document: doc, now: now, canMove: canMove) }
+                ForEach(active) { portfolio in portfolioCard(portfolio, mode: mode, document: doc, now: now, canMove: canMove, nested: nested) }
                 if metals {
                     ForEach(PreciousMetal.allCases.filter { metal in doc.holdings.contains { $0.assetID == metal.assetID && $0.isActive(at: now) && doc.portfolio(id: $0.portfolioID)?.isActive(at: now) == true } }, id: \.self) { metal in
                         DisclosureGroup(metal.name + " price history") {
@@ -36,7 +37,7 @@ extension UpOnlyManagement {
         }
     }
     /// A portfolio: its name and options above one card of its holdings, as the dashboard lists them.
-    func portfolioCard(_ portfolio: Portfolio, mode: ImportMode, document doc: VaultDocument, now: Date, canMove: Bool) -> some View {
+    func portfolioCard(_ portfolio: Portfolio, mode: ImportMode, document doc: VaultDocument, now: Date, canMove: Bool, nested: Bool = false) -> some View {
         let holdings = doc.activeHoldings(in: portfolio.id, at: now)
         // One valuation per portfolio; each row reads its own value from it.
         let values = NetWorthCalculator.value(at: now, scope: .portfolio(portfolio.id), document: doc).components
@@ -49,7 +50,8 @@ extension UpOnlyManagement {
         let total = values.isEmpty ? nil : AssetOwnership.sum(values)
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(plainName ? owner ?? "Personal" : portfolio.name).font(UpOnlyType.section).lineLimit(1)
+                Text(plainName ? owner ?? "Personal" : portfolio.name).font(nested ? UpOnlyType.body.weight(.medium) : UpOnlyType.section)
+                    .foregroundStyle(nested ? .secondary : .primary).lineLimit(1)
                 if !plainName, let owner { Text(owner).font(UpOnlyType.body).foregroundStyle(.secondary).lineLimit(1) }
                 Spacer(minLength: 8)
                 if let total { UpOnlyPrivateText(UpOnlyFormat.exactMoney(total)).font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
