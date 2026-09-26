@@ -84,21 +84,29 @@ extension UpOnlyUnlockedPanel {
                                value: personal?.total, valueText: personal?.total.map(UpOnlyFormat.exactMoney) ?? "—", change: allChange)
         let cashFlow = SelectionRow(id: "cashflow", selection: .cashFlow, section: "Cash flow", name: "Income & spending", symbol: "arrow.up.arrow.down",
                                     tint: UpOnlyTint.cashFlow, value: month, valueText: month.map { ($0 > 0 ? "+" : "") + UpOnlyFormat.money($0) } ?? "Nothing yet", detail: "This month")
-        // One card of rows, the same rows as the home list: everything, then each group, then income & spending.
-        // The page showing is highlighted; adding and managing stay with the + and … by the title.
-        let list = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Metals", "Companies"].flatMap { section in rows.filter { $0.section == section } }
-            + (shows(.cashFlow) ? [cashFlow] : [])
+        // The same rows as the home list, under headings as market apps group a list: everything and your own
+        // accounts and holdings, then companies, then income & spending. The page showing is highlighted; adding and
+        // managing stay with the + and … by the title.
+        let yours = (showsNetWorth ? [all] : []) + ["Accounts", "Crypto", "Metals"].flatMap { section in rows.filter { $0.section == section } }
+        let sections = [("Your assets", yours), ("Companies", rows.filter { $0.section == "Companies" }), ("Cash flow", shows(.cashFlow) ? [cashFlow] : [])]
+            .filter { !$0.1.isEmpty }
         let slices = allocation(rows)
         // The switcher opens at the home page's height; the breakdown takes whatever the list leaves, so there's no
         // empty space under the list (and with a long list it stays at its smallest and the page scrolls).
-        let room = (session.dashboardHeight ?? 0) - headerHeight - 16 - switcherListHeight - 10
-        return VStack(spacing: 10) {
+        let room = (session.dashboardHeight ?? 0) - headerHeight - 16 - switcherListHeight - 14
+        return VStack(spacing: 14) {
             // What your total is made of, first. Its shares are the legend's, so the rows don't repeat them.
             if slices.count > 1, !session.privacyMode || session.standInFactor != nil {
                 UpOnlyBreakdown(slices: slices, diameter: min(112, max(78, room - 32)), height: room > 110 ? min(room, 180) : nil)
             }
-            assetList(list.map(switcherRow))
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { switcherListHeight = $0 }
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(sections, id: \.0) { section in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(section.0).font(UpOnlyType.section)
+                        assetList(section.1.map(switcherRow))
+                    }
+                }
+            }.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { switcherListHeight = $0 }
         }
     }
     /// One slice of the breakdown: a kind of asset and your part of it.

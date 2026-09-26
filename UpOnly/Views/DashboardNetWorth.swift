@@ -108,14 +108,14 @@ extension UpOnlyUnlockedPanel {
                 }.padding(.top, 16)
             }
             if snapshot.hasHistory {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    rangeControl
                     if snapshot.points.contains(where: { $0.value != nil }) {
                         UpOnlyChart(points: snapshot.points, tint: trendTint(snapshot.points), plotHeight: chartPlotHeight, bridgesGaps: true)
                     } else {
                         Text("No saved values" + worthRange.within + ".").font(UpOnlyType.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    rangeControl
                 }.padding(.top, 18)
             }
             if let portfolio {
@@ -268,7 +268,7 @@ extension UpOnlyUnlockedPanel {
     func holdingRow(_ line: HoldingLine) -> some View {
         HStack(alignment: .center, spacing: 8) {
             HStack(spacing: 10) {
-                UpOnlyAssetBadge(assetID: line.assetID, symbol: line.ticker, size: 32)
+                UpOnlyAssetBadge(assetID: line.assetID, symbol: line.ticker, size: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(line.ticker).font(UpOnlyType.row.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                     if let quantity = line.quantity {

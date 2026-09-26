@@ -12,6 +12,9 @@ struct UpOnlyMenuScroll<Content: View>: View {
     /// the system's soft blur rather than being cut off at a hard line.
     @Environment(\.upOnlyScrollHeader) private var header
     @State private var headerHeight: CGFloat = 0
+    /// Whether rows have scrolled up under the header. Until they have, the header has no blur behind it at all, so
+    /// the pointer passing over it doesn't bring up an empty bar.
+    @State private var scrolled = false
     var body: some View {
         let maxHeight = self.maxHeight ?? pageHeight
         ScrollView {
@@ -23,6 +26,8 @@ struct UpOnlyMenuScroll<Content: View>: View {
                 }
         }.scrollBounceBehavior(.basedOnSize)
             .scrollEdgeEffectStyle(.soft, for: .vertical)
+            .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 1 } action: { _, now in scrolled = now }
+            .scrollEdgeEffectHidden(!scrolled, for: .top)
             .safeAreaBar(edge: .top, spacing: 0) {
                 if let header {
                     header.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
@@ -327,11 +332,11 @@ struct UpOnlyManagement: View {
                 ManageCard {
                     if hasData(.cashFlow) {
                         UpOnlyRow(title: "Transactions", caption: count(doc?.entries.count ?? 0, "transaction"), chevron: true, action: { session.managementSection = "Entries" }) {
-                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 32)
+                            UpOnlySymbolBadge(symbol: "list.bullet.rectangle.fill", tint: UpOnlyTint.cashFlow, size: 28)
                         }
                     }
                     UpOnlyRow(title: "Settings", caption: sourcesSummary, chevron: true, action: { session.managementSection = "Security" }) {
-                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 32)
+                        UpOnlySymbolBadge(symbol: "gearshape.fill", tint: UpOnlyTint.netWorth, size: 28)
                     }
                 }
             }

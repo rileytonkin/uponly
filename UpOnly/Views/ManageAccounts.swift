@@ -104,7 +104,7 @@ extension UpOnlyManagement {
                          value: account.currency == "USD" ? native ?? "Add balance" : dollars ?? native ?? "Add balance",
                          valueDetail: account.currency == "USD" || dollars == nil ? nil : native,
                          action: { session.startImport(.bankBalances, prefill: true, accountID: account.id) }) {
-            UpOnlyBankBadge(name: account.name, size: 32)
+            UpOnlyBankBadge(name: account.name, size: 28)
         } menu: {
             let owner = session.document.flatMap { AssetOwnership.businessID(for: account, in: $0) }
             ManageRowMenu(label: "More options for " + account.name) {
@@ -146,8 +146,8 @@ extension UpOnlyManagement {
                       withAnimation(.snappy(duration: 0.2)) { if open { expandedProfiles.remove(key) } else { expandedProfiles.insert(key) } }
                   } : nil) {
             // Your own profile is "Wise", with Wise's logo; a company's profile keeps its own.
-            if name == "Wise" { UpOnlyBankBadge(name: name, synced: true, size: 32) }
-            else { UpOnlyProfileImage(data: first.profileImage, name: name, size: 32) }
+            if name == "Wise" { UpOnlyBankBadge(name: name, synced: true, size: 28) }
+            else { UpOnlyProfileImage(data: first.profileImage, name: name, size: 28) }
         } menu: {
             let owner = session.document.flatMap { AssetOwnership.businessID(for: first, in: $0) }
             ManageRowMenu(label: "More options for " + name) {

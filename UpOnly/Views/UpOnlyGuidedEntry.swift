@@ -148,7 +148,7 @@ struct UpOnlyGuidedEntry: View {
                                   value: latest.map { UpOnlyFormat.currencyMoney($0.amount.value, currency: item.currency) }, chevron: true, action: {
                             row.bank.account = ImportAccount(existingID: item.id, name: item.name, currency: item.currency); step = 1
                         }) {
-                            UpOnlyBankBadge(name: item.name, size: 32)
+                            UpOnlyBankBadge(name: item.name, size: 28)
                         }
                     }
                     UpOnlyRow(title: "New account", caption: "Name it and pick its currency", chevron: true, action: {
@@ -162,7 +162,7 @@ struct UpOnlyGuidedEntry: View {
                 ForEach(Array(PreciousMetal.selectable.enumerated()), id: \.element) { index, metal in
                     UpOnlyRow(title: metal.name, caption: metal.rawValue, chevron: true, action: {
                         row.holding.coin = metal.rawValue; row.holding.assetName = metal.name; chose()
-                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 32) }
+                    }) { UpOnlyEntryBadge(mode: .metals, symbol: metal.rawValue, size: 28) }
                 }
             }
         } else if exactCoin {
@@ -187,7 +187,7 @@ struct UpOnlyGuidedEntry: View {
                     UpOnlyRow(title: coin.name, caption: coin.symbol.uppercased(), chevron: true, action: {
                         row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; chose()
                     }) {
-                        UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 32)
+                        UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
                     }
                     .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
                 }
@@ -200,7 +200,7 @@ struct UpOnlyGuidedEntry: View {
             }
         }
     }
-    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32) }
+    private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28) }
     /// A new account: its bank's logo appears as the name is typed; the currency and owner are choices below it.
     private var newAccountForm: some View {
         VStack(spacing: 16) {
@@ -212,7 +212,7 @@ struct UpOnlyGuidedEntry: View {
                 // Banks matching what's typed, each with its logo; picking one fills in its name and usual currency.
                 ForEach(nameSuggestions) { bank in
                     UpOnlyRow(title: bank.name, caption: bank.caption, action: { choose(bank) }) {
-                        UpOnlyBankBadge(name: bank.name, size: 32)
+                        UpOnlyBankBadge(name: bank.name, size: 28)
                     }
                     .accessibilityIdentifier("BankSuggestion-" + bank.id)
                 }
@@ -275,7 +275,7 @@ struct UpOnlyGuidedEntry: View {
                     // Bought in several goes: each buy with its day, costs filled in.
                     ManageCard {
                         UpOnlyRow(title: "Several buys", caption: "Each with its date; costs fill in from that day's price", chevron: true, action: startBuys) {
-                            UpOnlySymbolBadge(symbol: "list.bullet", tint: mode == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 32)
+                            UpOnlySymbolBadge(symbol: "list.bullet", tint: mode == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto, size: 28)
                         }
                     }
                 }
@@ -325,7 +325,7 @@ struct UpOnlyGuidedEntry: View {
         }
     }
     @ViewBuilder private var portfolioBadge: some View {
-        if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 32) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 32) }
+        if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 28) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 28) }
     }
     /// "Northwind · 3 holdings": whose it is, when a company's, and what's in it.
     private func portfolioCaption(_ portfolio: Portfolio) -> String {

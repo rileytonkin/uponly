@@ -212,7 +212,7 @@ struct UpOnlyAssetBadge: View {
             let tint = Self.palette[Self.colourIndex(assetID)]
             Text(assetID == "bitcoin" ? "₿" : String(symbol.prefix(1)).uppercased())
                 .font(.system(size: size * 0.5, weight: .bold, design: .rounded)).foregroundStyle(tint)
-                .frame(width: size, height: size).background(tint.opacity(0.15), in: Circle())
+                .frame(width: size, height: size).background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
                 .accessibilityHidden(true)
         }
     }
@@ -391,7 +391,7 @@ struct UpOnlyBankBadge: View {
     var body: some View {
         if let logo = BankLogos.logo(for: name, synced: synced), let picture = NSImage(named: "BankLogos/" + logo) {
             Image(nsImage: picture).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
-                .frame(width: size, height: size).clipShape(Circle())
+                .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
                 .accessibilityHidden(true)
         } else if let image { UpOnlyProfileImage(data: image, name: name, size: size) }
         else { UpOnlySymbolBadge(symbol: TrackedKind.banks.symbol, size: size) }
@@ -500,7 +500,7 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                                 Group { if captionIsPrivate { UpOnlyPrivateText(caption) } else { Text(caption) } }
                                     .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             }
-                        }.frame(minWidth: 108, alignment: .leading)  // a huge amount shrinks before the name disappears
+                        }.frame(minWidth: 100, alignment: .leading)  // a huge amount shrinks before the name disappears
                         Spacer(minLength: 8)
                         if let value {
                             // Value over its change, as in Delta, so the name keeps the width.
@@ -523,7 +523,7 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                         }
                         if chevron { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
                     // Every row is at least two lines tall, so one with a second line doesn't stand out from the rest.
-                    }.frame(minHeight: 32).padding(.vertical, 9).contentShape(Rectangle())
+                    }.frame(minHeight: 30).padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(UpOnlyRowButtonStyle(selected: selected)).disabled(action == nil)
                     .contextMenu { ForEach(Array(options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
                     .accessibilityLabel(title).accessibilityValue(spokenValue)

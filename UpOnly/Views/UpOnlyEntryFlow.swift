@@ -80,16 +80,16 @@ struct UpOnlyEntryFlow: View {
                         ForEach(Array([ImportMode.bankBalances, .holdings, .metals].enumerated()), id: \.element) { index, mode in
                             UpOnlyRow(title: mode == .bankBalances ? "Bank balance" : mode == .holdings ? "Crypto" : "Metals",
                                       caption: mode == .bankBalances ? "What’s in an account, as of a date" : mode == .holdings ? "Coins you hold, by quantity" : "Bars and coins, by weight", chevron: true, action: { if session.startImport(mode) { seed(mode) } }) {
-                                UpOnlyEntryBadge(mode: mode, size: 32)
+                                UpOnlyEntryBadge(mode: mode, size: 28)
                             }
                         }
                     }
                     ManageCard {
                         UpOnlyRow(title: "Transaction", caption: "Spending or income, typed in", chevron: true, action: { addingEntry = true }) {
-                            UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 32)
+                            UpOnlySymbolBadge(symbol: TrackedKind.cashFlow.symbol, tint: UpOnlyTint.cashFlow, size: 28)
                         }
                         UpOnlyRow(title: "Bank statement", caption: "Import transactions from a CSV file", chevron: true, action: importStatement) {
-                            UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 32)
+                            UpOnlySymbolBadge(symbol: "doc.text.fill", tint: UpOnlyTint.cashFlow, size: 28)
                         }
                     }
                     // Many at once is its own row, not a line of grey text.
@@ -97,7 +97,7 @@ struct UpOnlyEntryFlow: View {
                         UpOnlyRow(title: session.importDraft == nil ? "Several at once" : "Continue your import",
                                   caption: session.importDraft == nil ? "Paste a spreadsheet, or update everything you track" : "Your unfinished import is still here",
                                   chevron: true, action: showBulk) {
-                            UpOnlySymbolBadge(symbol: "tablecells", tint: UpOnlyTint.netWorth, size: 32)
+                            UpOnlySymbolBadge(symbol: "tablecells", tint: UpOnlyTint.netWorth, size: 28)
                         }
                         .accessibilityIdentifier("BulkImport")
                     }
@@ -140,11 +140,11 @@ struct UpOnlyEntryFlow: View {
                     UpOnlyRow(title: destination.title, caption: "See it on the dashboard", chevron: true, action: {
                         session.showDashboard(destination.selection)
                         session.addingInMenu = false; session.managementInMenu = false
-                    }) { summary.badge.view(size: 32) }
+                    }) { summary.badge.view(size: 28) }
                 }
                 UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", chevron: true,
                           action: { saved = nil }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 32)
+                    UpOnlySymbolBadge(symbol: "plus", tint: .accentColor, size: 28)
                 }
             }
             Spacer(minLength: 0)
@@ -347,12 +347,12 @@ struct UpOnlyEntryBadge: View {
             if mode == .metals {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: size * 0.46, weight: .medium))
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.6), tint], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: size, height: size).background(tint.opacity(0.16), in: Circle())
+                    .frame(width: size, height: size).background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
             } else if mode == .holdings, let assetID, NSImage(named: "CoinLogos/" + assetID) != nil {
                 UpOnlyAssetBadge(assetID: assetID, symbol: symbol, size: size)
             } else if mode == .holdings, !symbol.isEmpty {
                 Text(symbol == "BTC" ? "₿" : symbol == "ETH" ? "Ξ" : symbol).font(.system(size: symbol.count > 2 && symbol != "BTC" ? size * 0.25 : size * 0.48, weight: .medium))
-                    .foregroundStyle(tint).frame(width: size, height: size).background(tint.opacity(0.12), in: Circle())
+                    .foregroundStyle(tint).frame(width: size, height: size).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
             } else { UpOnlySymbolBadge(symbol: mode.kind.symbol, tint: tint, size: size) }
         }.accessibilityHidden(true)
     }

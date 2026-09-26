@@ -70,7 +70,7 @@ struct ImportRowEditor: View {
         let account = accounts.first { $0.id == row.bank.account.existingID }
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
-                UpOnlyBankBadge(name: row.bank.account.name, synced: account?.externalProfileID != nil, image: account?.profileImage, size: 32)
+                UpOnlyBankBadge(name: row.bank.account.name, synced: account?.externalProfileID != nil, image: account?.profileImage, size: 28)
                 // The date is shared, above the list; each row is its name, then its new balance in its currency. The
                 // field says the currency, so a Wise name's own " · USD" isn't repeated.
                 let currency = row.bank.account.currency, suffix = " · " + row.bank.account.currency
