@@ -36,7 +36,8 @@ struct UpOnlyPanel: View {
             if session.handleEscape() {}
             else if let closeMenu { closeMenu() } else { dismiss() }
         }).frame(width: 0, height: 0))
-        // The dashboard's ⇧⌘P (privacy) and ⌘L (lock) also work on Manage and Add pages, which replace the dashboard.
+        // The dashboard's ⇧⌘P (privacy) and ⌘L (lock) also work on Manage and Add pages, which replace the dashboard. A
+        // privacy choice that can't be saved keeps values hidden and leaves a note (`togglePrivacyMode`).
         .background {
             if session.state == .unlocked, session.managementInMenu || session.addingInMenu {
                 Group {

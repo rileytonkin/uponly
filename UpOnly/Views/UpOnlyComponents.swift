@@ -205,18 +205,11 @@ struct UpOnlyPrivacyButton: View {
         else if glass { button.buttonStyle(.plain).glassEffect(.regular, in: .circle) }
         else { button.buttonStyle(UpOnlyToolbarButtonStyle(size: size)) }
     }
-    // Never disabled while a save runs: hiding values has to work at once, even during a history rebuild.
+    // Never disabled while a save runs: hiding values has to work at once, even during a history rebuild. A failed
+    // save leaves values hidden and says so itself (`togglePrivacyMode`).
     private var button: some View {
         Button {
-            Task {
-                let token = session.sessionToken
-                do { try await session.togglePrivacyMode() }
-                catch {
-                    if session.sessionToken == token, session.state == .unlocked {
-                        session.message = "Couldn’t save privacy mode. Please try again."
-                    }
-                }
-            }
+            Task { try? await session.togglePrivacyMode() }
         } label: {
             if inMenu { Label(session.privacyMode ? "Show values" : "Hide values", systemImage: session.privacyMode ? "eye.slash" : "eye") }
             else {

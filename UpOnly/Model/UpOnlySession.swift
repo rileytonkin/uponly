@@ -167,7 +167,8 @@ final class UpOnlySession {
     private(set) var unlockTiming: UnlockTiming? { get { unlocked.unlockTiming } set { unlocked.unlockTiming = newValue } }
     /// Read from the vault's saved setting, so it's as you left it at the next unlock.
     var privacyMode: Bool { privacyOverride ?? (document?.settings.privacyMode == true) }
-    /// Hiding values takes effect at once, even while another save finishes; the saved setting follows.
+    /// Hiding values takes effect at once, even while another save finishes; the saved setting follows. If saving
+    /// fails, values stay hidden for the rest of this unlock (`togglePrivacyMode`).
     private var privacyOverride: Bool? { get { unlocked.privacyOverride } set { unlocked.privacyOverride = newValue } }
     private var privacyAttempt: UUID { get { unlocked.privacyAttempt } set { unlocked.privacyAttempt = newValue } }
     /// Edited in place (a statement's rows, one at a time), so it's modified where it's stored rather than copied.
@@ -779,13 +780,23 @@ final class UpOnlySession {
         guard state == .unlocked, date.timeIntervalSince(lastActivity) >= (filePickerIsOpen ? 3 : 1) * Self.inactivityInterval else { return }
         lock()
     }
+    /// The eye button and ⇧⌘P. A choice that can't be saved still leaves values hidden: hiding holds for the rest of
+    /// this unlock, and showing them waits for a save that works. Either way the note says so, and the error is thrown.
     func togglePrivacyMode() async throws {
         recordActivity()
         let hidden = !privacyMode, attempt = UUID()
         privacyOverride = hidden; privacyAttempt = attempt
+        do { try await mutate { $0.settings.privacyMode = hidden } }
+        catch {
+            // Only this unlock's latest toggle speaks for it; a lock in the meantime has already hidden everything.
+            if privacyAttempt == attempt {
+                privacyOverride = true
+                message = hidden ? "Couldn’t save privacy mode. Values stay hidden until Up Only locks." : "Couldn’t save privacy mode, so values stay hidden. Please try again."
+            }
+            throw error
+        }
         // Only the latest toggle hands back to the saved setting, so a quick double toggle doesn't flicker.
-        defer { if privacyAttempt == attempt { privacyOverride = nil } }
-        try await mutate { $0.settings.privacyMode = hidden }
+        if privacyAttempt == attempt { privacyOverride = nil }
     }
 
     func menuOpened() {
