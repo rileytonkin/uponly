@@ -239,7 +239,7 @@ extension UpOnlyUnlockedPanel {
                 // Column heads; the value head chooses the order.
                 HStack(spacing: 8) {
                     Text("Asset").frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Price").frame(width: 96, alignment: .trailing)
+                    Text("Price").frame(width: 84, alignment: .trailing)
                     Menu {
                         ForEach(HoldingSort.allCases, id: \.self) { sort in
                             Toggle(sort.title, isOn: Binding(get: { effectiveHoldingSort == sort }, set: { _ in holdingSort = sort }))
@@ -252,7 +252,7 @@ extension UpOnlyUnlockedPanel {
                         }.font(UpOnlyType.caption).foregroundStyle(.secondary)
                     }
                         // A plain menu keeps the column head's size and colour; the chevron says it can be changed.
-                        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().frame(width: 96, alignment: .trailing)
+                        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().frame(width: 84, alignment: .trailing)
                         .accessibilityLabel("Sort holdings").accessibilityValue(effectiveHoldingSort.title)
                 }.font(UpOnlyType.caption).foregroundStyle(.secondary).padding(.bottom, 2)
                 // Clicking a holding opens its own page; updating them all is in the … menu.
@@ -282,9 +282,9 @@ extension UpOnlyUnlockedPanel {
                 if let change = line.change {
                     Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(UpOnlyTint.signed(change))
                 }
-            }.frame(width: 96, alignment: .trailing)
+            }.frame(width: 84, alignment: .trailing)
             UpOnlyPrivateText(line.valueText).font(UpOnlyType.row.weight(.semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
-                .frame(width: 96, alignment: .trailing)
+                .frame(width: 84, alignment: .trailing)
         }.padding(.vertical, 8).contentShape(Rectangle())
             // The name, and what was paid when it's known, on hover rather than as another line under every row.
             .help([line.name.isEmpty ? nil : line.name, session.privacyMode ? nil : line.caption].compactMap { $0 }.joined(separator: " · "))
