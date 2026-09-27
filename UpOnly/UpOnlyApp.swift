@@ -46,7 +46,7 @@ import Observation
             button.title = "up*"
             button.setAccessibilityLabel("Up Only Preview")
             #else
-            button.image = UpOnlyArtwork.status
+            button.image = UpOnlyArtwork.statusIcon
             button.setAccessibilityLabel("Up Only")
             #endif
             button.setAccessibilityIdentifier("UpOnlyStatusItem")
@@ -126,6 +126,23 @@ enum UpOnlyArtwork {
         let image = load("UpOnlyStatus")
         // MenuBarExtra uses the native image size when constructing its status item.
         image.size = NSSize(width: 26, height: 16)
+        image.isTemplate = true
+        return image
+    }()
+    /// The menu bar's icon: the app icon's shape, a rounded square with "up" cut out of it. A template, so the menu bar
+    /// tints it as it does every other icon (white on a dark bar, black on a light one) rather than showing a black tile.
+    static let statusIcon: NSImage = {
+        let side: CGFloat = 18, glyph = load("UpOnlyStatus")
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            let tile = rect.insetBy(dx: 1, dy: 1)
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: tile, xRadius: tile.width * 0.24, yRadius: tile.width * 0.24).fill()
+            // The letters, as in the app icon: about two thirds of the tile's width, a touch below centre.
+            let width = tile.width * 0.64, height = width * 16 / 26
+            glyph.draw(in: NSRect(x: tile.midX - width / 2, y: tile.midY - height / 2 - 0.5, width: width, height: height),
+                       from: .zero, operation: .destinationOut, fraction: 1)
+            return true
+        }
         image.isTemplate = true
         return image
     }()
