@@ -52,9 +52,10 @@ final class UpOnlySession {
         unlocked.rateCache.latest[code] = rate
         return rate
     }
-    /// The dashboard's chart range, holdings order and company chart: kept here so a trip to Manage or Add, or a
-    /// relock, comes back to them. They're how you like the dashboard, not vault data, so they outlive a lock.
-    var worthRange: WorthRange = .year
+    /// The dashboard's chart range, holdings order and company chart: kept here so a trip to Manage or Add comes back
+    /// to them. They're how you like the dashboard, not vault data, so they outlive a lock. The range starts at 24H
+    /// each time the menu opens (`menuOpened`).
+    var worthRange: WorthRange = .day
     var holdingSortIndex = 0
     var companyChartProfit = false
     /// Add was opened to update one thing from a dashboard page (a holding, a bank's balance): backing out of it
@@ -849,6 +850,8 @@ final class UpOnlySession {
 
     func menuOpened() {
         surfaceOpened()
+        // Every opening starts on the last 24 hours.
+        if worthRange != .day { worthRange = .day }
         // One attempt per opening. Reopening retries after cancellation;
         // changes to the lock view must not immediately prompt again.
         if state == .locked { beginUnlock() }
