@@ -172,11 +172,11 @@ struct UpOnlyUnlockedPanel: View {
     /// The page's measured height, chart included.
     @State var pageHeight: CGFloat = 0
     /// Gives a page's spare height to its chart (up to 140 pt more). All assets also takes height from it, down to a
-    /// 70 pt plot, so its first six rows show without scrolling; past six, the page scrolls.
+    /// 56 pt plot, so its first six rows show without scrolling; past six, the page scrolls.
     func fitChart() {
         let home = session.dashboardSelection == .all && !showingSwitcher
         let natural = pageHeight - chartRoom - (home ? overflowRowsHeight : 0)
-        let room = min(140, max(home ? -50 : 0, maxHeight - headerHeight - natural))
+        let room = min(140, max(home ? -64 : 0, maxHeight - headerHeight - natural))
         if abs(room - chartRoom) > 1 { chartRoom = room }
     }
     @State var switcherListHeight: CGFloat = 0
@@ -279,7 +279,7 @@ struct UpOnlyUnlockedPanel: View {
         let attention = !showingSwitcher && group == nil && detail == nil && selectedPortfolio == nil && selectedHolding == nil ? attentionItems(valueFixes: !onWorth) : []
         // The title row is pinned over the page as the scroll's top bar, so the page passes beneath it under the
         // system's soft blur, as on Manage.
-        let header = navigationHeader.padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 16)
+        let header = navigationHeader.padding(.horizontal, UpOnlyLayout.inset).padding(.top, 14).padding(.bottom, 10)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
         return UpOnlyMenuScroll(contentHeight: max(0, (session.dashboardHeight ?? 360) - headerHeight), maxHeight: max(0, maxHeight - headerHeight)) {
         VStack(spacing: 0) {
@@ -297,7 +297,7 @@ struct UpOnlyUnlockedPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10).padding(.bottom, 10)
                 }
             }
-        }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 16)
+        }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 12)
         .onPreferenceChange(UpOnlyLivePage.self) { live in MainActor.assumeIsolated { livePage = live } }
         // A shorter page gives what's left of the height to its chart, rather than leaving it empty at the foot.
         // All assets goes further: its chart shrinks (to 70 pt at least) so its first six rows show without scrolling.
