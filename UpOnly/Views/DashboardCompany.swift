@@ -87,7 +87,9 @@ extension UpOnlyUnlockedPanel {
             }
             // Breakdown: one USD line per bank, with its logo. Choosing a row focuses the chart and headline on it; a
             // typed-in balance updates from a right-click or the + above. Currency detail stays on Manage → Accounts.
-            let banks = document.map { BankBalanceGroup.banks(bankValues, document: $0) } ?? []
+            // Biggest first, except in privacy mode, where the order alone would say which holds the most.
+            let ranked = document.map { BankBalanceGroup.banks(bankValues, document: $0) } ?? []
+            let banks = session.privacyMode ? ranked.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : ranked
             if !banks.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Bank accounts").font(UpOnlyType.section)
@@ -97,8 +99,9 @@ extension UpOnlyUnlockedPanel {
             if !portfolios.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(Set(portfolios.map(\.kind)).count > 1 ? "Crypto & metals" : portfolios[0].kind == .metals ? "Metals" : "Crypto").font(UpOnlyType.section)
-                    // Every holding on its own row, biggest first, as a portfolio page lists them; each opens its own page.
-                    assetList(holdingValues.sorted { ($0.usdValue?.value ?? 0) > ($1.usdValue?.value ?? 0) }.compactMap { part -> AssetRow? in
+                    // Every holding on its own row, biggest first (by name in privacy mode), as a portfolio page lists them;
+                    // each opens its own page.
+                    assetList(holdingValues.sorted { session.privacyMode ? $0.label.localizedStandardCompare($1.label) == .orderedAscending : ($0.usdValue?.value ?? 0) > ($1.usdValue?.value ?? 0) }.compactMap { part -> AssetRow? in
                         guard let holding = document?.holdings.first(where: { $0.id == part.id }), let portfolio = portfolios.first(where: { $0.id == holding.portfolioID }) else { return nil }
                         let metal = portfolio.kind == .metals
                         return AssetRow(id: part.id.uuidString, name: part.label,

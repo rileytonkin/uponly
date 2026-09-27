@@ -258,7 +258,7 @@ struct UpOnlyEntryFlow: View {
                     }
                 Text(summary.title).font(UpOnlyType.body.weight(.semibold)).foregroundStyle(UpOnlyTint.gain).padding(.top, 6)
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    UpOnlyPrivateText(summary.amount).font(UpOnlyAmountEntry.font(summary.amount.count)).lineLimit(1).minimumScaleFactor(0.6)
+                    UpOnlyPrivateText(summary.amount).font(UpOnlyAmountEntry.font(session.privacyMode ? 0 : summary.amount.count)).lineLimit(1).minimumScaleFactor(0.6)
                     Text(summary.unit).font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary).fixedSize()
                 }
                 if let detail = summary.detail {
@@ -340,11 +340,12 @@ struct UpOnlyAmountEntry: View {
     /// Smaller as the number grows, so a long one still fits the menu's width beside its unit.
     static func font(_ count: Int) -> Font { .system(size: count > 14 ? 20 : count > 12 ? 24 : count > 9 ? 28 : 32, weight: .medium).monospacedDigit() }
     var body: some View {
-        let font = Self.font(text.count)
+        // Hidden, the size and width don't follow the digits, which would say how large the amount is.
+        let font = Self.font(session.privacyMode ? 0 : text.count)
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 if !sign.isEmpty { Text(sign).font(font).foregroundStyle(tint.opacity(text.isEmpty ? 0.35 : 1)).accessibilityHidden(true) }
-                Text(text.isEmpty ? "0" : text).font(font).lineLimit(1).opacity(0).padding(.trailing, 4).accessibilityHidden(true)
+                Text(session.privacyMode ? "00000000" : text.isEmpty ? "0" : text).font(font).lineLimit(1).opacity(0).padding(.trailing, 4).accessibilityHidden(true)
                     .overlay(alignment: .leading) {
                         ZStack(alignment: .leading) {
                             if text.isEmpty { Text("0").font(font).foregroundStyle(.tertiary).accessibilityHidden(true) }
