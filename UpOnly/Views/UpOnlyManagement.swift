@@ -15,10 +15,20 @@ struct UpOnlyMenuScroll<Content: View>: View {
     @State private var headerHeight: CGFloat = 0
     /// Whether rows have scrolled up under the header. Until they have, nothing is drawn behind it.
     @State private var scrolled = false
+    /// How far a page may run past its room and still count as fitting: it's clipped from its bottom margin rather
+    /// than made to scroll a few points.
+    static var fitTolerance: CGFloat { 12 }
+    /// Whether a page of `content` points needs to scroll in `room` points.
+    static func scrolls(content: CGFloat, room: CGFloat) -> Bool { content > room + fitTolerance }
     var body: some View {
         let maxHeight = self.maxHeight ?? pageHeight
         let top = header == nil ? 0 : headerHeight
-        ScrollView {
+        // A page that fits doesn't scroll at all: no bounce, no indicator, nothing to drag. Only a page taller than its
+        // room (a long portfolio, many accounts) scrolls. The axis changes rather than the view, so the page keeps its
+        // state (typing, focus) when it grows past the room or shrinks back. `.scrollDisabled` isn't used: it would
+        // also stop any scroll inside the page.
+        let scrolls = Self.scrolls(content: contentHeight, room: maxHeight)
+        ScrollView(scrolls ? .vertical : []) {
             // A scroll inside this one keeps its own edge; the header belongs to the page's outer scroll.
             content().environment(\.upOnlyScrollHeader, nil).frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -27,7 +37,7 @@ struct UpOnlyMenuScroll<Content: View>: View {
                 }
                 // The page starts under its header.
                 .padding(.top, top)
-        }.scrollBounceBehavior(.basedOnSize)
+        }.scrollBounceBehavior(.basedOnSize).scrollIndicators(scrolls ? .automatic : .hidden)
             .scrollEdgeEffectStyle(.soft, for: .bottom)
             .scrollEdgeEffectHidden(true, for: .top)
             .contentMargins(.top, top, for: .scrollIndicators)
