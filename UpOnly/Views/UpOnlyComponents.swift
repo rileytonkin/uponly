@@ -76,14 +76,16 @@ struct UpOnlySegments<Value: Hashable>: View {
         HStack(spacing: 2) {
             ForEach(options, id: \.value) { option in
                 let chosen = selection == option.value
-                Button { selection = option.value } label: {
-                    Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
-                        .foregroundStyle(chosen ? Color.primary : Color.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 26)
-                        .background { if chosen { Capsule().fill(Color.white.opacity(0.12)).matchedGeometryEffect(id: "pill", in: pill) } }
-                        .contentShape(Capsule())
-                }.buttonStyle(.plain)
-                    .accessibilityLabel(option.spoken).accessibilityAddTraits(chosen ? .isSelected : [])
+                // The whole slot takes the click, not just the letters: a plain button only answered on its text.
+                Text(option.title).font(.system(size: 11, weight: chosen ? .semibold : .medium).monospacedDigit())
+                    .foregroundStyle(chosen ? Color.primary : Color.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 26)
+                    .background { if chosen { Capsule().fill(Color.white.opacity(0.12)).matchedGeometryEffect(id: "pill", in: pill) } }
+                    .contentShape(Rectangle())
+                    .onTapGesture { selection = option.value }
+                    .accessibilityElement(children: .ignore).accessibilityLabel(option.spoken)
+                    .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { selection = option.value }
             }
         }.animation(.snappy(duration: 0.25), value: selection)
             .accessibilityElement(children: .contain).accessibilityLabel(label)
