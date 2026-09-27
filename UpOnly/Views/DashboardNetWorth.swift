@@ -125,9 +125,6 @@ extension UpOnlyUnlockedPanel {
             } else {
                 let rows = overviewRows(snapshot)
                 if !rows.isEmpty { assetList(rows).padding(.top, 12) }
-                if let valuation, available, let stale = staleNote(valuation) {
-                    Text(stale.text).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(2).help(stale.detail).padding(.top, 10)
-                }
             }
             if !available {
                 worthEmptyState.padding(.top, 14)
@@ -188,8 +185,9 @@ extension UpOnlyUnlockedPanel {
     func overviewRows(_ snapshot: WorthSnapshot) -> [AssetRow] {
         guard let valuation = snapshot.valuation, !valuation.isUnavailable, scope == .allTracked else { return [] }
         return selectionRows(current: valuation.components, start: snapshot.start, at: snapshot.interval.end).map { row in
-            // A part-owned company shows your share, as the total counts it, with the whole company under it.
-            AssetRow(id: row.id, name: row.name, detail: row.detail, detailIsAmount: true, value: row.valueText, change: row.change?.fraction, image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint) { select(row.selection, .drill) }
+            // A part-owned company shows your share, as the total counts it.
+            // Just the name and your figure: a company's share of its whole ("50% of …") is on its own page.
+            AssetRow(id: row.id, name: row.name, value: row.valueText, change: row.change?.fraction, image: row.image, logo: row.logo, symbol: row.symbol, tint: row.tint) { select(row.selection, .drill) }
         }
     }
     /// One holding in a portfolio's table: what it is, its market price and move over the range, and what you hold.
