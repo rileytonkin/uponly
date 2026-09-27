@@ -22,8 +22,10 @@ extension UpOnlyUnlockedPanel {
         let holdingValues = companyHoldings(raw?.components ?? [], companyID: companyID)
         let allParts = bankValues + holdingValues
         let focusParts = focusedParts(allParts)
-        let focusTotal = focusParts.isEmpty ? nil : AssetOwnership.sum(focusParts)
-        let share = document.flatMap { doc in allParts.isEmpty ? nil : AssetOwnership.personalTotal(allParts, at: interval.end, document: doc) }
+        // The whole company's figure, and yours of it: a company's page, its chart and its change are your share, month
+        // by month at the ownership then, as net worth counts it.
+        let wholeTotal = focusParts.isEmpty ? nil : AssetOwnership.sum(focusParts)
+        let focusTotal = book == nil ? wholeTotal : document.flatMap { doc in focusParts.isEmpty ? nil : AssetOwnership.personalTotal(focusParts, at: interval.end, document: doc) }
         let series = companySeries(groupID, interval: interval, live: focusTotal, liveComponents: raw?.components ?? [])
         let focusOptions = companyFocusOptions(bankValues: bankValues, portfolios: portfolios)
         // The same measure as the overview: today's figure against the chart's first, over whatever the page is focused on.
@@ -42,9 +44,9 @@ extension UpOnlyUnlockedPanel {
                     let market = if case .portfolio = companyFocus { true } else { false }
                     let assets = change.map { changeStat($0, percent: market) }
                     if let book, companyID != nil {
-                        // Part owners: the whole company above, your share of it on one quiet line.
-                        if partOwner, companyFocus == .all, let share {
-                            UpOnlyPrivateText("Your share" + (ownership.map { " · " + $0.label } ?? "") + " · " + UpOnlyFormat.exactMoney(share))
+                        // Part owners: your share above, the whole company's on one quiet line.
+                        if partOwner, let wholeTotal {
+                            UpOnlyPrivateText("Your " + (ownership?.label ?? "share") + " of " + UpOnlyFormat.exactMoney(wholeTotal))
                                 .font(UpOnlyType.caption).foregroundStyle(.secondary)
                         }
                         // The two figures are also what the chart shows: choosing one switches it.
@@ -58,13 +60,7 @@ extension UpOnlyUnlockedPanel {
                                        selected: showProfit) { companyChart = .profit }
                         }.padding(.top, 8)
                     } else {
-                        // The change over the range, beside your share of a part-owned company.
-                        let yourShare = partOwner && companyFocus == .all ? share.map { share -> HeadlineStat in
-                            let shown = session.privacyMode ? "••••" : UpOnlyFormat.exactMoney(share)
-                            return HeadlineStat(label: "Your share" + (ownership.map { " · " + $0.label } ?? ""), value: shown, tint: .primary,
-                                                spoken: session.privacyMode ? "Hidden value" : shown)
-                        } : nil
-                        let stats = [assets, yourShare].compactMap { $0 }
+                        let stats = [assets].compactMap { $0 }
                         if !stats.isEmpty { headlineStats(stats).padding(.top, 4) }
                     }
                 } else if allParts.isEmpty {
@@ -204,6 +200,8 @@ extension UpOnlyUnlockedPanel {
             }
             let parts = focusedParts(banks + companyHoldings(components, companyID: companyID))
             guard !parts.isEmpty else { return nil }
+            // A company's line is your share of it, at each month's ownership.
+            if let companyID, document.businessAccounting?.contains(where: { $0.id == companyID }) == true { return estimates.personalTotal(parts, day: day, at: moment).map { ($0.total, nil) } }
             return estimates.total(parts, day: day, at: moment).map { ($0.total, nil) }
         }
         if let fine = intradaySeries(scope: .allTracked, interval: interval, samples: samples, liveComponents: liveComponents, live: live, { figure($0, day: $1, at: $1) }) {

@@ -324,3 +324,33 @@ struct CoinLogoPackTests {
         #expect(short("0.0421349") == "0.04213 X" && short("0.1") == "0.1 X")
     }
 }
+
+/// A company's ownership set in the app: typed shares read as fractions, and a refresh from the accounting
+/// connection keeps what was set.
+@Suite("Company ownership")
+struct CompanyOwnershipTests {
+    @Test("Shares read as percents or fractions, a third as a third")
+    func shares() {
+        func share(_ text: String) -> String? { OwnershipPeriod.share(text).map { "\($0.numerator)/\($0.denominator)" } }
+        #expect(share("50") == "1/2" && share("50%") == "1/2" && share("100") == "1/1" && share("25.5") == "51/200")
+        #expect(share("33") == "1/3" && share("33.33") == "1/3" && share("1/3") == "1/3" && share("66.67") == "2/3" && share("2/4") == "1/2")
+        #expect(share("32") == "8/25")
+        for text in ["", "0", "-5", "101", "abc", "4/3", "1/0", "0/3"] { #expect(share(text) == nil, "\(text)") }
+    }
+    @Test("A refresh keeps ownership set in the app, and takes the connection's otherwise")
+    func refreshKeepsEdits() {
+        func book(_ ownership: [OwnershipPeriod], at: Date, edited: Bool? = nil) -> BusinessBook {
+            var book = BusinessBook(id: "syrup", name: "Syrup", ownership: ownership, firstMonth: "2021-01", sourceURL: "", basis: "", fetchedAt: at)
+            book.ownershipEdited = edited
+            return book
+        }
+        let half = [OwnershipPeriod(fromMonth: "2021-01", numerator: 1, denominator: 2)]
+        let edited = [OwnershipPeriod(fromMonth: "2021-01", numerator: 1, denominator: 3), OwnershipPeriod(fromMonth: "2024-06", numerator: 1, denominator: 2)]
+        let saved = book(edited, at: Date(timeIntervalSince1970: 1000), edited: true)
+        let merged = AccountingHistory.merging([book(half, at: Date(timeIntervalSince1970: 2000))], into: [saved])
+        #expect(merged.first?.ownership == edited && merged.first?.ownershipEdited == true)
+        #expect(merged.first?.ownership(at: "2023-12")?.label == "⅓" && merged.first?.ownership(at: "2024-06")?.label == "50%")
+        let plain = AccountingHistory.merging([book(half, at: Date(timeIntervalSince1970: 2000))], into: [book(edited, at: Date(timeIntervalSince1970: 1000))])
+        #expect(plain.first?.ownership == half)
+    }
+}

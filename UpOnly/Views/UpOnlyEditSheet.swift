@@ -26,6 +26,9 @@ struct UpOnlyEditSheet: View {
     /// only the month, and one opened for a past month starts with just that month).
     @State private var businessID: String?
     @State private var dayKnown = true
+    /// A company's ownership history as typed: each change's first month and its share.
+    struct OwnershipLine: Identifiable, Equatable { var id = UUID(); var month = ""; var share = "" }
+    @State private var ownershipLines: [OwnershipLine] = []
     @FocusState private var amountFocused: Bool
     /// Set up once: the menu keeps this view when it closes, and reopening mustn't put back the starting values.
     @State private var configured = false
@@ -37,6 +40,7 @@ struct UpOnlyEditSheet: View {
         case .move: "Move coins"
         case .renameAccount, .renamePortfolio: "Save name"
         case .purchases: "Add purchase"
+        case .ownership: "Save ownership"
         }
     }
     // In Manage, Back lives top-left like every other page; the Add flow's own form keeps its header.
@@ -93,6 +97,11 @@ struct UpOnlyEditSheet: View {
                 amountFocused = true
             case .move: amountFocused = true
             case .purchases: break
+            case .ownership(let book):
+                ownershipLines = book.ownership.sorted { $0.fromMonth < $1.fromMonth }.map { period in
+                    OwnershipLine(month: MonthKey(period.fromMonth)?.title ?? period.fromMonth, share: Self.shareText(period))
+                }
+                if ownershipLines.isEmpty { ownershipLines = [OwnershipLine()] }
             }
         }
     }
@@ -111,7 +120,65 @@ struct UpOnlyEditSheet: View {
             rateForm
         case .entry, .editEntry:
             transactionForm
+        case .ownership(let book):
+            ownershipForm(book)
         }
+    }
+    // MARK: Ownership
+
+    /// Each change in what share of the company is yours, from its first month. Net worth counts the company's bank
+    /// balances and holdings at the share for each month; before the first, at the first.
+    private func ownershipForm(_ book: BusinessBook) -> some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 10) {
+                UpOnlySymbolBadge(symbol: "building.2.fill", tint: UpOnlyTint.company, size: 44)
+                Text("Your share of " + book.name + " from each month it changed. Net worth and the company's page count its money at the share for that month.")
+                    .font(UpOnlyType.body).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: .infinity).padding(.vertical, 4)
+            ManageCard {
+                ForEach($ownershipLines) { $line in
+                    let month = Self.ownershipMonth(line.month), share = OwnershipPeriod.share(line.share)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text("From").font(UpOnlyType.row).foregroundStyle(.secondary)
+                            TextField("Jan 2021", text: $line.month).textFieldStyle(.plain).font(UpOnlyType.row.weight(.medium)).frame(maxWidth: 120)
+                                .accessibilityLabel("First month")
+                            Spacer(minLength: 8)
+                            TextField("50 or 1/3", text: $line.share).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                                .font(UpOnlyType.row.weight(.medium).monospacedDigit()).frame(maxWidth: 90).accessibilityLabel("Your share, as a percent or fraction")
+                            if ownershipLines.count > 1 {
+                                Button { ownershipLines.removeAll { $0.id == line.id } } label: {
+                                    Image(systemName: "minus.circle.fill").font(.system(size: 14)).foregroundStyle(.tertiary)
+                                }.buttonStyle(.plain).accessibilityLabel("Remove this change")
+                            }
+                        }.frame(minHeight: 36)
+                        // What the app read, so "33" can't pass as something else unseen.
+                        Text([month.map { "From " + ($0.title) }, share.map { OwnershipPeriod(fromMonth: "", numerator: $0.numerator, denominator: $0.denominator).label + " yours" }]
+                                .compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "A month such as Jan 2021, and a share such as 50 or 1/3")
+                            .font(UpOnlyType.caption).foregroundStyle((line.month.isEmpty || month != nil) && (line.share.isEmpty || share != nil) ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                            .padding(.bottom, 8)
+                    }
+                }
+                UpOnlyRow(title: "Add a change", action: { ownershipLines.append(OwnershipLine()) }) {
+                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
+                }
+            }
+            if book.ownershipEdited != true {
+                Text("Saving here replaces the ownership from the accounting connection, and refreshes keep it.")
+                    .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+    /// "Jan 2021", "2021-01" or "1/2021" as a month.
+    static func ownershipMonth(_ text: String) -> MonthKey? {
+        let clean = text.trimmingCharacters(in: .whitespaces)
+        if let key = MonthKey(clean) { return key }
+        return UpOnlyDateParser.parse(clean).map { MonthKey(day: $0) }
+    }
+    /// "1/3" for a third, else the percent: "50", "33.5".
+    static func shareText(_ period: OwnershipPeriod) -> String {
+        if period.denominator == 3 { return "\(period.numerator)/3" }
+        return period.label.replacingOccurrences(of: "%", with: "")
     }
     // MARK: Transaction
 
@@ -384,6 +451,20 @@ struct UpOnlyEditSheet: View {
                     onSaved(UpOnlySavedSummary(title: "Transaction saved", amount: kindSign(entry.kind) + readBack(entry.amount, fraction: 2...2), unit: entry.currency,
                                                detail: entry.label + " · " + when, badge: .symbol(badge.symbol, badge.tint), destination: ("Open Income & spending", .cashFlow, nil, nil)))
                     return
+                }
+            case .ownership(let book):
+                var periods: [OwnershipPeriod] = []
+                for line in ownershipLines where !(line.month.isEmpty && line.share.isEmpty) {
+                    guard let month = Self.ownershipMonth(line.month) else { throw ImportFailure("Enter each change's first month, such as Jan 2021.") }
+                    guard let share = OwnershipPeriod.share(line.share) else { throw ImportFailure("Enter each share as a percent above 0 and up to 100, such as 50, or a fraction such as 1/3.") }
+                    periods.append(OwnershipPeriod(fromMonth: month.description, numerator: share.numerator, denominator: share.denominator))
+                }
+                guard !periods.isEmpty else { throw ImportFailure("Enter at least one month and share.") }
+                guard Set(periods.map(\.fromMonth)).count == periods.count else { throw ImportFailure("Each month can start only one share.") }
+                try await session.mutate { doc in
+                    guard let index = doc.businessAccounting?.firstIndex(where: { $0.id == book.id }) else { throw ImportFailure("This company is no longer connected.") }
+                    doc.businessAccounting?[index].ownership = periods.sorted { $0.fromMonth < $1.fromMonth }
+                    doc.businessAccounting?[index].ownershipEdited = true
                 }
             case .editEntry(let original):
                 let edited = try validEntry()

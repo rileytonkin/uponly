@@ -82,8 +82,8 @@ final class UpOnlySession {
     /// What the dashboard shows, chosen with the switcher: everything, one bank group ("personal" or a company's
     /// id), one portfolio, or cash flow. Kept here so a trip to Manage or Add returns to the same page.
     enum DashboardSelection: Equatable { case all, bankGroup(String), portfolio(UUID), holding(UUID), cashFlow }
-    /// A form on Manage asked for from a dashboard page: a holding's purchases, or moving it.
-    enum HoldingRequest: Equatable { case purchases(UUID), move(UUID) }
+    /// A form on Manage asked for from a dashboard page: a holding's purchases, moving it, or a company's ownership.
+    enum HoldingRequest: Equatable { case purchases(UUID), move(UUID), ownership(String) }
     var dashboardSelection: DashboardSelection { get { unlocked.dashboardSelection } set { unlocked.dashboardSelection = newValue } }
     /// The switcher sheet over the dashboard. Esc closes it before the menu, and closing the menu closes it.
     var showingSwitcher: Bool { get { unlocked.showingSwitcher } set { unlocked.showingSwitcher = newValue } }

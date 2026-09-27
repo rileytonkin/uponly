@@ -70,9 +70,10 @@ extension EnvironmentValues {
 
 enum UpOnlyEditor: Identifiable {
     case move(Holding), entry, editEntry(Entry), exchangeRate
-    case renameAccount(Account), renamePortfolio(Portfolio), purchases(Holding)
+    case renameAccount(Account), renamePortfolio(Portfolio), purchases(Holding), ownership(BusinessBook)
     var id: String {
         switch self {
+        case .ownership(let book): "ownership-" + book.id
         case .purchases(let h): "purchases-" + h.id.uuidString
         case .renameAccount(let a): "rename-account-" + a.id.uuidString
         case .renamePortfolio(let p): "rename-portfolio-" + p.id.uuidString
@@ -91,6 +92,7 @@ enum UpOnlyEditor: Identifiable {
         case .renameAccount: "Rename account"
         case .renamePortfolio: "Rename portfolio"
         case .purchases(let h): h.assetName + " purchases"
+        case .ownership(let book): book.name + " ownership"
         }
     }
 }
@@ -315,14 +317,20 @@ struct UpOnlyManagement: View {
         if Self.manageGroups.contains(section) || section == "Needs attention" || section == origin { leaveManage() }
         else { session.managementSection = returnToReview ? "Needs attention" : "Manage" }
     }
-    /// A holding's purchases, or moving it, asked for from its dashboard page. Closing the form goes back there.
+    /// A holding's purchases, moving it, or a company's ownership, asked for from its dashboard page. Closing the form
+    /// goes back there.
     func openRequestedHoldingEditor() -> Bool {
         guard let request = session.requestedHoldingEditor else { return false }
-        let id: UUID = switch request { case .purchases(let id), .move(let id): id }
+        if case .ownership(let bookID) = request {
+            guard let book = session.document?.businessAccounting?.first(where: { $0.id == bookID }) else { session.requestedHoldingEditor = nil; return false }
+            editor = .ownership(book); return true
+        }
+        let id: UUID = switch request { case .purchases(let id), .move(let id): id; case .ownership: UUID() }
         guard let holding = session.document?.holdings.first(where: { $0.id == id }) else { session.requestedHoldingEditor = nil; return false }
         switch request {
         case .purchases: editor = .purchases(holding)
         case .move: editor = .move(holding)
+        case .ownership: break
         }
         return true
     }
