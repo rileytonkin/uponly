@@ -353,13 +353,11 @@ struct UpOnlyUnlockedPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
-                    // Centred on the name's lowercase letters rather than sat on its baseline.
-                    if titleIsLive { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }.transition(.opacity) }
                     Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
                 }
                 if let owner = title.owner { Text(owner).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1) }
-            }.contentShape(Rectangle()).animation(.snappy(duration: 0.3), value: titleIsLive)
+            }.contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityLabel(showingSwitcher ? "Close" : "Showing " + selectionTitle + (titleIsLive ? ", live prices" : "")).accessibilityHint(showingSwitcher ? "" : "Choose all assets, a portfolio or income & spending")
             .accessibilityIdentifier("DashboardSwitcher").keyboardShortcut("k", modifiers: .command)
@@ -525,10 +523,16 @@ struct UpOnlyUnlockedPanel: View {
         UpOnlySegments(options: WorthRange.allCases.map { ($0, $0.title, $0.spokenTitle) },
                        selection: Binding(get: { worthRange }, set: { worthRange = $0 }), label: "Chart range")
     }
-    /// A page's headline figure. Whether its prices are streaming in (`UpOnlySession.isLive`) goes up to the title,
-    /// which shows the live dot after the page's name.
+    /// A page's headline figure, with the live dot after it while its prices stream in (`UpOnlySession.isLive`). That
+    /// goes up to the title too, whose spoken label says so.
     func headlineAmount(_ value: Decimal, live: Bool) -> some View {
-        UpOnlyAmount(value: value, cents: true).preference(key: UpOnlyLivePage.self, value: live)
+        let shown = live || session.previewLive
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            UpOnlyAmount(value: value, cents: true)
+            // Centred on the digits rather than sat on their baseline.
+            if shown { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 14 }.transition(.opacity) }
+        }.animation(.snappy(duration: 0.3), value: shown)
+            .preference(key: UpOnlyLivePage.self, value: live)
     }
     func eyebrow(_ title: String) -> some View {
         Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)

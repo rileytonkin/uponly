@@ -2999,7 +2999,7 @@ private final class CallCounter: @unchecked Sendable {
     private func unlockedSession() async throws -> UpOnlySession {
         let layout = VaultLayout(root: URL(fileURLWithPath: "/tmp/uponly-live-test-" + UUID().uuidString))
         let session = UpOnlySession(testing: VaultStore(layout: layout, io: MemoryFileIO(), keys: MemoryKeyStore(), authenticator: FixtureAuthenticator()), layout: layout)
-        // The menu shows streamed prices every 5 seconds; here, every tenth of a second.
+        // The menu shows streamed prices every 15 seconds; here, every tenth of a second.
         session.livePublishInterval = .milliseconds(100)
         await session.create(recovery: .random())
         try await session.completeSetup(tracked: [.crypto], prices: true, fx: false, key: "")
@@ -3119,6 +3119,28 @@ private final class CallCounter: @unchecked Sendable {
         session.lock()
         try await waitFor { sockets.opened[2].closed }
         #expect(session.livePrices.isEmpty && !session.liveStreaming && session.pricedDocument() == nil)
+    }
+    @Test("The dot shows as the stream starts, before any price, and goes if it never delivers a coin Binance lists")
+    func liveFromTheStart() async throws {
+        let session = try await unlockedSession()
+        let sockets = FakeLiveSockets()
+        session.liveSources = sockets.sources
+        session.menuOpened()
+        let components = { NetWorthCalculator.value(at: Date(), scope: .allTracked, document: session.pricedDocument()!).components }
+        // Live straight away, with no price streamed yet.
+        #expect(session.isLive(components()) && !session.liveStreaming && session.livePrices.isEmpty)
+        try await waitFor { sockets.opened.count == 1 }
+        sockets.opened[0].send(tick(at: Date().addingTimeInterval(-1)))
+        try await waitFor { session.liveStreaming }
+        #expect(session.isLive(components()))
+        session.surfaceClosed()
+        #expect(!session.isLive(components()))
+        // Binance not listing the coin: it's no longer expected once that's known.
+        let unlisted = try await unlockedSession()
+        unlisted.liveSources = LivePriceSources(book: { [:] }, open: { _ in throw PriceError.unavailable }, gecko: { _, _ in [] })
+        unlisted.menuOpened()
+        #expect(unlisted.isLive(NetWorthCalculator.value(at: Date(), scope: .allTracked, document: unlisted.pricedDocument()!).components))
+        try await waitFor { !unlisted.isLive(NetWorthCalculator.value(at: Date(), scope: .allTracked, document: unlisted.pricedDocument()!).components) }
     }
     @Test("Switching crypto prices off stops the stream and drops what streamed")
     func pricesOff() async throws {

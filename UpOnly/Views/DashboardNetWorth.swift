@@ -207,7 +207,7 @@ extension UpOnlyUnlockedPanel {
             guard let holding = document.holdings.first(where: { $0.id == component.id }) else { return nil }
             let id = holding.assetID.rawValue
             let metalKind = PreciousMetal.asset(holding.assetID)
-            let symbol = metalKind?.rawValue ?? (session.catalog.first(where: { $0.id == id }) ?? ImportCoins.common.first(where: { $0.id == id }))?.symbol.uppercased() ?? ""
+            let symbol = metalKind?.rawValue ?? ImportCoins.ticker(id, catalog: session.catalog)
             let quantity = component.nativeAmount?.value
             let value = component.usdValue?.value
             return HoldingLine(
@@ -218,7 +218,8 @@ extension UpOnlyUnlockedPanel {
                 change: snapshot.estimates?.priceChange(holding.assetID, since: snapshot.interval.start, now: date, live: session.livePrices[holding.assetID]),
                 value: value,
                 valueText: value.map(UpOnlyFormat.exactMoney) ?? (component.missing == "quote" ? "Price needed" : "Quantity needed"),
-                quantity: quantity.map { UpOnlyFormat.quantityText($0, symbol: symbol.isEmpty ? holding.assetName : symbol, metal: metal) },
+                // Short, as a market app's list: "116.5K BEAM", with the exact amount on the holding's page.
+                quantity: quantity.map { UpOnlyFormat.shortQuantity($0, symbol: symbol.isEmpty ? holding.assetName : symbol, metal: metal) },
                 caption: UpOnlyFormat.performance(snapshot.performance[component.id] ?? HoldingPerformance.summary(holdingID: component.id, valueUSD: value, document: document, at: date), metal: metal))
         }
         switch effectiveHoldingSort {

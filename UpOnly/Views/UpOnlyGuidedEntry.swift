@@ -331,19 +331,35 @@ struct UpOnlyGuidedEntry: View {
         if mode != .bankBalances, portfolios.count > 1, row.holding.portfolioID == nil { choosingPortfolio = true } else { step = 1 }
     }
     private var portfolioList: some View {
-        ManageCard {
+        let largest = largestHoldings
+        return ManageCard {
             ForEach(Array(portfolios.enumerated()), id: \.element.id) { index, portfolio in
                 UpOnlyRow(title: portfolioLabel(portfolio), caption: portfolioCaption(portfolio), chevron: true, action: {
                     row.holding.portfolioID = portfolio.id; row.holding.portfolioName = portfolio.name; choosingPortfolio = false; step = 1
-                }) { portfolioBadge }
+                }) { portfolioBadge(largest[portfolio.id]) }
             }
             UpOnlyRow(title: "New portfolio", caption: "Name it on the next page", chevron: true, action: {
                 row.holding.portfolioID = nil; row.holding.portfolioName = ""; choosingPortfolio = false; step = 1
             }) { addBadge }
         }
     }
-    @ViewBuilder private var portfolioBadge: some View {
-        if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 28) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 28) }
+    /// A portfolio shows its largest holding's logo; an empty one, the metal bars or Bitcoin's.
+    @ViewBuilder private func portfolioBadge(_ largest: Holding?) -> some View {
+        if let largest {
+            UpOnlyAssetBadge(assetID: largest.assetID.rawValue, symbol: coins.first { $0.id == largest.assetID.rawValue }?.symbol ?? largest.assetName, size: 28)
+        } else if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 28) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 28) }
+    }
+    /// Each portfolio's largest holding by today's value. None in privacy mode: which is largest is itself private.
+    private var largestHoldings: [UUID: Holding] {
+        guard !session.privacyMode, let document = session.pricedDocument() else { return [:] }
+        let holdings = Dictionary(document.holdings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var largest: [UUID: (holding: Holding, value: Decimal)] = [:]
+        for part in NetWorthCalculator.value(at: Date(), scope: .allTracked, document: document).components where part.kind == .holding {
+            guard let holding = holdings[part.id] else { continue }
+            let value = part.usdValue?.value ?? 0
+            if largest[holding.portfolioID].map({ $0.value < value }) ?? true { largest[holding.portfolioID] = (holding, value) }
+        }
+        return largest.mapValues(\.holding)
     }
     /// "Northwind · 3 holdings": whose it is, when a company's, and what's in it.
     private func portfolioCaption(_ portfolio: Portfolio) -> String {
@@ -500,7 +516,7 @@ struct UpOnlyGuidedEntry: View {
             saved(UpOnlySavedSummary(title: items.count == 1 ? "Buy saved" : "\(items.count) buys saved", amount: readBack(total, fraction: 0...18), unit: unitText,
                                      detail: [cost.map { "cost " + UpOnlyFormat.exactMoney($0) }, portfolio.map(portfolioLabel)].compactMap { $0 }.joined(separator: " · "),
                                      badge: .asset(mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "", assetID: mode == .holdings ? row.holding.resolvedCoinID : nil),
-                                     destination: portfolio.map { ("Open " + portfolioLabel($0), .portfolio($0.id)) }))
+                                     destination: portfolio.map(savedDestination), again: again(portfolio)))
         } catch { if token == session.sessionToken { self.error = (error as? ImportFailure)?.text ?? error.localizedDescription; working = false } }
     }
     /// The logo, the amount large with its unit after it, and what it's worth now (or, before anything is typed, what
@@ -810,7 +826,8 @@ struct UpOnlyGuidedEntry: View {
             let owner = account.flatMap { account in document.flatMap { AssetOwnership.businessID(for: account, in: $0) } }
             let page = owner.flatMap { id in document?.businessAccounting?.first { $0.id == id }?.name } ?? "Personal cash"
             return UpOnlySavedSummary(title: "Balance saved", amount: amount, unit: unitText, detail: [worth, name].compactMap { $0 }.joined(separator: " · "),
-                                      badge: .bank(name), destination: ("Open " + page, .bankGroup(owner ?? "personal")))
+                                      badge: .bank(name), destination: ("Open " + page, .bankGroup(owner ?? "personal"), nil, nil),
+                                      again: ("Update another balance", "Another account, or a new one", .bankBalances, nil))
         }
         let portfolio = document?.portfolios.first { $0.id == row.holding.portfolioID }
             ?? document?.portfolios.first { $0.name == row.holding.portfolioName && $0.kind == mode.kind && !$0.isArchived }
@@ -818,7 +835,23 @@ struct UpOnlyGuidedEntry: View {
                                   detail: [worth, portfolio.map(portfolioLabel) ?? row.holding.portfolioName].compactMap { $0 }.joined(separator: " · "),
                                   badge: .asset(mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "",
                                                 assetID: mode == .holdings ? row.holding.resolvedCoinID.nilIfEmpty ?? row.holding.coin : nil),
-                                  destination: portfolio.map { ("Open " + portfolioLabel($0), .portfolio($0.id)) })
+                                  destination: portfolio.map(savedDestination), again: again(portfolio))
+    }
+    /// The portfolio it went in, as the saved page offers it: its largest holding's logo, and its total now with the count.
+    private func savedDestination(_ portfolio: Portfolio) -> (title: String, selection: UpOnlySession.DashboardSelection, badge: UpOnlySavedSummary.Badge?, caption: String?) {
+        let largest = largestHoldings[portfolio.id]
+        // As a coin's badge, which draws a metal's too.
+        let badge = largest.map { holding in
+            UpOnlySavedSummary.Badge.asset(.holdings, symbol: coins.first { $0.id == holding.assetID.rawValue }?.symbol.uppercased() ?? holding.assetName, assetID: holding.assetID.rawValue)
+        }
+        let total = session.pricedDocument().flatMap { NetWorthCalculator.value(at: Date(), scope: .portfolio(portfolio.id), document: $0).total }
+        let count = session.document?.holdings.filter { $0.portfolioID == portfolio.id && $0.archivedAt == nil }.count ?? 0
+        let caption = total.map { "Now " + UpOnlyFormat.exactMoney($0) + " · " + (count == 1 ? "1 holding" : "\(count) holdings") }
+        return ("Open " + portfolioLabel(portfolio), .portfolio(portfolio.id), badge, caption)
+    }
+    /// Another coin or metal, into the same portfolio.
+    private func again(_ portfolio: Portfolio?) -> (title: String, caption: String, mode: ImportMode, portfolioID: UUID?) {
+        (mode == .metals ? "Add another metal" : "Add another coin", portfolio.map { "Also into " + portfolioLabel($0) } ?? "Into a portfolio you choose", mode, portfolio?.id)
     }
     private func save() async {
         guard let batch = session.importDraft, review?.hasErrors == false else { return }

@@ -633,6 +633,30 @@ enum UpOnlyFormat {
         let amount = compact(measured.amount) ?? (metal ? metalWeight : coinAmount).string(from: NSDecimalNumber(decimal: measured.amount)) ?? quantity.description
         return amount + " " + (measured.unit ?? symbol)
     }
+    /// A coin amount short enough for a list row, as market apps write them: "116.5K BEAM", "9,098 ZIG", "952.32 ONDO",
+    /// "0.04213 BTC", "3.71B PEPE". Metal is as `quantityText` writes it.
+    static func shortQuantity(_ quantity: Decimal, symbol: String, metal: Bool) -> String {
+        guard !metal else { return quantityText(quantity, symbol: symbol, metal: true) }
+        let magnitude = abs(NSDecimalNumber(decimal: quantity).doubleValue), sign = quantity < 0 ? "−" : ""
+        let amount: String
+        if let short = compact(quantity) { amount = sign + short }
+        else if magnitude >= 10_000 {
+            // 999,960 would round to "1,000K": "1M" instead.
+            let thousands = (magnitude / 100).rounded() / 10
+            amount = sign + (thousands >= 1000 ? "1M" : (oneDecimalOrNone.string(from: NSNumber(value: thousands)) ?? "") + "K")
+        } else if magnitude >= 1_000 { amount = sign + (wholeNumber.string(from: NSNumber(value: magnitude.rounded())) ?? "") }
+        else if magnitude >= 1 { amount = sign + (coinCents.string(from: NSDecimalNumber(decimal: abs(quantity))) ?? "") }
+        else { amount = sign + (fourSignificant.string(from: NSDecimalNumber(decimal: abs(quantity))) ?? "") }
+        return amount + " " + symbol
+    }
+    private static let oneDecimalOrNone = decimalFormatter(fractionDigits: 0...1)
+    private static let wholeNumber = decimalFormatter(fractionDigits: 0...0)
+    private static let coinCents = decimalFormatter(fractionDigits: 0...2)
+    private static let fourSignificant: NumberFormatter = {
+        let formatter = decimalFormatter(fractionDigits: 0...8)
+        formatter.usesSignificantDigits = true; formatter.maximumSignificantDigits = 4
+        return formatter
+    }()
     /// "$59,000.00", "$0.000012" (sub-dollar coins keep their significant digits), "$2,650.00/ozt" for metal. Metal is
     /// always priced per ounce, so the unit doesn't hint at how much is held.
     static func unitPrice(quantity: Decimal, valueUSD: Decimal, metal: Bool) -> String? {

@@ -276,7 +276,7 @@ final class UpOnlySession {
     }
     /// How often streamed prices reach the screen while the menu is open: often enough to feel live, calm enough to read.
     /// Tests shorten it.
-    @ObservationIgnored var livePublishInterval: Duration = .seconds(5)
+    @ObservationIgnored var livePublishInterval: Duration = .seconds(15)
     #if UPONLY_FIXTURE
     @ObservationIgnored private var previewWindow: NSWindow?
     #endif
@@ -2236,8 +2236,17 @@ extension UpOnlySession {
     }
     /// Whether a figure made of `components` (from `pricedDocument`) moves with the stream: it's delivering, and some
     /// holding in the figure is valued at a streamed price rather than a saved one.
+    /// While the stream is still connecting, a figure holding a coin it's starting for counts as live already, so the dot
+    /// shows as the menu opens rather than at the first prices.
     func isLive(_ components: [ValuationComponent]) -> Bool {
-        guard liveStreaming, let document else { return false }
+        guard let document else { return false }
+        if !liveStreaming {
+            let expected = unlocked.liveExpected
+            guard !expected.isEmpty else { return false }
+            return components.contains { component in
+                component.kind == .holding && document.holdings.first(where: { $0.id == component.id }).map { expected.contains($0.assetID) } == true
+            }
+        }
         let live = livePrices
         return components.contains { component in
             guard component.kind == .holding, let time = component.quoteTime,
@@ -2271,18 +2280,19 @@ extension UpOnlySession {
         stopLivePrices()
         let token = sessionToken, feed = LivePriceFeed(checkedAt: unlocked.liveCheckedAt)
         unlocked.liveFor = (ids, key)
+        unlocked.liveExpected = Set(coins.map(\.id)); unlocked.liveStartedAt = Date()
         // The network side runs off the main thread and only ever writes to `feed`.
         unlocked.liveWork = Task.detached(priority: .utility) { await PublicPrices.streamLivePrices(coins, key: key, sources: sources, feed: feed) }
-        // Whatever arrived goes to the dashboard in one change, if it's still this unlock's: after a second at first, so
-        // the menu goes live at once, then every `livePublishInterval`.
-        let interval = livePublishInterval
+        // Whatever arrived goes to the dashboard in one change, if it's still this unlock's: every second while the stream
+        // is connecting, so its first prices show as they arrive, then every `livePublishInterval`.
+        let interval = livePublishInterval, first = min(Duration.seconds(1), interval)
         unlocked.liveTask = Task { [weak self] in
-            var wait = min(Duration.seconds(1), interval)
+            var wait = first
             while !Task.isCancelled {
                 do { try await Task.sleep(for: wait) } catch { return }
                 guard let self, !Task.isCancelled else { return }
-                self.publishLive(feed.take(), streaming: feed.isStreaming(), checkedAt: feed.checkedAt, token: token)
-                wait = interval
+                self.publishLive(feed.take(), streaming: feed.isStreaming(), unlisted: feed.unlisted, checkedAt: feed.checkedAt, token: token)
+                wait = self.unlocked.liveExpected.isEmpty ? interval : first
             }
         }
     }
@@ -2290,12 +2300,20 @@ extension UpOnlySession {
         unlocked.liveTask?.cancel(); unlocked.liveWork?.cancel()
         unlocked.liveTask = nil; unlocked.liveWork = nil; unlocked.liveFor = nil
         if liveStreaming { liveStreaming = false }
+        if !unlocked.liveExpected.isEmpty { unlocked.liveExpected = [] }
     }
     /// Publishes a second's live prices, each only if it's newer than the one shown. Nothing from an earlier unlock
-    /// reaches a later one: `token` must still be the session's.
-    func publishLive(_ prices: [CanonicalAssetID: LivePrice], streaming: Bool, checkedAt: Date? = nil, token: UUID) {
+    /// reaches a later one: `token` must still be the session's. The coins still expected to stream drop those Binance
+    /// doesn't list (`unlisted`), and all go once it delivers or hasn't within 20 seconds.
+    func publishLive(_ prices: [CanonicalAssetID: LivePrice], streaming: Bool, unlisted: [String]? = nil, checkedAt: Date? = nil, token: UUID) {
         guard token == sessionToken, state == .unlocked else { return }
         if let checkedAt { unlocked.liveCheckedAt = checkedAt }
+        if !unlocked.liveExpected.isEmpty {
+            var expected = unlocked.liveExpected
+            if streaming || unlocked.liveStartedAt.map({ Date().timeIntervalSince($0) > 20 }) != false { expected = [] }
+            else if let unlisted { expected.subtract(unlisted.map { CanonicalAssetID(rawValue: $0) }) }
+            if expected != unlocked.liveExpected { unlocked.liveExpected = expected }
+        }
         if liveStreaming != streaming { liveStreaming = streaming }
         var next = livePrices
         for (asset, price) in prices where next[asset].map({ $0.time < price.time }) ?? true { next[asset] = price }
@@ -2344,6 +2362,9 @@ final class UnlockedSession {
     // Live prices while the menu is open (`updateLivePrices`): in memory only and never saved, so a lock discards them.
     fileprivate(set) var livePrices: [CanonicalAssetID: LivePrice] = [:]
     fileprivate(set) var liveStreaming = false
+    /// The coins the stream is starting for, until it delivers: their figures show the live dot from the start.
+    fileprivate(set) var liveExpected: Set<CanonicalAssetID> = []
+    @ObservationIgnored fileprivate var liveStartedAt: Date?
     @ObservationIgnored fileprivate var liveTask: Task<Void, Never>?
     @ObservationIgnored fileprivate var liveWork: Task<Void, Never>?
     @ObservationIgnored fileprivate var liveFor: (coins: [String], key: String)?

@@ -85,9 +85,7 @@ func kindSign(_ kind: EntryKind) -> String { kind == .expense ? "−" : kind == 
 /// Holding amounts as the dashboard shows them: coins with their symbol, metal in troy ounces from one ounce up, otherwise grams.
 enum ManageFormat {
     static func amount(_ value: Decimal, of holding: Holding, catalog: [CatalogCoin]) -> String {
-        let id = holding.assetID.rawValue
-        let coin = catalog.first(where: { $0.id == id }) ?? ImportCoins.common.first(where: { $0.id == id })
-        return UpOnlyFormat.holding(quantity: value, valueUSD: nil, symbol: coin?.symbol.uppercased() ?? "", metal: PreciousMetal.asset(holding.assetID) != nil)
+        return UpOnlyFormat.holding(quantity: value, valueUSD: nil, symbol: ImportCoins.ticker(holding.assetID.rawValue, catalog: catalog), metal: PreciousMetal.asset(holding.assetID) != nil)
             .trimmingCharacters(in: .whitespaces)
     }
     /// "Aug 12" for a stored UTC day such as "2026-08-12".

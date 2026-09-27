@@ -194,8 +194,7 @@ struct UpOnlyEditSheet: View {
     /// A coin's symbol, or grams for metal: the unit its quantities are typed in.
     private func unit(_ holding: Holding) -> String {
         if PreciousMetal.asset(holding.assetID) != nil { return "g" }
-        let id = holding.assetID.rawValue
-        return (session.catalog.first { $0.id == id } ?? ImportCoins.common.first { $0.id == id })?.symbol.uppercased() ?? holding.assetName
+        return ImportCoins.ticker(holding.assetID.rawValue, catalog: session.catalog).nilIfEmpty ?? holding.assetName
     }
     private func assetBadge(_ holding: Holding) -> some View {
         UpOnlyEntryBadge(mode: PreciousMetal.asset(holding.assetID) != nil ? .metals : .holdings, symbol: PreciousMetal.asset(holding.assetID)?.rawValue ?? unit(holding),
@@ -383,7 +382,7 @@ struct UpOnlyEditSheet: View {
                     let badge = Self.kindBadge(entry.kind)
                     let when = dayKnown ? date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) : MonthKey(entry.month)?.title ?? entry.month
                     onSaved(UpOnlySavedSummary(title: "Transaction saved", amount: kindSign(entry.kind) + readBack(entry.amount, fraction: 2...2), unit: entry.currency,
-                                               detail: entry.label + " · " + when, badge: .symbol(badge.symbol, badge.tint), destination: ("Open Income & spending", .cashFlow)))
+                                               detail: entry.label + " · " + when, badge: .symbol(badge.symbol, badge.tint), destination: ("Open Income & spending", .cashFlow, nil, nil)))
                     return
                 }
             case .editEntry(let original):

@@ -835,10 +835,16 @@ nonisolated enum ImportCoins {
         CatalogCoin(id: "astar", symbol: "astr", name: "Astar"),
         CatalogCoin(id: "celo", symbol: "celo", name: "Celo")
     ]
+    /// A coin's ticker, capitalised: from a search this session, the built-in list, else the bundled one
+    /// (`CoinLogos.ticker`); empty when none knows it.
+    static func ticker(_ id: String, catalog: [CatalogCoin]) -> String {
+        let known = (catalog.first { $0.id == id } ?? common.first { $0.id == id })?.symbol
+        return (known.flatMap { $0.isEmpty ? nil : $0 } ?? CoinLogos.ticker(id) ?? "").uppercased()
+    }
     static func available(document: VaultDocument, catalog: [CatalogCoin]) -> [CatalogCoin] {
         var coins = Dictionary(uniqueKeysWithValues: common.map { ($0.id, $0) })
         for holding in document.holdings where PreciousMetal.asset(holding.assetID) == nil && coins[holding.assetID.rawValue] == nil {
-            coins[holding.assetID.rawValue] = CatalogCoin(id: holding.assetID.rawValue, symbol: "", name: holding.assetName)
+            coins[holding.assetID.rawValue] = CatalogCoin(id: holding.assetID.rawValue, symbol: CoinLogos.ticker(holding.assetID.rawValue)?.lowercased() ?? "", name: holding.assetName)
         }
         for coin in catalog { coins[coin.id] = coin }
         return coins.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }

@@ -48,20 +48,20 @@ struct UpOnlyAmount: View {
     }
 }
 
-/// Whether the page on show has prices streaming in: its headline sets it, the title reads it.
+/// Whether the page on show has prices streaming in: its headline sets it, and the title says so to VoiceOver.
 struct UpOnlyLivePage: PreferenceKey {
     static let defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
-/// The dot after a page's name while its prices stream in with the menu open: small, green, pulsing (still, with Reduce
+/// The dot after a page's total while its prices stream in with the menu open: small, green, pulsing (still, with Reduce
 /// Motion). It says nothing about the figures, so it shows in privacy mode too. The title's spoken label says "live".
 struct UpOnlyLiveDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        Image(systemName: "circle.fill").font(.system(size: 7)).foregroundStyle(UpOnlyTint.gain)
+        Image(systemName: "circle.fill").font(.system(size: 8)).foregroundStyle(UpOnlyTint.gain)
             .symbolEffect(.pulse, options: .repeat(.continuous), isActive: !reduceMotion)
             .accessibilityHidden(true)
-            .help("Live: prices update every 5 seconds while the menu is open")
+            .help("Live: prices update every 15 seconds while the menu is open")
     }
 }
 
@@ -147,9 +147,54 @@ struct UpOnlyChangeBadge: View {
     }
 }
 
-/// A coin or metal at a glance. The top coins' logos ship with the app, so none is ever fetched (that would tell a
-/// server what you hold); any other coin shows its ticker's first letter on a colour fixed by its id, and metals use
-/// the bar icon in their own colour.
+/// Every coin logo and ticker the app has. The 250 largest coins' logos are in the asset catalog; the next 10,000 or so
+/// are packed into one file (`scripts/coin-logos/build.py`), with every one of those coins' tickers. It's mapped rather
+/// than read, and found by binary search, so only a logo that's drawn is decoded. Both are keyed by CoinGecko's ID, the
+/// one each holding is saved under. None is ever fetched: that would tell a server what you hold.
+@MainActor enum CoinLogos {
+    nonisolated private static let pack: Data? = Bundle.main.url(forResource: "CoinLogos", withExtension: "pack").flatMap { try? Data(contentsOf: $0, options: .alwaysMapped) }
+    private static let cache = NSCache<NSString, NSImage>()
+    static func image(_ assetID: String) -> NSImage? {
+        if let image = NSImage(named: "CoinLogos/" + assetID) { return image }
+        if let image = cache.object(forKey: assetID as NSString) { return image }
+        guard let data = pack.flatMap({ find(assetID, in: $0)?.image }), let image = NSImage(data: data), image.isValid else { return nil }
+        cache.setObject(image, forKey: assetID as NSString)
+        return image
+    }
+    /// "ZIG" for zignaly: the coin's ticker as CoinGecko lists it, for coins the app hasn't searched for.
+    nonisolated static func ticker(_ assetID: String) -> String? { pack.flatMap { find(assetID, in: $0)?.ticker } }
+    /// A coin's ticker and image in a pack: "UOLOGOS2", a count, then per coin (id offset, id length, ticker offset,
+    /// ticker length, image offset, image length) sorted by id bytes, all little-endian. Anything out of bounds reads as
+    /// missing, and an image of no length as none.
+    nonisolated static func find(_ assetID: String, in pack: Data) -> (ticker: String?, image: Data?)? {
+        let magic = Data("UOLOGOS2".utf8), id = Array(assetID.utf8), entry = 19
+        guard pack.count >= 12, pack.prefix(8) == magic, !id.isEmpty else { return nil }
+        return pack.withUnsafeBytes { bytes -> (ticker: String?, image: Data?)? in
+            func u32(_ at: Int) -> Int { Int(UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: at, as: UInt32.self))) }
+            func u16(_ at: Int) -> Int { Int(UInt16(littleEndian: bytes.loadUnaligned(fromByteOffset: at, as: UInt16.self))) }
+            let count = u32(8)
+            guard count <= (bytes.count - 12) / entry else { return nil }
+            var low = 0, high = count - 1
+            while low <= high {
+                let middle = (low + high) / 2, at = 12 + middle * entry
+                let nameAt = u32(at), nameLength = u16(at + 4)
+                guard nameAt + nameLength <= bytes.count else { return nil }
+                let name = bytes[nameAt..<nameAt + nameLength]
+                if name.elementsEqual(id) {
+                    let tickerAt = u32(at + 6), tickerLength = Int(bytes[at + 10]), imageAt = u32(at + 11), imageLength = u32(at + 15)
+                    let ticker = tickerLength > 0 && tickerAt + tickerLength <= bytes.count ? String(decoding: bytes[tickerAt..<tickerAt + tickerLength], as: UTF8.self) : nil
+                    let image = imageLength > 0 && imageAt + imageLength <= bytes.count ? Data(bytes[imageAt..<imageAt + imageLength]) : nil
+                    return (ticker, image)
+                }
+                if name.lexicographicallyPrecedes(id) { low = middle + 1 } else { high = middle - 1 }
+            }
+            return nil
+        }
+    }
+}
+
+/// A coin or metal at a glance: the coin's logo (`CoinLogos`), else its ticker's first letter on a colour fixed by its
+/// id; metals use the bar icon in their own colour.
 struct UpOnlyAssetBadge: View {
     var assetID: String
     var symbol: String
@@ -174,7 +219,7 @@ struct UpOnlyAssetBadge: View {
     var body: some View {
         if let metal = PreciousMetal.asset(CanonicalAssetID(rawValue: assetID)) {
             UpOnlySymbolBadge(symbol: TrackedKind.metals.symbol, tint: Self.metalColour(metal), size: size)
-        } else if let logo = NSImage(named: "CoinLogos/" + assetID) {
+        } else if let logo = CoinLogos.image(assetID) {
             Image(nsImage: logo).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
                 .frame(width: size, height: size).clipShape(Circle())
                 .accessibilityHidden(true)

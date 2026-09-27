@@ -11,9 +11,7 @@ extension UpOnlyUnlockedPanel {
     /// "BTC", or a metal's name, as the portfolio's table writes it.
     func holdingSymbol(_ holding: Holding) -> String {
         if let metal = PreciousMetal.asset(holding.assetID) { return metal.rawValue }
-        let id = holding.assetID.rawValue
-        let symbol = (session.catalog.first { $0.id == id } ?? ImportCoins.common.first { $0.id == id })?.symbol.uppercased() ?? ""
-        return symbol.isEmpty ? holding.assetName : symbol
+        return ImportCoins.ticker(holding.assetID.rawValue, catalog: session.catalog).nilIfEmpty ?? holding.assetName
     }
     func holdingContent(_ holding: Holding) -> some View {
         let document = session.document
