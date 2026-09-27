@@ -91,7 +91,8 @@ extension UpOnlyUnlockedPanel {
             Divider().padding(.vertical, 2)
             detailStat("Cost basis", performance.costUSD.map(UpOnlyFormat.exactMoney) ?? "—", isPrivate: true, detail: performance.coveredQuantity != nil ? "For part of it" : nil)
             Divider().padding(.vertical, 2)
-            detailStat("Held since", since.map(UpOnlyFormat.utcDate) ?? "—", detail: since.map { Self.heldFor($0) })
+            // How long, on one line like the others; the day it started is on hover.
+            detailStat("Held for", since.map { Self.heldFor($0) } ?? "—").help(since.map { "Since " + UpOnlyFormat.utcDate($0) } ?? "")
         }.fixedSize(horizontal: false, vertical: true).padding(.vertical, 10).modifier(UpOnlyContentSurface())
     }
     private func detailStat(_ title: String, _ value: String, isPrivate: Bool = false, detail: String? = nil) -> some View {
