@@ -529,8 +529,8 @@ struct UpOnlyUnlockedPanel: View {
         let shown = live || session.previewLive
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             UpOnlyAmount(value: value, cents: true)
-            // Centred on the digits rather than sat on their baseline.
-            if shown { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 14 }.transition(.opacity) }
+            // Up at the top right of the figure, level with the tops of its digits (40pt digits stand about 28pt tall).
+            if shown { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.top] + 28 }.padding(.leading, -3).transition(.opacity) }
         }.animation(.snappy(duration: 0.3), value: shown)
             .preference(key: UpOnlyLivePage.self, value: live)
     }
