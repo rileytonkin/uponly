@@ -1471,6 +1471,20 @@ struct WiseInputTests {
         snapshot.profiles[0].activities[0].status = "CANCELLED"
         #expect(try WiseAPI.apply(snapshot, to: saved).entries.allSatisfy { $0.sourceRef?.hasPrefix("wise:3:fx") != true })
     }
+    @Test("Money moved from a jar into the main balance (\"To USD\") is money in; moved into a jar, money out")
+    func jarMoves() throws {
+        let business = WiseConfiguredProfile(id: 4, name: "Company", bucket: .otherBusiness)
+        // Jan 2: 1,000 USD moved from savings to the main balance. Jan 3: 300 USD moved into savings. Today: 900 USD.
+        let fromJar = WiseActivity(id: "in", type: "INTERBALANCE", title: "<strong>To USD</strong>", primaryAmount: "1,000 USD", secondaryAmount: "1,000 USD", status: "COMPLETED", createdOn: "2026-01-02T12:00:00Z")
+        let toJar = WiseActivity(id: "out", type: "INTERBALANCE", title: "To Savings", primaryAmount: "300 USD", status: "COMPLETED", createdOn: "2026-01-03T12:00:00Z")
+        let snapshot = WiseSnapshot(profiles: [WiseProfileSnapshot(profile: business, balances: [WiseBalance(id: 41, currency: "USD", amount: WiseAmount(value: 900, currency: "USD"))],
+                                                                   activities: [fromJar, toJar])], fetchedAt: Date())
+        let saved = try WiseAPI.apply(snapshot, to: empty())
+        #expect(saved.entries.first { $0.sourceRef == "wise:4:in" }?.outflow == false && saved.entries.first { $0.sourceRef == "wise:4:out" }?.outflow == true)
+        let account = try #require(saved.accounts.first { $0.externalProfileID == "4" })
+        // 200 before the move in, 1,200 after it, 900 after 300 went to savings.
+        #expect(saved.bankBalances.filter { $0.accountID == account.id && $0.source == BalanceReconstruction.source }.sorted { $0.observedAt < $1.observedAt }.map(\.amount.value) == [1200, 900])
+    }
 }
 #endif
 

@@ -180,7 +180,12 @@ nonisolated enum WiseAPI {
                 // the money leaving as this entry and the money arriving as a second one, so each balance's rebuilt history
                 // sees it. Recording only one side made a balance topped up by conversions look far larger in the past.
                 let conversion = Self.conversionTypes.contains(activity.type) && secondary.map { $0.currency != primary.currency && $0.value > 0 } == true
-                let income = !conversion && (primary.incoming || ["DEPOSIT", "RECEIVED", "REFUND", "INTEREST", "CASHBACK"].contains { activity.type.contains($0) })
+                // A move between a jar and the main balance in one currency is titled by where it went: "To USD" is
+                // money arriving in the USD balance from a jar, with no "+" to say so. Read as money out, every
+                // withdrawal from savings made the rebuilt history twice its amount higher before it.
+                let title = plain(activity.title ?? "").lowercased().split(separator: " ")
+                let intoBalance = activity.type == "INTERBALANCE" && !conversion && title.count == 2 && title[0] == "to" && title[1] == primary.currency.lowercased()
+                let income = intoBalance || (!conversion && (primary.incoming || ["DEPOSIT", "RECEIVED", "REFUND", "INTEREST", "CASHBACK"].contains { activity.type.contains($0) }))
                 // Outgoing activity's secondary amount is the amount debited from the source balance.
                 // Incoming activity uses the credited primary currency. Currency-list subtitles are not amounts.
                 let recorded = !income ? secondary ?? primary : primary
