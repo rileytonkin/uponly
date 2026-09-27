@@ -521,23 +521,23 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                                     .font(UpOnlyType.caption).foregroundStyle(.secondary)
                                     .lineLimit(compact ? 1 : nil).fixedSize(horizontal: false, vertical: !compact)
                             }
-                        }.frame(minWidth: 100, alignment: .leading)  // a huge amount shrinks before the name disappears
+                        }.frame(minWidth: 60, alignment: .leading)
                         Spacer(minLength: 8)
                         if let value {
                             // Value over its change, as in Delta, so the name keeps the width.
                             VStack(alignment: .trailing, spacing: 1) {
-                                // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
                                 // A figure is bold; words in its place ("Balance needed", "Not reported") stay quiet.
                                 // Hidden, every value looks alike: quiet words would say which ones are nothing.
                                 let figure = session.privacyMode || value.contains(where: \.isNumber)
+                                // A figure is never cut short: it keeps its full width and the name gives way instead.
                                 UpOnlyPrivateText(value).font(figure ? UpOnlyType.row.weight(.semibold).monospacedDigit() : UpOnlyType.body)
                                     .foregroundStyle(figure ? .primary : .secondary).lineLimit(1)
                                     .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: value)
-                                    .minimumScaleFactor(value.count > 13 ? 0.7 : 1)
+                                    .fixedSize(horizontal: figure, vertical: false)
                                 // Moves stay visible in privacy mode: a percentage doesn't say how much you hold.
                                 if let change {
                                     Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
-                                        .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1)
+                                        .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1).fixedSize()
                                 } else if let valueDetail, !session.privacyMode {
                                     // Hidden, it would only be a second row of dots.
                                     UpOnlyPrivateText(valueDetail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
