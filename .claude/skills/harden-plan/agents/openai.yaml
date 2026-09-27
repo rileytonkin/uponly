@@ -1,0 +1,7 @@
+interface:
+  display_name: "Harden Plan"
+  short_description: "Cross-model adversarial implementation-plan review"
+  default_prompt: "Use $harden-plan to audit and strengthen the current implementation plan."
+
+policy:
+  allow_implicit_invocation: false
