@@ -248,3 +248,60 @@ struct PrivacyFormatTests {
         #expect(window.sharingType == .readOnly)
     }
 }
+
+/// A day typed in the date popover: the common ways people write one, in this Mac's day/month order, never after today.
+@Suite("Typed dates")
+struct TypedDateTests {
+    private let today = UTCDay.calendar.date(from: DateComponents(year: 2026, month: 9, day: 27))!
+    private func day(_ text: String, _ locale: String = "en_US") -> String? {
+        UpOnlyDateParser.parse(text, today: today, locale: Locale(identifier: locale)).map(ImportDateFormat.today)
+    }
+    @Test("Written, numeric and relative days read as that day's UTC midnight")
+    func reads() {
+        for text in ["12 Mar 2021", "March 12, 2021", "2021-03-12", "12th March 2021", "mar 12 21"] { #expect(day(text) == "2021-03-12", "\(text)") }
+        #expect(day("3/12/21") == "2021-03-12" && day("12/3/21", "en_AU") == "2021-03-12")
+        // A number over 12 can only be the day, whatever the Mac's order.
+        #expect(day("13/3/2021") == "2021-03-13" && day("3/13/2021", "en_AU") == "2021-03-13")
+        #expect(day("Mar 2021") == "2021-03-01" && day("3/2021") == "2021-03-01" && day("Dec 25 99") == "1999-12-25")
+        // Without a year, the latest such day up to today.
+        #expect(day("12 Mar") == "2026-03-12" && day("1 Dec") == "2025-12-01")
+        #expect(day("today") == "2026-09-27" && day("yesterday") == "2026-09-26" && day("3 weeks ago") == "2026-09-06" && day("2y") == "2024-09-27")
+        #expect(day("29 Feb 2024") == "2024-02-29")
+    }
+    @Test("Anything else, an impossible day or a day after today reads as nothing")
+    func refuses() {
+        for text in ["", "hello", "5", "1 1 1", "31/2/2021", "29 Feb 2023", "12 Foo 2021", "2030-01-01"] { #expect(day(text) == nil, "\(text)") }
+        #expect(UpOnlyDateParser.isFuture("2030-01-01", today: today) && !UpOnlyDateParser.isFuture("hello", today: today))
+    }
+}
+
+/// The coin logos past the asset catalog's: found by id in the bundled pack, and nothing read out of bounds.
+@Suite("Coin logo pack")
+struct CoinLogoPackTests {
+    private func pack(_ entries: [(String, Data)]) -> Data {
+        let sorted = entries.sorted { Array($0.0.utf8).lexicographicallyPrecedes(Array($1.0.utf8)) }
+        func le<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of: value.littleEndian) { Data($0) } }
+        var index = Data(), names = Data(), images = Data()
+        let header = 12 + sorted.count * 14, namesLength = sorted.reduce(0) { $0 + $1.0.utf8.count }
+        for (id, image) in sorted {
+            index += le(UInt32(header + names.count)) + le(UInt16(id.utf8.count)) + le(UInt32(header + namesLength + images.count)) + le(UInt32(image.count))
+            names += Data(id.utf8); images += image
+        }
+        return Data("UOLOGOS1".utf8) + le(UInt32(sorted.count)) + index + names + images
+    }
+    @Test("Each id finds its own image; others, and a damaged pack, find none")
+    func lookup() {
+        let file = pack([("bitcoin", Data([1])), ("chintai", Data([2, 2])), ("zcash", Data([3, 3, 3])), ("a", Data([4]))])
+        #expect(CoinLogos.find("chintai", in: file) == Data([2, 2]) && CoinLogos.find("zcash", in: file) == Data([3, 3, 3]))
+        #expect(CoinLogos.find("a", in: file) == Data([4]) && CoinLogos.find("bitcoin", in: file) == Data([1]))
+        #expect(CoinLogos.find("chinta", in: file) == nil && CoinLogos.find("", in: file) == nil && CoinLogos.find("zzz", in: file) == nil)
+        #expect(CoinLogos.find("bitcoin", in: Data("UOLOGOS1".utf8) + Data([0xff, 0xff, 0xff, 0xff])) == nil)
+        #expect(CoinLogos.find("zcash", in: file.prefix(file.count - 1)) == nil)
+        #expect(CoinLogos.find("bitcoin", in: Data("NOTLOGOS".utf8) + file.dropFirst(8)) == nil)
+    }
+    @Test("The app's pack holds logos for coins past the catalog's 250, and they decode")
+    @MainActor func bundled() {
+        #expect(NSImage(named: "CoinLogos/chex-token") == nil)
+        #expect(CoinLogos.image("chex-token") != nil && CoinLogos.image("bitcoin") != nil && CoinLogos.image("not-a-coin-at-all") == nil)
+    }
+}

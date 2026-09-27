@@ -383,7 +383,7 @@ struct UpOnlyEditSheet: View {
                     let badge = Self.kindBadge(entry.kind)
                     let when = dayKnown ? date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)) : MonthKey(entry.month)?.title ?? entry.month
                     onSaved(UpOnlySavedSummary(title: "Transaction saved", amount: kindSign(entry.kind) + readBack(entry.amount, fraction: 2...2), unit: entry.currency,
-                                               detail: entry.label + " · " + when, badge: .symbol(badge.symbol, badge.tint), destination: ("Open Income & spending", .cashFlow)))
+                                               detail: entry.label + " · " + when, badge: .symbol(badge.symbol, badge.tint), destination: ("Open Income & spending", .cashFlow, nil, nil)))
                     return
                 }
             case .editEntry(let original):

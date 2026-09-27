@@ -22,22 +22,151 @@ struct UpOnlyDateButton: View {
 }
 
 /// Picks a saved day: `date` is its UTC midnight, so the calendar works in UTC to show and set that date, and stops at
-/// today's date on this Mac.
+/// today's date on this Mac. A day can be typed rather than found ("12 Mar 2021", "3/12/21", "2 years ago"), which is
+/// quicker for one years back; the calendar follows what's typed. The day is kept as the popover closes, so a lookup
+/// of its price starts once rather than at every keystroke.
 struct UpOnlyDateCalendar: View {
     @Binding var date: Date
     var done: () -> Void
+    @State private var draft: Date?
+    @State private var typed = ""
+    @FocusState private var typing: Bool
+    private var parsed: Date? { UpOnlyDateParser.parse(typed) }
     var body: some View {
+        let shown = Binding(get: { draft ?? date }, set: { draft = $0; typed = "" })
         VStack(spacing: 12) {
-            // No focus ring: the calendar is the popover's only control.
-            DatePicker("Observation date", selection: $date, in: ...UTCDay.today(), displayedComponents: .date)
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Type a date: 12 Mar 2021", text: $typed).textFieldStyle(.roundedBorder).focused($typing)
+                    .accessibilityLabel("Type a date")
+                    .onChange(of: typed) { _, _ in if let parsed { draft = parsed } }
+                if !typed.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text(parsed.map { $0.formatted(Date.FormatStyle(date: .complete, time: .omitted, timeZone: UTCDay.timeZone)) }
+                         ?? (UpOnlyDateParser.isFuture(typed) ? "That’s after today" : "Try 12 Mar 2021, 2021-03-12 or 2 years ago"))
+                        .font(UpOnlyType.caption).foregroundStyle(parsed == nil ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                }
+            }
+            DatePicker("Observation date", selection: shown, in: ...UTCDay.today(), displayedComponents: .date)
                 .datePickerStyle(.graphical).labelsHidden().environment(\.timeZone, UTCDay.timeZone).focusEffectDisabled()
             HStack {
-                Button("Today") { date = UTCDay.today() }.buttonStyle(.plain).foregroundStyle(UpOnlyTint.brand)
+                Button("Today") { shown.wrappedValue = UTCDay.today() }.buttonStyle(.plain).foregroundStyle(UpOnlyTint.brand)
                 Spacer()
                 Button("Done", action: done).buttonStyle(.upOnlyPrimary).keyboardShortcut(.defaultAction)
             }.font(.system(size: 12))
-        }.padding(16).fixedSize().background(UpOnlyBackdrop.base)
+        }.frame(width: 210).padding(16).fixedSize().background(UpOnlyBackdrop.base)
+            .onAppear { typing = true }
+            .onDisappear { if let draft, draft != date { date = draft } }
             .onExitCommand(perform: done)
+    }
+}
+
+/// Reads a typed day as people write one: "12 Mar 2021", "March 12, 2021", "2021-03-12", "12/3/21" (day and month in
+/// this Mac's order, unless one can only be the day), "Mar 2021" (its 1st), "12 Mar" (the last one), "today",
+/// "yesterday" or "3 weeks ago". Returns that day's UTC midnight, or nil for anything else or a day after today.
+nonisolated enum UpOnlyDateParser {
+    static func parse(_ text: String, today: Date = UTCDay.today(), locale: Locale = .current) -> Date? {
+        guard let day = read(text, today: today, locale: locale), day <= today else { return nil }
+        return day
+    }
+    static func isFuture(_ text: String, today: Date = UTCDay.today(), locale: Locale = .current) -> Bool {
+        read(text, today: today, locale: locale).map { $0 > today } ?? false
+    }
+    private static func read(_ text: String, today: Date, locale: Locale) -> Date? {
+        let calendar = UTCDay.calendar
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty, clean.count <= 40 else { return nil }
+        if clean == "today" || clean == "now" { return today }
+        if clean == "yesterday" { return calendar.date(byAdding: .day, value: -1, to: today) }
+        // "3 weeks ago", "2y", "18 months"
+        if let match = clean.wholeMatch(of: #/(\d{1,4})\s*(d|days?|w|wks?|weeks?|m|mos?|months?|y|yrs?|years?)(\s+ago)?/#), let count = Int(match.1) {
+            let unit: Calendar.Component = switch match.2.first { case "d": .day; case "w": .weekOfYear; case "m": .month; default: .year }
+            return calendar.date(byAdding: unit, value: -count, to: today)
+        }
+        // "12th" is 12.
+        let tokens = clean.split { !$0.isLetter && !$0.isNumber }.map { token in
+            token.wholeMatch(of: #/(\d{1,2})(st|nd|rd|th)/#).map { String($0.1) } ?? String(token)
+        }
+        guard (1...3).contains(tokens.count) else { return nil }
+        let words = tokens.filter { $0.first!.isLetter }, numbers = tokens.compactMap { Int($0) }
+        guard words.count + numbers.count == tokens.count else { return nil }
+        let thisYear = calendar.component(.year, from: today)
+        func year(_ token: String) -> Int? {
+            guard let value = Int(token) else { return nil }
+            switch token.count {
+            case 4: return value
+            case 2: return value + (value <= thisYear % 100 ? 2000 : 1900)
+            default: return nil
+            }
+        }
+        var day: Int?, month: Int?, fullYear: Int?
+        let numeric = tokens.filter { $0.first!.isNumber }
+        if words.count == 1 {
+            guard let named = monthNumber(words[0], locale: locale) else { return nil }
+            month = named
+            switch numeric.count {
+            case 0: return nil
+            case 1:
+                // "Mar 2021" is its 1st; "12 Mar" is this year's, or last year's once that's past today.
+                if numeric[0].count == 4 { fullYear = Int(numeric[0]); day = 1 } else { day = Int(numeric[0]) }
+            default:
+                // The four-digit (or over 31) one is the year, whichever side it's on.
+                let yearFirst = numeric[0].count == 4 || (Int(numeric[0]) ?? 0) > 31
+                guard let typed = year(numeric[yearFirst ? 0 : 1]) else { return nil }
+                fullYear = typed; day = Int(numeric[yearFirst ? 1 : 0])
+            }
+        } else if words.isEmpty {
+            switch numeric.count {
+            case 3:
+                if numeric[0].count == 4 { fullYear = Int(numeric[0]); month = Int(numeric[1]); day = Int(numeric[2]) }
+                else {
+                    var (first, second) = (Int(numeric[0])!, Int(numeric[1])!)
+                    if !dayFirst(locale) { swap(&first, &second) }
+                    // One that can't be a month is the day.
+                    if second > 12, first <= 12 { swap(&first, &second) }
+                    guard let typed = year(numeric[2]) else { return nil }
+                    day = first; month = second; fullYear = typed
+                }
+            case 2:
+                // "3/2021" is March 2021; "12/3" is this Mac's order, this year.
+                if numeric[1].count == 4 { month = Int(numeric[0]); fullYear = Int(numeric[1]); day = 1 }
+                else if numeric[0].count == 4 { fullYear = Int(numeric[0]); month = Int(numeric[1]); day = 1 }
+                else {
+                    var (first, second) = (Int(numeric[0])!, Int(numeric[1])!)
+                    if !dayFirst(locale) { swap(&first, &second) }
+                    if second > 12, first <= 12 { swap(&first, &second) }
+                    day = first; month = second
+                }
+            default: return nil
+            }
+        } else { return nil }
+        guard let day, let month, (1...12).contains(month), (1...31).contains(day) else { return nil }
+        func date(_ year: Int) -> Date? {
+            guard (1900...9999).contains(year), let date = calendar.date(from: DateComponents(year: year, month: month, day: day)),
+                  calendar.component(.day, from: date) == day else { return nil }
+            return date
+        }
+        if let fullYear { return date(fullYear) }
+        // No year: the latest such day up to today.
+        guard let candidate = date(thisYear) else { return nil }
+        return candidate <= today ? candidate : date(thisYear - 1)
+    }
+    /// Whether this Mac writes the day before the month (12/3 for 12 March).
+    private static func dayFirst(_ locale: Locale) -> Bool {
+        let format = DateFormatter.dateFormat(fromTemplate: "dMy", options: 0, locale: locale) ?? "M/d/y"
+        guard let d = format.firstIndex(of: "d"), let m = format.firstIndex(of: "M") else { return false }
+        return d < m
+    }
+    /// January is 1, from its English or this Mac's name, whole or its first three letters ("sept" too).
+    private static func monthNumber(_ word: String, locale: Locale) -> Int? {
+        guard word.count >= 3 else { return nil }
+        var english = Calendar(identifier: .gregorian); english.locale = Locale(identifier: "en_US_POSIX")
+        var local = Calendar(identifier: .gregorian); local.locale = locale
+        for names in [english.monthSymbols, local.monthSymbols] {
+            if let index = names.firstIndex(where: { name in
+                let name = name.lowercased()
+                return name.hasPrefix(word)
+            }) { return index + 1 }
+        }
+        return nil
     }
 }
 
@@ -113,11 +242,11 @@ struct UpOnlyEntryFlow: View {
                 if addingEntry { addingEntry = false } else { session.addingInMenu = false }
             }
     }
-    /// After saving: what was saved, large, under its logo with a check; where it went, one click away; then Done.
-    /// Centred in the page, which keeps the dashboard's height.
+    /// After saving: what was saved, large, under its logo with a check; where it went, with its new total, one click
+    /// away; another of the same kind; then Done at the foot of the page, which keeps the dashboard's height.
     private func savedPage(_ summary: UpOnlySavedSummary) -> some View {
         VStack(spacing: 20) {
-            Spacer(minLength: 0)
+            Spacer(minLength: 0).frame(maxHeight: 36)
             VStack(spacing: 12) {
                 summary.badge.view(size: 56)
                     .overlay(alignment: .bottomTrailing) {
@@ -137,14 +266,21 @@ struct UpOnlyEntryFlow: View {
             }.frame(maxWidth: .infinity)
             ManageCard {
                 if let destination = summary.destination {
-                    UpOnlyRow(title: destination.title, caption: "See it on the dashboard", chevron: true, action: {
+                    UpOnlyRow(title: destination.title, caption: destination.caption ?? "See it on the dashboard", captionIsPrivate: destination.caption != nil, chevron: true, action: {
                         session.showDashboard(destination.selection)
                         session.addingInMenu = false; session.managementInMenu = false
-                    }) { summary.badge.view(size: 28) }
+                    }) { (destination.badge ?? summary.badge).view(size: 28) }
                 }
-                UpOnlyRow(title: "Add another", caption: "A balance, holding or transaction", chevron: true,
+                if let again = summary.again {
+                    // Straight to the next one of the same kind (into the same portfolio); Back from there is the Add page.
+                    UpOnlyRow(title: again.title, caption: again.caption, chevron: true,
+                              action: { saved = nil; _ = session.startImport(again.mode, portfolioID: again.portfolioID) }) {
+                        UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
+                    }
+                }
+                UpOnlyRow(title: summary.again == nil ? "Add another" : "Add something else", caption: "A balance, holding or transaction", chevron: true,
                           action: { saved = nil }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
+                    UpOnlySymbolBadge(symbol: summary.again == nil ? "plus" : "square.grid.2x2", tint: summary.again == nil ? UpOnlyTint.brand : .secondary, size: 28)
                 }
             }
             Spacer(minLength: 0)
@@ -286,7 +422,10 @@ struct UpOnlySavedSummary {
     var unit: String
     var detail: String?
     var badge: Badge
-    var destination: (title: String, selection: UpOnlySession.DashboardSelection)?
+    /// The page it now shows on: its name, its own badge and a line about it (its new total), where there are ones.
+    var destination: (title: String, selection: UpOnlySession.DashboardSelection, badge: Badge?, caption: String?)?
+    /// Adding another of the same kind, into the same portfolio.
+    var again: (title: String, caption: String, mode: ImportMode, portfolioID: UUID?)? = nil
 }
 /// A form row's value that opens a choice: the value and a small chevron, as a date or a menu.
 struct UpOnlyFormValue: View {
@@ -348,7 +487,8 @@ struct UpOnlyEntryBadge: View {
                 Image(systemName: "square.stack.3d.up.fill").font(.system(size: size * 0.46, weight: .medium))
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.6), tint], startPoint: .topLeading, endPoint: .bottomTrailing))
                     .frame(width: size, height: size).background(tint.opacity(0.16), in: RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
-            } else if mode == .holdings, let assetID, NSImage(named: "CoinLogos/" + assetID) != nil {
+            } else if mode == .holdings, let assetID, !assetID.isEmpty {
+                // Its logo, or the same lettered badge the dashboard shows for it.
                 UpOnlyAssetBadge(assetID: assetID, symbol: symbol, size: size)
             } else if mode == .holdings, !symbol.isEmpty {
                 Text(symbol == "BTC" ? "₿" : symbol == "ETH" ? "Ξ" : symbol).font(.system(size: symbol.count > 2 && symbol != "BTC" ? size * 0.25 : size * 0.48, weight: .medium))
