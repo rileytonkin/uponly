@@ -147,25 +147,29 @@ struct UpOnlyChangeBadge: View {
     }
 }
 
-/// Every coin logo the app has. The 250 largest coins' are in the asset catalog; the next 10,000 or so are packed into
-/// one file (`scripts/coin-logos/build.py`) that's mapped rather than read, and found by binary search, so only a
-/// logo that's drawn is decoded. None is ever fetched: that would tell a server what you hold.
+/// Every coin logo and ticker the app has. The 250 largest coins' logos are in the asset catalog; the next 10,000 or so
+/// are packed into one file (`scripts/coin-logos/build.py`), with every one of those coins' tickers. It's mapped rather
+/// than read, and found by binary search, so only a logo that's drawn is decoded. Both are keyed by CoinGecko's ID, the
+/// one each holding is saved under. None is ever fetched: that would tell a server what you hold.
 @MainActor enum CoinLogos {
-    private static let pack: Data? = Bundle.main.url(forResource: "CoinLogos", withExtension: "pack").flatMap { try? Data(contentsOf: $0, options: .alwaysMapped) }
+    nonisolated private static let pack: Data? = Bundle.main.url(forResource: "CoinLogos", withExtension: "pack").flatMap { try? Data(contentsOf: $0, options: .alwaysMapped) }
     private static let cache = NSCache<NSString, NSImage>()
     static func image(_ assetID: String) -> NSImage? {
         if let image = NSImage(named: "CoinLogos/" + assetID) { return image }
         if let image = cache.object(forKey: assetID as NSString) { return image }
-        guard let data = pack.flatMap({ find(assetID, in: $0) }), let image = NSImage(data: data), image.isValid else { return nil }
+        guard let data = pack.flatMap({ find(assetID, in: $0)?.image }), let image = NSImage(data: data), image.isValid else { return nil }
         cache.setObject(image, forKey: assetID as NSString)
         return image
     }
-    /// A coin's image in a pack: "UOLOGOS1", a count, then per coin (id offset, id length, image offset, image length)
-    /// sorted by id bytes, all little-endian. Anything out of bounds reads as missing.
-    nonisolated static func find(_ assetID: String, in pack: Data) -> Data? {
-        let magic = Data("UOLOGOS1".utf8), id = Array(assetID.utf8), entry = 14
+    /// "ZIG" for zignaly: the coin's ticker as CoinGecko lists it, for coins the app hasn't searched for.
+    nonisolated static func ticker(_ assetID: String) -> String? { pack.flatMap { find(assetID, in: $0)?.ticker } }
+    /// A coin's ticker and image in a pack: "UOLOGOS2", a count, then per coin (id offset, id length, ticker offset,
+    /// ticker length, image offset, image length) sorted by id bytes, all little-endian. Anything out of bounds reads as
+    /// missing, and an image of no length as none.
+    nonisolated static func find(_ assetID: String, in pack: Data) -> (ticker: String?, image: Data?)? {
+        let magic = Data("UOLOGOS2".utf8), id = Array(assetID.utf8), entry = 19
         guard pack.count >= 12, pack.prefix(8) == magic, !id.isEmpty else { return nil }
-        return pack.withUnsafeBytes { bytes -> Data? in
+        return pack.withUnsafeBytes { bytes -> (ticker: String?, image: Data?)? in
             func u32(_ at: Int) -> Int { Int(UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: at, as: UInt32.self))) }
             func u16(_ at: Int) -> Int { Int(UInt16(littleEndian: bytes.loadUnaligned(fromByteOffset: at, as: UInt16.self))) }
             let count = u32(8)
@@ -177,9 +181,10 @@ struct UpOnlyChangeBadge: View {
                 guard nameAt + nameLength <= bytes.count else { return nil }
                 let name = bytes[nameAt..<nameAt + nameLength]
                 if name.elementsEqual(id) {
-                    let imageAt = u32(at + 6), imageLength = u32(at + 10)
-                    guard imageLength > 0, imageAt + imageLength <= bytes.count else { return nil }
-                    return Data(bytes[imageAt..<imageAt + imageLength])
+                    let tickerAt = u32(at + 6), tickerLength = Int(bytes[at + 10]), imageAt = u32(at + 11), imageLength = u32(at + 15)
+                    let ticker = tickerLength > 0 && tickerAt + tickerLength <= bytes.count ? String(decoding: bytes[tickerAt..<tickerAt + tickerLength], as: UTF8.self) : nil
+                    let image = imageLength > 0 && imageAt + imageLength <= bytes.count ? Data(bytes[imageAt..<imageAt + imageLength]) : nil
+                    return (ticker, image)
                 }
                 if name.lexicographicallyPrecedes(id) { low = middle + 1 } else { high = middle - 1 }
             }

@@ -194,8 +194,7 @@ struct UpOnlyEditSheet: View {
     /// A coin's symbol, or grams for metal: the unit its quantities are typed in.
     private func unit(_ holding: Holding) -> String {
         if PreciousMetal.asset(holding.assetID) != nil { return "g" }
-        let id = holding.assetID.rawValue
-        return (session.catalog.first { $0.id == id } ?? ImportCoins.common.first { $0.id == id })?.symbol.uppercased() ?? holding.assetName
+        return ImportCoins.ticker(holding.assetID.rawValue, catalog: session.catalog).nilIfEmpty ?? holding.assetName
     }
     private func assetBadge(_ holding: Holding) -> some View {
         UpOnlyEntryBadge(mode: PreciousMetal.asset(holding.assetID) != nil ? .metals : .holdings, symbol: PreciousMetal.asset(holding.assetID)?.rawValue ?? unit(holding),

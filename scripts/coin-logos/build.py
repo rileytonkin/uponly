@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Builds the coin logos Up Only ships: one small image for each of the 10,000 largest coins CoinGecko lists.
+"""Builds the coin logos and tickers Up Only ships: for each of the 10,000 largest coins CoinGecko lists, its ticker
+and a small image of its logo.
 
   python3 -m pip install -r scripts/coin-logos/requirements.txt  # Pillow, pinned (Python 3.10+)
   python3 scripts/coin-logos/build.py list    # the LIMIT largest coins CoinGecko prices -> .context/coin-logos/coins.json
@@ -7,15 +8,18 @@
   python3 scripts/coin-logos/build.py pack    # write UpOnly/Resources/CoinLogos.pack
   python3 scripts/coin-logos/build.py review  # contact sheet of the first 400, in a new temporary folder
 
-The 250 largest coins keep their images in Assets.xcassets/CoinLogos; the pack holds every other coin's. The app
-reads logos only from these, so it never fetches one (that would tell a server what you hold). An optional CoinGecko
+The 250 largest coins keep their images in Assets.xcassets/CoinLogos; the pack holds every other coin's, and every
+coin's ticker. The app reads logos and tickers only from these, so it never fetches one (that would tell a server
+what you hold). Both are keyed by CoinGecko's ID for the coin, the ID each holding is saved under, and come from
+CoinGecko's own listing for that ID: nothing is matched by name or ticker. An optional CoinGecko
 demo key in COINGECKO_KEY lifts the listing's rate limit; nothing else needs one.
 
-Pack format (little-endian), read by `CoinLogoPack` in the app:
-  "UOLOGOS1"  magic, 8 bytes
+Pack format (little-endian), read by `CoinLogos` in the app:
+  "UOLOGOS2"  magic, 8 bytes
   UInt32      count
-  count x     (UInt32 id offset, UInt16 id length, UInt32 image offset, UInt32 image length), sorted by id bytes
-  ...         the ids' bytes, then the images (WebP), offsets from the start of the file
+  count x     (UInt32 id offset, UInt16 id length, UInt32 ticker offset, UInt8 ticker length, UInt32 image offset,
+               UInt32 image length), sorted by id bytes; an image length of 0 is no image here
+  ...         the ids' and tickers' bytes, then the images (WebP), offsets from the start of the file
 """
 import concurrent.futures, io, json, os, re, struct, sys, tempfile, time, urllib.parse, urllib.request
 from pathlib import Path
@@ -32,7 +36,9 @@ LIMIT = 10_000                          # coins, by market cap; the long tail pa
 AGENT = "UpOnly-logo-build/1"
 ID = re.compile(r"[a-z0-9-]{1,150}")    # as MoneyInput.canonicalAssetID accepts; ids become file names
 HOSTS = {"api.coingecko.com", "coin-images.coingecko.com", "assets.coingecko.com"}
-MAGIC = b"UOLOGOS1"
+MAGIC = b"UOLOGOS2"
+ENTRY = "<IHIBII"
+TICKER = re.compile(r"[\x21-\x7e]{1,20}")  # printable ASCII, as tickers are written
 
 
 def get(url, tries=6):
@@ -60,29 +66,31 @@ def get(url, tries=6):
 
 
 def list_coins():
-    """Every coin with market data, largest first, with its logo's URL (none for CoinGecko's placeholder)."""
+    """The LIMIT largest coins with market data, with each one's ticker and logo URL (none for CoinGecko's placeholder)."""
     coins, page = [], 1
     while len(coins) < LIMIT:
         query = urllib.parse.urlencode({"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page})
         rows = json.loads(get("https://api.coingecko.com/api/v3/coins/markets?" + query))
         if not rows:
             break
-        coins += [{"id": r["id"], "image": r.get("image") or ""} for r in rows]
+        coins += [{"id": r["id"], "symbol": r.get("symbol") or "", "image": r.get("image") or ""} for r in rows]
         print(f"page {page}: {len(coins)} coins", file=sys.stderr)
         page += 1
         time.sleep(2.5 if os.environ.get("COINGECKO_KEY") else 13)
     seen, kept = set(), []
     for coin in coins[:LIMIT]:
-        if ID.fullmatch(coin["id"]) and coin["id"] not in seen and coin["image"].startswith("https://") and "missing" not in coin["image"]:
+        if ID.fullmatch(coin["id"]) and coin["id"] not in seen:
+            if not coin["image"].startswith("https://") or "missing" in coin["image"]:
+                coin["image"] = ""
             seen.add(coin["id"]); kept.append(coin)
     WORK.mkdir(parents=True, exist_ok=True)
     COINS.write_text(json.dumps(kept, indent=0))
-    print(f"{len(kept)} coins with a logo, of {len(coins)}", file=sys.stderr)
+    print(f"{len(kept)} coins, {sum(1 for c in kept if c['image'])} with a logo", file=sys.stderr)
 
 
 def fetch():
     CACHE.mkdir(parents=True, exist_ok=True)
-    todo = [c for c in json.loads(COINS.read_text()) if not (CACHE / c["id"]).exists() and not (CACHE / (c["id"] + ".none")).exists()]
+    todo = [c for c in json.loads(COINS.read_text()) if c["image"] and not (CACHE / c["id"]).exists() and not (CACHE / (c["id"] + ".none")).exists()]
     print(f"{len(todo)} to fetch", file=sys.stderr)
 
     def one(coin):
@@ -123,29 +131,32 @@ def encode_cached(ident):
 
 def pack():
     bundled = {p.name.removesuffix(".imageset") for p in BUNDLED.glob("*.imageset")}
-    coins = [c["id"] for c in json.loads(COINS.read_text()) if c["id"] not in bundled and (CACHE / c["id"]).exists()]
-
+    coins = json.loads(COINS.read_text())
+    tickers = {c["id"]: c["symbol"].upper() for c in coins if TICKER.fullmatch(c.get("symbol", "").upper())}
+    drawn = [c["id"] for c in coins if c["id"] not in bundled and (CACHE / c["id"]).exists()]
     with concurrent.futures.ProcessPoolExecutor() as pool:
-        images = {ident: data for ident, data in pool.map(encode_cached, coins, chunksize=64) if data}
-    ids = sorted(images, key=lambda i: i.encode())
-    header = len(MAGIC) + 4 + len(ids) * 14
-    names = b"".join(i.encode() for i in ids)
-    index, name_at, image_at = [], header, header + len(names)
+        images = {ident: data for ident, data in pool.map(encode_cached, drawn, chunksize=64) if data}
+    ids = sorted(set(images) | set(tickers), key=lambda i: i.encode())
+    header = len(MAGIC) + 4 + len(ids) * struct.calcsize(ENTRY)
+    text = b"".join(i.encode() + tickers.get(i, "").encode() for i in ids)
+    index, text_at, image_at = [], header, header + len(text)
     for ident in ids:
-        index.append(struct.pack("<IHII", name_at, len(ident.encode()), image_at, len(images[ident])))
-        name_at += len(ident.encode()); image_at += len(images[ident])
-    PACK.write_bytes(MAGIC + struct.pack("<I", len(ids)) + b"".join(index) + names + b"".join(images[i] for i in ids))
-    print(f"{len(ids)} logos, {PACK.stat().st_size / 1e6:.1f} MB -> {PACK.relative_to(ROOT)}", file=sys.stderr)
+        name, ticker, image = ident.encode(), tickers.get(ident, "").encode(), images.get(ident, b"")
+        index.append(struct.pack(ENTRY, text_at, len(name), text_at + len(name), len(ticker), image_at if image else 0, len(image)))
+        text_at += len(name) + len(ticker); image_at += len(image)
+    PACK.write_bytes(MAGIC + struct.pack("<I", len(ids)) + b"".join(index) + text + b"".join(images.get(i, b"") for i in ids))
+    print(f"{len(ids)} coins, {len(images)} logos, {len(tickers)} tickers, {PACK.stat().st_size / 1e6:.1f} MB -> {PACK.relative_to(ROOT)}", file=sys.stderr)
 
 
 def review():
     from PIL import Image
     data = PACK.read_bytes()
-    count = struct.unpack_from("<I", data, 8)[0]
-    shown = min(count, 400)
+    count, size = struct.unpack_from("<I", data, 8)[0], struct.calcsize(ENTRY)
+    entries = [struct.unpack_from(ENTRY, data, 12 + size * n) for n in range(count)]
+    entries = [e for e in entries if e[5]][:400]
+    shown = len(entries)
     sheet = Image.new("RGBA", (20 * (SIZE + 8), (shown // 20 + 1) * (SIZE + 8)), (30, 30, 30, 255))
-    for n in range(shown):
-        _, _, at, length = struct.unpack_from("<IHII", data, 12 + 14 * n)
+    for n, (_, _, _, _, at, length) in enumerate(entries):
         logo = Image.open(io.BytesIO(data[at:at + length])).convert("RGBA")
         sheet.alpha_composite(logo, ((n % 20) * (SIZE + 8) + 4, (n // 20) * (SIZE + 8) + 4))
     path = Path(tempfile.mkdtemp()) / "coin-logos.png"

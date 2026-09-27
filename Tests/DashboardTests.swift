@@ -275,33 +275,50 @@ struct TypedDateTests {
     }
 }
 
-/// The coin logos past the asset catalog's: found by id in the bundled pack, and nothing read out of bounds.
+/// The coin logos past the asset catalog's, and every packed coin's ticker: found by CoinGecko ID in the bundled pack,
+/// and nothing read out of bounds.
 @Suite("Coin logo pack")
 struct CoinLogoPackTests {
-    private func pack(_ entries: [(String, Data)]) -> Data {
-        let sorted = entries.sorted { Array($0.0.utf8).lexicographicallyPrecedes(Array($1.0.utf8)) }
+    private func pack(_ entries: [(id: String, ticker: String, image: Data)]) -> Data {
+        let sorted = entries.sorted { Array($0.id.utf8).lexicographicallyPrecedes(Array($1.id.utf8)) }
         func le<T: FixedWidthInteger>(_ value: T) -> Data { withUnsafeBytes(of: value.littleEndian) { Data($0) } }
-        var index = Data(), names = Data(), images = Data()
-        let header = 12 + sorted.count * 14, namesLength = sorted.reduce(0) { $0 + $1.0.utf8.count }
-        for (id, image) in sorted {
-            index += le(UInt32(header + names.count)) + le(UInt16(id.utf8.count)) + le(UInt32(header + namesLength + images.count)) + le(UInt32(image.count))
-            names += Data(id.utf8); images += image
+        var index = Data(), text = Data(), images = Data()
+        let header = 12 + sorted.count * 19, textLength = sorted.reduce(0) { $0 + $1.id.utf8.count + $1.ticker.utf8.count }
+        for entry in sorted {
+            let idAt = header + text.count
+            text += Data(entry.id.utf8)
+            index += le(UInt32(idAt)) + le(UInt16(entry.id.utf8.count)) + le(UInt32(header + text.count)) + le(UInt8(entry.ticker.utf8.count))
+                + le(UInt32(entry.image.isEmpty ? 0 : header + textLength + images.count)) + le(UInt32(entry.image.count))
+            text += Data(entry.ticker.utf8); images += entry.image
         }
-        return Data("UOLOGOS1".utf8) + le(UInt32(sorted.count)) + index + names + images
+        return Data("UOLOGOS2".utf8) + le(UInt32(sorted.count)) + index + text + images
     }
-    @Test("Each id finds its own image; others, and a damaged pack, find none")
+    @Test("Each id finds its own ticker and image; others, and a damaged pack, find none")
     func lookup() {
-        let file = pack([("bitcoin", Data([1])), ("chintai", Data([2, 2])), ("zcash", Data([3, 3, 3])), ("a", Data([4]))])
-        #expect(CoinLogos.find("chintai", in: file) == Data([2, 2]) && CoinLogos.find("zcash", in: file) == Data([3, 3, 3]))
-        #expect(CoinLogos.find("a", in: file) == Data([4]) && CoinLogos.find("bitcoin", in: file) == Data([1]))
-        #expect(CoinLogos.find("chinta", in: file) == nil && CoinLogos.find("", in: file) == nil && CoinLogos.find("zzz", in: file) == nil)
-        #expect(CoinLogos.find("bitcoin", in: Data("UOLOGOS1".utf8) + Data([0xff, 0xff, 0xff, 0xff])) == nil)
-        #expect(CoinLogos.find("zcash", in: file.prefix(file.count - 1)) == nil)
-        #expect(CoinLogos.find("bitcoin", in: Data("NOTLOGOS".utf8) + file.dropFirst(8)) == nil)
+        let file = pack([("bitcoin", "BTC", Data()), ("chex-token", "CHEX", Data([2, 2])), ("zcash", "ZEC", Data([3, 3, 3])), ("a", "", Data([4]))])
+        #expect(CoinLogos.find("chex-token", in: file)?.image == Data([2, 2]) && CoinLogos.find("chex-token", in: file)?.ticker == "CHEX")
+        #expect(CoinLogos.find("zcash", in: file)?.image == Data([3, 3, 3]) && CoinLogos.find("a", in: file)?.image == Data([4]))
+        // A coin whose logo is in the asset catalog has only its ticker here; one without a ticker has only its logo.
+        #expect(CoinLogos.find("bitcoin", in: file)?.ticker == "BTC" && CoinLogos.find("bitcoin", in: file)?.image == nil)
+        #expect(CoinLogos.find("a", in: file)?.ticker == nil)
+        #expect(CoinLogos.find("chex", in: file) == nil && CoinLogos.find("", in: file) == nil && CoinLogos.find("zzz", in: file) == nil)
+        #expect(CoinLogos.find("bitcoin", in: Data("UOLOGOS2".utf8) + Data([0xff, 0xff, 0xff, 0xff])) == nil)
+        #expect(CoinLogos.find("zcash", in: file.prefix(file.count - 1))?.image == nil)
+        #expect(CoinLogos.find("bitcoin", in: Data("UOLOGOS1".utf8) + file.dropFirst(8)) == nil)
     }
-    @Test("The app's pack holds logos for coins past the catalog's 250, and they decode")
+    @Test("The app's pack has logos and tickers for coins past the catalog's 250, and they decode")
     @MainActor func bundled() {
         #expect(NSImage(named: "CoinLogos/chex-token") == nil)
         #expect(CoinLogos.image("chex-token") != nil && CoinLogos.image("bitcoin") != nil && CoinLogos.image("not-a-coin-at-all") == nil)
+        #expect(CoinLogos.ticker("chex-token") == "CHEX" && CoinLogos.ticker("zignaly") == "ZIG" && CoinLogos.ticker("not-a-coin-at-all") == nil)
+        #expect(ImportCoins.ticker("zignaly", catalog: []) == "ZIG" && ImportCoins.ticker("bitcoin", catalog: []) == "BTC")
+    }
+    @Test("List rows write amounts short, as market apps do")
+    func shortQuantities() {
+        func short(_ text: String) -> String { UpOnlyFormat.shortQuantity(Decimal(string: text)!, symbol: "X", metal: false) }
+        #expect(short("116514.96") == "116.5K X" && short("10000") == "10K X" && short("999960") == "1M X" && short("3710000000") == "3.71B X")
+        #expect(short("9098.44") == "9,098 X" && short("2417.9") == "2,418 X")
+        #expect(short("952.32") == "952.32 X" && short("725.9") == "725.9 X" && short("8.25") == "8.25 X")
+        #expect(short("0.0421349") == "0.04213 X" && short("0.1") == "0.1 X")
     }
 }
