@@ -365,3 +365,29 @@ struct PageScrollingTests {
         #expect(Scroll.scrolls(content: 523, room: 510) && Scroll.scrolls(content: 1200, room: 510))
     }
 }
+
+/// DefiLlama's daily prices: one per day inside the chunk, for the coin asked about, none from a doubtful series.
+@Suite("DefiLlama history")
+struct LlamaHistoryTests {
+    private let start = Date(timeIntervalSince1970: 1_614_556_800)  // 2021-03-01
+    private func request(_ id: String = "bitcoin-cash-sv") -> PriceHistoryRequest {
+        PriceHistoryRequest(source: .crypto, key: "asset:" + id, identifier: id, start: start, end: start.addingTimeInterval(3 * 86400))
+    }
+    private func body(key: String = "coingecko:bitcoin-cash-sv", confidence: String = "0.99", points: [(Double, String)]) -> Data {
+        let prices = points.map { #"{"timestamp":\#($0.0),"price":\#($0.1)}"# }.joined(separator: ",")
+        return Data(#"{"coins":{"\#(key)":{"symbol":"BSV","confidence":\#(confidence),"prices":[\#(prices)]}}}"#.utf8)
+    }
+    @Test("Reads one price a day inside the chunk")
+    func reads() throws {
+        let t = start.timeIntervalSince1970
+        let quotes = try PriceHistory.decodeLlama(body(points: [(t + 3600, "179.44"), (t + 7200, "180"), (t + 86400 + 60, "172.5"), (t + 9 * 86400, "1"), (t - 60, "2"), (t + 3600, "-1")]),
+                                                  request: request(), fetchedAt: start.addingTimeInterval(10 * 86400))
+        #expect(quotes.map(\.priceUSD.value) == [180, Decimal(string: "172.5")!] && quotes.allSatisfy { $0.provider == "DefiLlama · daily" })
+    }
+    @Test("Nothing for a coin it doesn't know or a doubtful series; another coin's prices are refused")
+    func refuses() throws {
+        #expect(try PriceHistory.decodeLlama(Data(#"{"coins":{}}"#.utf8), request: request(), fetchedAt: Date()).isEmpty)
+        #expect(try PriceHistory.decodeLlama(body(confidence: "0.2", points: [(start.timeIntervalSince1970 + 60, "5")]), request: request(), fetchedAt: Date()).isEmpty)
+        #expect(throws: (any Error).self) { try PriceHistory.decodeLlama(body(key: "coingecko:bitcoin", points: [(start.timeIntervalSince1970 + 60, "5")]), request: request(), fetchedAt: Date()) }
+    }
+}
