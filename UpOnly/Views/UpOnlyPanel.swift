@@ -301,10 +301,11 @@ struct UpOnlyUnlockedPanel: View {
         // still exists).
         .frame(minHeight: home ? nil : session.dashboardHeight.map { max(0, $0 - headerHeight) }, alignment: .top)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            let page = ceil(height + headerHeight)
-            if home, height > 0, headerHeight > 0, session.dashboardHeight != page { session.dashboardHeight = page }
+            if home, height > 0, headerHeight > 0 { session.recordHomeHeight(ceil(height + headerHeight)) }
         }
         }
+        // Leaving All assets mid-load mustn't shrink the pages opened from it.
+        .onChange(of: home) { _, now in if !now { session.keepHomeHeight() } }
         .environment(\.upOnlyScrollHeader, AnyView(header))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
@@ -313,7 +314,7 @@ struct UpOnlyUnlockedPanel: View {
         .onChange(of: detail) { _, detail in session.dashboardDetailOpen = detail != nil }
         // Manage, Add or a lock replace the dashboard: a detail page left open there mustn't keep catching Esc.
         .onAppear { session.dashboardDetailOpen = detail != nil }
-        .onDisappear { session.dashboardDetailOpen = false }
+        .onDisappear { session.dashboardDetailOpen = false; session.keepHomeHeight() }
         .onChange(of: session.backRequests) { if detail != nil, !session.managementInMenu, !session.addingInMenu { detail = nil } }
         // The shorter ranges' finer prices load as soon as the dashboard shows, all together, so picking one is
         // usually instant; the showing range refreshes them when they're due.
