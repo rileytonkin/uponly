@@ -153,9 +153,13 @@ extension UpOnlyUnlockedPanel {
     func trendTint(_ points: [UpOnlyChartPoint]) -> Color {
         DashboardChart.risesOrHolds(points.compactMap(\.value)).map { $0 ? UpOnlyTint.gain : UpOnlyTint.loss } ?? UpOnlyTint.netWorth
     }
-    /// Prices and exchange rates that are out of date. A bank balance's age is normal and isn't mentioned.
+    /// Prices and exchange rates that are out of date, when they matter: together at least 1% of the total. A tiny
+    /// holding whose price the provider itself stopped updating isn't worth a line under every total. A bank balance's
+    /// age is normal and isn't mentioned.
     func staleNote(_ valuation: ValuationResult) -> (text: String, detail: String)? {
         let components = Dictionary(valuation.components.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let staleValue = Set(valuation.stale.map(\.componentID)).compactMap { components[$0]?.usdValue?.value }.map(abs).reduce(0, +)
+        guard let total = valuation.total, total > 0, staleValue >= total / 100 else { return nil }
         var names: [String] = []
         for stale in valuation.stale {
             guard let component = components[stale.componentID] else { continue }
