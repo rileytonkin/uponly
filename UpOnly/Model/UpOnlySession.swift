@@ -159,6 +159,8 @@ final class UpOnlySession {
     var requestedHoldingEditor: HoldingRequest? { get { unlocked.requestedHoldingEditor } set { unlocked.requestedHoldingEditor = newValue } }
     /// The purchase a holding's page asked to edit, opened filled in.
     var requestedLotID: UUID? { get { unlocked.requestedLotID } set { unlocked.requestedLotID = newValue } }
+    /// The holding a page's Edit opened the Add form for, so the form fills in its history and saving rewrites it.
+    var editingHoldingID: UUID? { get { unlocked.editingHoldingID } set { unlocked.editingHoldingID = newValue } }
     private var vault: VaultStore
     @ObservationIgnored private var liveAuthenticator: LiveAuthenticator?
     private(set) var authenticationContext: LAContext?
@@ -1027,6 +1029,55 @@ final class UpOnlySession {
     /// held that day, and to every total saved after it, with a purchase record for its cost. The portfolio is the
     /// chosen one, or a new one by that name.
     struct Buy: Sendable { var quantity: Decimal; var date: Date; var cost: Decimal? }
+    /// One buy in a holding's history, as its Edit form shows it: how much, when, and what it cost in what.
+    struct HoldingBuy: Sendable, Equatable { var quantity: Decimal; var date: Date; var cost: Decimal?; var currency: String = "USD" }
+    /// A holding's history as buys, to edit: each rise in the amount held is a buy, with the cost recorded that day.
+    /// Nil when it can't be told as buys without losing something (a sale, or a cost on a day nothing was added), in
+    /// which case Edit updates today's amount instead.
+    nonisolated static func editableBuys(holdingID: UUID, document: VaultDocument) -> [HoldingBuy]? {
+        let changes = document.quantities.filter { $0.holdingID == holdingID }.sorted { QuantityObservation.ordering($0, $1) }
+        guard !changes.isEmpty else { return nil }
+        var lots = (document.purchases ?? []).filter { $0.holdingID == holdingID }
+        var buys: [HoldingBuy] = [], held = Decimal(0)
+        for change in changes {
+            let added = change.quantity.value - held
+            held = change.quantity.value
+            if added == 0 { continue }
+            guard added > 0 else { return nil }
+            let lot = lots.firstIndex { UTCDay.isSameDay($0.at, change.effectiveAt) }.map { lots.remove(at: $0) }
+            buys.append(HoldingBuy(quantity: added, date: change.effectiveAt, cost: lot?.paid.value, currency: lot?.currency ?? "USD"))
+        }
+        guard lots.isEmpty, !buys.isEmpty else { return nil }
+        return buys
+    }
+    /// Replaces a holding's history with `buys`: its amounts and purchases, as the Edit form states them. It keeps its
+    /// identity (page, portfolio, moves); days from the earlier of its old and new starts are rebuilt.
+    func rewriteHolding(_ holdingID: UUID, buys: [HoldingBuy]) async throws {
+        let sorted = buys.filter { $0.quantity > 0 }.sorted { $0.date < $1.date }
+        guard let first = sorted.first else { throw ImportFailure("Enter an amount for at least one buy.") }
+        for buy in sorted where buy.cost != nil { _ = try MoneyInput.normalizeCurrency(buy.currency) }
+        try await mutate { doc in
+            guard let index = doc.holdings.firstIndex(where: { $0.id == holdingID }) else { throw VaultError.unknownHolding }
+            let oldStart = doc.quantities.filter { $0.holdingID == holdingID }.map(\.effectiveAt).min()
+            doc.quantities.removeAll { $0.holdingID == holdingID }
+            doc.purchases?.removeAll { $0.holdingID == holdingID }
+            doc.holdings[index].createdAt = first.date
+            var total = Decimal(0)
+            for buy in sorted {
+                total += buy.quantity
+                doc = try HoldingMutations.setQuantity(holdingID: holdingID, quantity: total, at: buy.date, document: doc)
+                if let cost = buy.cost, cost > 0 {
+                    doc.purchases = (doc.purchases ?? []) + [PurchaseLot(holdingID: holdingID, quantity: PreciseDecimal(buy.quantity), paid: PreciseDecimal(cost), currency: buy.currency, at: buy.date)]
+                }
+            }
+            // Days before the new start that the old history covered change too.
+            if let oldStart, oldStart < first.date {
+                let from = min(doc.pendingHistoryRebuild?.from ?? oldStart, UTCDay.start(of: oldStart))
+                doc.pendingHistoryRebuild = PendingHistoryRebuild(from: from, cursor: Date())
+            }
+        }
+        scheduleHistoryRebuild()
+    }
     func commitBuys(portfolioID: UUID?, portfolioName: String, owner: String?, assetID: String, assetName: String, kind: TrackedKind, buys: [Buy]) async throws {
         let sorted = buys.filter { $0.quantity > 0 }.sorted { $0.date < $1.date }
         guard let first = sorted.first else { throw ImportFailure("Enter an amount for at least one buy.") }
@@ -2418,6 +2469,7 @@ final class UnlockedSession {
     var requestedRateCurrency: String?
     var requestedHoldingEditor: UpOnlySession.HoldingRequest?
     var requestedLotID: UUID?
+    var editingHoldingID: UUID?
     var dropZoneVisible = false
     // Drafts and editors: imports, and a backup being restored or exported.
     var importDraft: ImportBatchDraft?

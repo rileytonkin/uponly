@@ -8,6 +8,29 @@ struct PublicAppTests {
         let pair = VaultCrypto.makeInboxKeyPair()
         return VaultDocument.empty(inboxPrivateKeyX963: pair.privateX963, inboxPublicKeyX963: pair.publicX963)
     }
+    @Test("A holding's history reads as buys to edit, unless a sale or a stray cost would be lost")
+    func editableBuys() throws {
+        var doc = empty()
+        let portfolio = Portfolio(name: "Ledger", createdAt: Date(timeIntervalSince1970: 1_600_000_000))
+        doc.portfolios.append(portfolio)
+        let first = Date(timeIntervalSince1970: 1_700_000_000), second = first.addingTimeInterval(30 * 86400)
+        doc = try HoldingMutations.addHolding(portfolioID: portfolio.id, assetID: CanonicalAssetID("pepe"), assetName: "Pepe", quantity: 100, at: first, document: doc)
+        let holding = try #require(doc.holdings.first)
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 100, at: first.addingTimeInterval(86400), document: doc)
+        doc = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 250, at: second, document: doc)
+        doc.purchases = [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(100), paid: PreciseDecimal(50), currency: "USD", at: first)]
+        // A restated amount isn't a buy; the second buy has no cost recorded.
+        let buys = try #require(UpOnlySession.editableBuys(holdingID: holding.id, document: doc))
+        #expect(buys == [UpOnlySession.HoldingBuy(quantity: 100, date: first, cost: 50), UpOnlySession.HoldingBuy(quantity: 150, date: second, cost: nil)])
+        // A sale can't be told as buys.
+        var sold = doc
+        sold = try HoldingMutations.setQuantity(holdingID: holding.id, quantity: 200, at: second.addingTimeInterval(86400), document: sold)
+        #expect(UpOnlySession.editableBuys(holdingID: holding.id, document: sold) == nil)
+        // Nor can a cost on a day nothing was added.
+        var stray = doc
+        stray.purchases?.append(PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(10), paid: PreciseDecimal(5), currency: "USD", at: second.addingTimeInterval(5 * 86400)))
+        #expect(UpOnlySession.editableBuys(holdingID: holding.id, document: stray) == nil)
+    }
     @Test("Balances, archives and partial imports never assert complete personal spending")
     func attentionDoesNotInventCoverage() {
         var doc = empty(); let month = MonthKey.current().previous

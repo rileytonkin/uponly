@@ -35,8 +35,11 @@ struct UpOnlyGuidedEntry: View {
     @State private var choosingPortfolio = false
     /// Several buys, each with its day, instead of one total (nil). Their costs fill in from each day's price.
     @State private var buys: [BuyLine]?
-    /// `cost` is typed, in dollars, only while prices aren't looked up (`lookups`).
-    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = UTCDay.today(); var cost = "" }
+    /// `cost` is typed in `currency` (dollars unless an edited buy was recorded in another); typed, it's the cost,
+    /// else it's that day's price when prices are looked up.
+    struct BuyLine: Identifiable, Equatable { var id = UUID(); var quantity = ""; var date = UTCDay.today(); var cost = ""; var currency = "USD" }
+    /// A holding being edited (a page's Edit): the form holds its history, and saving rewrites it.
+    @State private var editing: UUID?
     /// Each buy day's average price, keyed by asset and day.
     @State private var dayPrices: [String: Decimal] = [:]
     @FocusState private var searchFocused: Bool
@@ -97,13 +100,15 @@ struct UpOnlyGuidedEntry: View {
                 Spacer(minLength: 0)
                 primary("Review") {
                     if buys != nil { error = nil; step = 2 }
+                    // An edit rewrites the holding, so there's no import to check first.
+                    else if editing != nil { fillCostFromClose(); error = entered.map { $0 > 0 ? nil : "Enter an amount above zero." } ?? "Enter an amount."; if error == nil { amountFocused = false; step = 2 } }
                     else { fillCostFromClose(); Task { await evaluate() } }
                 }.disabled(buys != nil ? !buysReady : quantity.wrappedValue.isEmpty || working)
             } else if step == 2 {
                 Spacer(minLength: 0)
                 // No Return shortcut here, so a second Return after Review can't save unseen.
-                primary("Save", shortcut: false) { Task { if buys != nil { await saveBuys() } else { await save() } } }
-                    .disabled(working || (buys == nil && (review?.hasErrors != false || review?.added == 0)))
+                primary("Save", shortcut: false) { Task { if editing != nil { await saveEdit() } else if buys != nil { await saveBuys() } else { await save() } } }
+                    .disabled(working || (editing == nil && buys == nil && (review?.hasErrors != false || review?.added == 0)))
             }
         }
         // On the Add page, the amount and review pages fill the menu's height (Manage has its own header and scroll).
@@ -129,6 +134,7 @@ struct UpOnlyGuidedEntry: View {
             newAccount = addingAccount || activeAccounts.isEmpty || (row.bank.account.existingID == nil && !row.bank.account.name.isEmpty)
             if row.bank.account.currency.isEmpty { row.bank.account.currency = "USD" }
             if mode == .bankBalances ? row.bank.account.existingID != nil : mode == .metals ? !row.holding.coin.isEmpty : !row.holding.resolvedCoinID.isEmpty { step = 1; preselected = true }
+            if mode != .bankBalances, let id = session.editingHoldingID { session.editingHoldingID = nil; prefillEdit(id); initial = row.content }
             #if UPONLY_FIXTURE
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_STEP"] == "choose" { step = 0 }
             if ProcessInfo.processInfo.environment["UPONLY_PREVIEW_ENTRY_STEP"] == "account" { step = 0; newAccount = true; row.bank.account = ImportAccount() }
@@ -425,7 +431,9 @@ struct UpOnlyGuidedEntry: View {
     /// aren't looked up.
     private func buyCost(_ line: BuyLine) -> Decimal? {
         guard let amount = parsed(line.quantity), amount > 0 else { return nil }
-        if !lookups { return parsed(line.cost).flatMap { $0 > 0 ? $0 : nil } }
+        // A typed cost is the cost; otherwise that day's price, when prices are looked up.
+        if let typed = parsed(line.cost), typed > 0 { return typed }
+        if !lookups { return nil }
         guard let price = price(on: line.date) else { return nil }
         let units = mode == .metals ? ((try? MetalWeightUnit.resolve(row.holding.unit).grams(amount)) ?? amount) : amount
         guard let cost = try? MoneyInput.multiply(units, price, allowingRounding: true) else { return nil }
@@ -463,18 +471,17 @@ struct UpOnlyGuidedEntry: View {
                     }.buttonStyle(.plain).accessibilityLabel("Remove this buy")
                 }
             }.frame(minHeight: 36)
-            HStack {
+            HStack(spacing: 6) {
+                // The cost, typed; left empty, that day's price fills it in (shown as the placeholder).
+                let estimate = line.cost.isEmpty && lookups ? buyCost(line) : nil
+                Text("Cost").foregroundStyle(.tertiary)
                 Spacer()
-                if !lookups {
-                    // No price is looked up, so its cost is typed, in dollars (optional, as a single entry's is).
-                    UpOnlyValueField("Cost", text: typedCost).textFieldStyle(.plain).multilineTextAlignment(.trailing)
-                        .frame(maxWidth: 110).accessibilityLabel("Cost of this buy in US dollars")
-                    Text("USD").fixedSize()
-                } else if let cost = buyCost(line) {
-                    UpOnlyPrivateText("≈ " + UpOnlyFormat.exactMoney(cost) + " at " + (isToday(line.date) ? "today's" : "that day's") + " price")
-                } else if (parsed(line.quantity) ?? 0) > 0 {
-                    Text(isToday(line.date) || dayPrices[dayKey(line.date)] == nil ? "Looking up the price…" : "No price for that day")
+                if line.cost.isEmpty, lookups, estimate == nil, (parsed(line.quantity) ?? 0) > 0 {
+                    Text(isToday(line.date) || dayPrices[dayKey(line.date)] == nil ? "Looking up…" : "No price that day").foregroundStyle(.tertiary)
                 }
+                UpOnlyValueField(estimate.map { session.privacyMode ? "••••" : readBack($0, fraction: 2...2) } ?? "0.00", text: typedCost).textFieldStyle(.plain).multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 110).accessibilityLabel("Cost of this buy")
+                Text(line.currency).fixedSize()
             }.font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).padding(.bottom, 8)
         }
     }
@@ -520,6 +527,56 @@ struct UpOnlyGuidedEntry: View {
                 }.padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+    /// Fills the form with a holding's history for Edit: one buy in the single form, several as Several buys. A history
+    /// that can't be told as buys (a sale in it) leaves the form as an update of today's amount.
+    private func prefillEdit(_ id: UUID) {
+        guard let document = session.document, let history = UpOnlySession.editableBuys(holdingID: id, document: document) else { return }
+        editing = id
+        // Metal is kept in grams, so it's edited in grams.
+        if mode == .metals { row.holding.unit = MetalWeightUnit.grams.rawValue }
+        func text(_ value: Decimal) -> String {
+            let plain = NSDecimalNumber(decimal: value).stringValue
+            return numberFormat == .comma ? plain.replacingOccurrences(of: ".", with: ",") : plain
+        }
+        if history.count == 1, let buy = history.first {
+            row.holding.quantity = text(buy.quantity)
+            row.holding.date = ImportDateFormat.today(UTCDay.start(of: buy.date))
+            row.holding.paid = buy.cost.map(text) ?? ""; row.holding.paidCurrency = buy.currency
+        } else {
+            buys = history.map { BuyLine(quantity: text($0.quantity), date: UTCDay.start(of: $0.date), cost: $0.cost.map(text) ?? "", currency: $0.currency) }
+        }
+    }
+    /// Saves an edit: the holding's history becomes what the form says, amounts and purchases together.
+    private func saveEdit() async {
+        guard let id = editing else { return }
+        working = true; error = nil
+        let unit = (try? MetalWeightUnit.resolve(row.holding.unit)) ?? .grams
+        func grams(_ amount: Decimal) -> Decimal { mode == .metals ? ((try? unit.grams(amount)) ?? amount) : amount }
+        let history: [UpOnlySession.HoldingBuy]
+        if let buys {
+            history = buys.compactMap { line in
+                guard let amount = parsed(line.quantity), amount > 0 else { return nil }
+                let typed = parsed(line.cost).flatMap { $0 > 0 ? $0 : nil }
+                return UpOnlySession.HoldingBuy(quantity: grams(amount), date: UTCDay.moment(for: line.date), cost: typed ?? buyCost(line), currency: typed != nil ? line.currency : "USD")
+            }
+        } else {
+            guard let amount = entered, amount > 0 else { error = "Enter an amount above zero."; working = false; return }
+            let paid = (try? numberFormat.decimal(row.holding.paid, typed: true)).flatMap { $0 > 0 ? $0 : nil }
+            history = [UpOnlySession.HoldingBuy(quantity: grams(amount), date: UTCDay.moment(for: holdingDate.wrappedValue), cost: paid,
+                                                currency: row.holding.paidCurrency.uppercased().nilIfEmpty ?? "USD")]
+        }
+        let token = session.sessionToken
+        do {
+            try await session.rewriteHolding(id, buys: history)
+            guard token == session.sessionToken else { return }
+            let total = history.reduce(Decimal(0)) { $0 + $1.quantity }
+            let portfolio = session.document?.portfolios.first { $0.id == row.holding.portfolioID }
+            saved(UpOnlySavedSummary(title: "Holding updated", amount: readBack(mode == .metals ? total : total, fraction: 0...18), unit: mode == .metals ? "g" : unitText,
+                                     detail: portfolio.map(portfolioLabel),
+                                     badge: .asset(mode, symbol: mode == .metals ? row.holding.coin : coin?.symbol.uppercased() ?? "", assetID: mode == .holdings ? row.holding.resolvedCoinID : nil),
+                                     destination: portfolio.map(savedDestination)))
+        } catch { if token == session.sessionToken { self.error = (error as? ImportFailure)?.text ?? error.localizedDescription; working = false } }
     }
     private func saveBuys() async {
         guard let buys else { return }
