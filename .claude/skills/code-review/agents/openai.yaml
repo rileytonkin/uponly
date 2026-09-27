@@ -1,0 +1,7 @@
+interface:
+  display_name: "Code Review"
+  short_description: "Claude-style confidence-scored PR review"
+  default_prompt: "Use $code-review to review the pull request for the current branch."
+
+policy:
+  allow_implicit_invocation: false
