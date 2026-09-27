@@ -10,20 +10,20 @@ struct UpOnlyPanel: View {
     var body: some View {
         Group {
             if session.state == .unlocked, session.document?.settings.setupComplete == true, session.managementInMenu, !session.addingInMenu {
-                // Manage opens at the dashboard's height too, and scrolls within it.
-                UpOnlyManagement().id(session.sessionToken).frame(width: 344)
-                    .environment(\.upOnlyScrollHeight, max(320, (session.dashboardHeight ?? 600) - 58))
-                    .frame(minHeight: session.dashboardHeight, alignment: .top)
+                // Manage is the menu's size too, and scrolls within it.
+                UpOnlyManagement().id(session.sessionToken).frame(width: UpOnlyLayout.menuWidth)
+                    .environment(\.upOnlyScrollHeight, max(320, menuHeight - 58))
+                    .frame(height: menuHeight, alignment: .top)
             } else if session.state != .unlocked {
                 panelContent.fixedSize(horizontal: false, vertical: true)
             } else if session.document?.settings.setupComplete == true, !session.addingInMenu, let model = session.monthModel {
                 // The dashboard scrolls itself, so its title row stays pinned over the page.
                 UpOnlyUnlockedPanel(model: model, maxHeight: menuHeight).id(session.sessionToken)
-                    .frame(width: 344).fixedSize(horizontal: false, vertical: true)
+                    .frame(width: UpOnlyLayout.menuWidth, height: menuHeight, alignment: .top)
             } else {
-                // Starts at the dashboard's last height rather than a guess, so unlocking doesn't settle in two steps.
-                UpOnlyMenuScroll(contentHeight: session.dashboardHeight ?? 360, maxHeight: menuHeight) { panelContent }
-                    .frame(width: 344).fixedSize(horizontal: false, vertical: true)
+                // Setup and Add: the menu's size, scrolling within it.
+                UpOnlyMenuScroll(contentHeight: menuHeight, maxHeight: menuHeight) { panelContent }
+                    .frame(width: UpOnlyLayout.menuWidth, height: menuHeight, alignment: .top)
             }
         }
         // Fills the popover, pinned to the top, so for the frame before the popover takes a new size (unlocking,
@@ -54,14 +54,11 @@ struct UpOnlyPanel: View {
         .onAppear { if !menuLifecycleManaged { session.menuOpened() } }
         .onDisappear { if !menuLifecycleManaged { session.surfaceClosed() } }
     }
-    /// All assets sets the height and never scrolls; every other page (the switcher, Add and Manage included) opens
-    /// at the same height and scrolls within it only when it must, so the menu doesn't jump between pages. Only
-    /// setup, before there's a dashboard to measure, keeps its own.
+    /// Every page is the same height, Mullvad's 568 points (less on a screen too short for it), and scrolls within it
+    /// only when it must, so the menu never changes size between pages.
     private var menuHeight: CGFloat {
-        let screen = max(480, (NSScreen.main?.visibleFrame.height ?? 900) - 40)
-        guard session.document?.settings.setupComplete == true else { return min(600, screen) }
-        if session.dashboardSelection == .all && !session.showingSwitcher && !session.addingInMenu { return screen }
-        return min(session.dashboardHeight ?? 600, screen)
+        let screen = max(400, (NSScreen.main?.visibleFrame.height ?? 900) - 40)
+        return min(session.dashboardHeight ?? UpOnlyLayout.menuHeight, screen)
     }
     private var panelContent: some View {
         Group {
@@ -71,7 +68,7 @@ struct UpOnlyPanel: View {
                 // Add opens at the dashboard's height too, so the menu keeps one size from page to page.
                 else if session.addingInMenu { UpOnlyEntryFlow().id(session.sessionToken).frame(minHeight: session.dashboardHeight, alignment: .top) }
                 else { UpOnlyUnlockedPanel(model: model).id(session.sessionToken) }
-                }.frame(width: 344)
+                }.frame(width: UpOnlyLayout.menuWidth)
             } else { UpOnlyLockView().id(session.sessionToken) }
         }
     }
@@ -167,7 +164,7 @@ struct UpOnlyUnlockedPanel: View {
     /// The header's and the switcher list's heights, so the switcher's breakdown can fill the page rather than leave a gap.
     @State var headerHeight: CGFloat = 0
     /// The dashboard charts' plot height: the usual 120 pt, plus any room the page has spare.
-    var chartPlotHeight: CGFloat { session.dashboardSelection == .all && !showingSwitcher ? 120 : 120 + chartRoom }
+    var chartPlotHeight: CGFloat { 120 + chartRoom }
     /// Height a page other than All assets has spare below its content, given to its chart (at most 140 pt more).
     @State var chartRoom: CGFloat = 0
     @State var switcherListHeight: CGFloat = 0
@@ -264,7 +261,6 @@ struct UpOnlyUnlockedPanel: View {
     }
     var body: some View {
         let group = showingSwitcher ? nil : selectedGroupID
-        let home = session.dashboardSelection == .all && !showingSwitcher
         // The banner only shows on the overview and cash flow, so it is only worked out there. The overview asks for a
         // missing balance, quantity, price or rate itself, right under the total, so the banner leaves those to it.
         let onWorth = hasData && !(session.destination == 0 && shows(.cashFlow)) && showsNetWorth
@@ -293,19 +289,13 @@ struct UpOnlyUnlockedPanel: View {
         .onPreferenceChange(UpOnlyLivePage.self) { live in MainActor.assumeIsolated { livePage = live } }
         // A shorter page gives what's left of the height to its chart, rather than leaving it empty at the foot.
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            let natural = height - (home ? 0 : chartRoom)
-            let room = home ? 0 : min(140, max(0, (session.dashboardHeight ?? 0) - headerHeight - natural))
+            let natural = height - chartRoom
+            let room = min(140, max(0, (session.dashboardHeight ?? 0) - headerHeight - natural))
             if abs(room - chartRoom) > 1 { chartRoom = room }
         }
-        // All assets sets the height every other page opens at, its title included (the session checks the selection
-        // still exists).
-        .frame(minHeight: home ? nil : session.dashboardHeight.map { max(0, $0 - headerHeight) }, alignment: .top)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            if home, height > 0, headerHeight > 0 { session.recordHomeHeight(ceil(height + headerHeight)) }
+        // Every page fills the menu's height, its title included.
+        .frame(minHeight: session.dashboardHeight.map { max(0, $0 - headerHeight) }, alignment: .top)
         }
-        }
-        // Leaving All assets mid-load mustn't shrink the pages opened from it.
-        .onChange(of: home) { _, now in if !now { session.keepHomeHeight() } }
         .environment(\.upOnlyScrollHeader, AnyView(header))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("UpOnlyUnlocked")
@@ -314,7 +304,7 @@ struct UpOnlyUnlockedPanel: View {
         .onChange(of: detail) { _, detail in session.dashboardDetailOpen = detail != nil }
         // Manage, Add or a lock replace the dashboard: a detail page left open there mustn't keep catching Esc.
         .onAppear { session.dashboardDetailOpen = detail != nil }
-        .onDisappear { session.dashboardDetailOpen = false; session.keepHomeHeight() }
+        .onDisappear { session.dashboardDetailOpen = false }
         .onChange(of: session.backRequests) { if detail != nil, !session.managementInMenu, !session.addingInMenu { detail = nil } }
         // The shorter ranges' finer prices load as soon as the dashboard shows, all together, so picking one is
         // usually instant; the showing range refreshes them when they're due.

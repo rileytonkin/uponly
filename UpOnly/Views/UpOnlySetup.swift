@@ -8,6 +8,9 @@ enum UpOnlyLayout {
     static let inset: CGFloat = 16
     static let cardInset: CGFloat = 12
     static let radius: CGFloat = 16
+    /// The menu is one size on every page, Mullvad's: 320 by 568 points. A page with more scrolls within it.
+    static let menuWidth: CGFloat = 320
+    static let menuHeight: CGFloat = 568
 }
 /// Type roles shared by every page, so the same kind of text looks the same everywhere.
 enum UpOnlyType {

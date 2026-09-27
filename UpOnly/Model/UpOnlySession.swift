@@ -87,36 +87,8 @@ final class UpOnlySession {
     var dashboardSelection: DashboardSelection { get { unlocked.dashboardSelection } set { unlocked.dashboardSelection = newValue } }
     /// The switcher sheet over the dashboard. Esc closes it before the menu, and closing the menu closes it.
     var showingSwitcher: Bool { get { unlocked.showingSwitcher } set { unlocked.showingSwitcher = newValue } }
-    /// The All assets page's height. Every other dashboard page opens at the same size and scrolls within it. It's
-    /// layout, not data, so it outlives a lock and the next unlock opens straight at it. Set by `recordHomeHeight`.
-    var dashboardHeight: CGFloat?
-    /// How long All assets must hold a new height before every page takes it. Tests shorten it.
-    @ObservationIgnored var homeSettleDelay: Duration = .seconds(1)
-    @ObservationIgnored private var pendingHomeHeight: Task<Void, Never>?
-    @ObservationIgnored private var pendingHomeTarget: CGFloat?
-    /// All assets' measured height becomes the height every page opens at, but only once it has held for
-    /// `homeSettleDelay`, taller or shorter, and never while history is rebuilding. For a moment after unlocking, an
-    /// install or a rebuild, and while a range loads, the page is drawn without its chart or rows, or with a note that
-    /// then goes; taking those at once left the other pages opening at half height, or too tall. The first
-    /// measurement is taken at once, so there's always a height.
-    func recordHomeHeight(_ measured: CGFloat) {
-        let page = measured
-        guard let current = dashboardHeight else { dashboardHeight = page; return }
-        guard abs(page - current) > 1 else { keepHomeHeight(); return }
-        guard !historyRebuilding else { keepHomeHeight(); return }
-        // The same height again keeps its wait going rather than starting it over.
-        guard pendingHomeTarget != page else { return }
-        keepHomeHeight()
-        pendingHomeTarget = page
-        let delay = homeSettleDelay
-        pendingHomeHeight = Task { [weak self] in
-            do { try await Task.sleep(for: delay) } catch { return }
-            guard let self, !Task.isCancelled, !self.historyRebuilding else { return }
-            self.dashboardHeight = page; self.pendingHomeHeight = nil; self.pendingHomeTarget = nil
-        }
-    }
-    /// All assets was left, or went back to the height it had, before a new one held: keep the height it had.
-    func keepHomeHeight() { pendingHomeHeight?.cancel(); pendingHomeHeight = nil; pendingHomeTarget = nil }
+    /// The height every page opens at: the menu's one size (`UpOnlyLayout.menuHeight`). Previews may set another.
+    var dashboardHeight: CGFloat? = UpOnlyLayout.menuHeight
     /// Income & spending's account choice, put back after a bank or company page borrowed it.
     var cashFlowScope: PerformanceScope? { get { unlocked.cashFlowScope } set { unlocked.cashFlowScope = newValue } }
     /// Your own picture, from your personal Wise profile, for what's about you (your bank balances, Personal).
@@ -1467,7 +1439,7 @@ final class UpOnlySession {
                 return
             }
             let offscreen = ProcessInfo.processInfo.environment["UPONLY_PREVIEW_OFFSCREEN"] == "1"
-            let window = UpOnlyFixtureWindow(contentRect: NSRect(x: offscreen ? -5000 : 120, y: offscreen ? -5000 : 120, width: 344, height: 560), styleMask: [.borderless], backing: .buffered, defer: false)
+            let window = UpOnlyFixtureWindow(contentRect: NSRect(x: offscreen ? -5000 : 120, y: offscreen ? -5000 : 120, width: UpOnlyLayout.menuWidth, height: 560), styleMask: [.borderless], backing: .buffered, defer: false)
             window.title = "Up Only Preview"
             window.isReleasedWhenClosed = false
             window.appearance = NSAppearance(named: .darkAqua)

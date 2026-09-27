@@ -121,7 +121,7 @@ struct UpOnlyLockView: View {
             if session.isBusy && !compactUnlock { ProgressView().controlSize(.small) }
         }.padding(.horizontal, compactUnlock ? 12 : UpOnlyLayout.inset).padding(.vertical, compactUnlock ? 10 : UpOnlyLayout.inset)
         // An error on the compact row gets the full width rather than wrapping into a narrow column.
-        .frame(width: compactUnlock && session.message == nil ? 108 : 344, alignment: .leading)
+        .frame(width: compactUnlock && session.message == nil ? 108 : UpOnlyLayout.menuWidth, alignment: .leading)
         .accessibilityIdentifier("UpOnlyLocked")
         .animation(reduceMotion ? nil : .snappy, value: showsRecoveryCode)
         .onAppear {
