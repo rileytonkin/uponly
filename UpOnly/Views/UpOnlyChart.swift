@@ -486,7 +486,9 @@ enum UpOnlyFormat {
     }()
     private static let usdCents = currencyFormatter("USD")
     private static let usdSmall: NumberFormatter = {
-        let formatter = currencyFormatter("USD"); formatter.maximumFractionDigits = 6
+        // Four significant digits, however small: PEPE's $0.00000125 rather than $0.000001.
+        let formatter = currencyFormatter("USD"); formatter.usesSignificantDigits = true
+        formatter.minimumSignificantDigits = 2; formatter.maximumSignificantDigits = 4
         return formatter
     }()
     private static let oneDecimal = decimalFormatter(fractionDigits: 1...1)

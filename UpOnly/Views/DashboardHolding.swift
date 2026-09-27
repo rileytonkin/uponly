@@ -87,7 +87,7 @@ extension UpOnlyUnlockedPanel {
         let since = ((document.purchases ?? []).filter { $0.holdingID == holding.id }.map(\.at) + [performance.since].compactMap { $0 }).min()
         return HStack(alignment: .top, spacing: 0) {
             // What you paid, not a market price, so privacy mode hides the first two.
-            detailStat("Avg. buy price", average ?? "—", isPrivate: true)
+            detailStat("Avg. price", average ?? "—", isPrivate: true)
             Divider().padding(.vertical, 2)
             detailStat("Cost basis", performance.costUSD.map(UpOnlyFormat.exactMoney) ?? "—", isPrivate: true, detail: performance.coveredQuantity != nil ? "For part of it" : nil)
             Divider().padding(.vertical, 2)
@@ -153,8 +153,10 @@ extension UpOnlyUnlockedPanel {
     }
     /// How the amount held has changed, newest first: each update and what it added or took away.
     @ViewBuilder func holdingHistory(_ holding: Holding, document: VaultDocument, symbol: String, metal: Bool) -> some View {
+        // Only real changes: an update that restated the same amount says nothing.
         let changes = document.quantities.filter { $0.holdingID == holding.id }
             .sorted { QuantityObservation.ordering($0, $1) }
+            .reduce(into: [QuantityObservation]()) { kept, change in if kept.last?.quantity.value != change.quantity.value { kept.append(change) } }
         if changes.count > 1 {
             let recent = Array(changes.enumerated().reversed().prefix(6))
             VStack(alignment: .leading, spacing: 6) {
