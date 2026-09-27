@@ -106,29 +106,6 @@ struct UpOnlySearchField: View {
     }
 }
 
-/// A figure in its own tile, as market apps lay out a holding's numbers: a quiet title, the figure large, and an
-/// optional line under it (a move, a note). Tiles sit two to a row.
-struct UpOnlyStatTile: View {
-    var title: String
-    var value: String
-    var isPrivate = false
-    var detail: String? = nil
-    var detailTint: Color? = nil
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
-            Group { if isPrivate { UpOnlyPrivateText(value) } else { Text(value) } }
-                .font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
-                .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: value)
-            if let detail {
-                Text(detail).font(UpOnlyType.caption.weight(.medium).monospacedDigit()).foregroundStyle(detailTint ?? .secondary).lineLimit(1)
-            }
-        }.padding(.horizontal, 12).padding(.vertical, 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .modifier(UpOnlyContentSurface())
-            .accessibilityElement(children: .combine)
-    }
-}
 
 /// A change as an outlined pill, "↑ 21.0%", green up and red down, as on the admin dashboard.
 struct UpOnlyChangeBadge: View {
@@ -155,11 +132,45 @@ struct UpOnlyChangeBadge: View {
     nonisolated private static let pack: Data? = Bundle.main.url(forResource: "CoinLogos", withExtension: "pack").flatMap { try? Data(contentsOf: $0, options: .alwaysMapped) }
     private static let cache = NSCache<NSString, NSImage>()
     static func image(_ assetID: String) -> NSImage? {
-        if let image = NSImage(named: "CoinLogos/" + assetID) { return image }
         if let image = cache.object(forKey: assetID as NSString) { return image }
-        guard let data = pack.flatMap({ find(assetID, in: $0)?.image }), let image = NSImage(data: data), image.isValid else { return nil }
+        let found = NSImage(named: "CoinLogos/" + assetID)
+            ?? pack.flatMap({ find(assetID, in: $0)?.image }).flatMap { NSImage(data: $0) }.flatMap { $0.isValid ? $0 : nil }
+        guard let found else { return nil }
+        let image = legible(found)
         cache.setObject(image, forKey: assetID as NSString)
         return image
+    }
+    /// A dark mark on a clear background (ONDO's, Cosmos's) vanishes on the menu's dark glass, so it's drawn on a white
+    /// disc, as exchange apps do. Anything else is returned as it is.
+    private static func legible(_ image: NSImage) -> NSImage {
+        guard isDarkOnClear(image) else { return image }
+        let size = NSSize(width: 64, height: 64)
+        return NSImage(size: size, flipped: false) { rect in
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            image.draw(in: rect.insetBy(dx: 6, dy: 6))
+            return true
+        }
+    }
+    /// Over 30% of it clear and what isn't, dark: its opaque pixels' average luminance under a quarter.
+    nonisolated static func isDarkOnClear(_ image: NSImage) -> Bool {
+        let side = 16
+        guard let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return false }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
+        guard let data = context.data else { return false }
+        let pixels = data.bindMemory(to: UInt8.self, capacity: side * side * 4)
+        var opaque = 0, luminance = 0.0
+        for index in 0..<(side * side) {
+            let alpha = Double(pixels[index * 4 + 3])
+            guard alpha > 128 else { continue }
+            // Premultiplied: undo it before weighing the colour.
+            let red = Double(pixels[index * 4]) / alpha, green = Double(pixels[index * 4 + 1]) / alpha, blue = Double(pixels[index * 4 + 2]) / alpha
+            opaque += 1; luminance += 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        }
+        let clear = 1 - Double(opaque) / Double(side * side)
+        return clear > 0.3 && opaque > 0 && luminance / Double(opaque) < 0.25
     }
     /// "ZIG" for zignaly: the coin's ticker as CoinGecko lists it, for coins the app hasn't searched for.
     nonisolated static func ticker(_ assetID: String) -> String? { pack.flatMap { find(assetID, in: $0)?.ticker } }

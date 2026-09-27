@@ -312,6 +312,8 @@ struct CoinLogoPackTests {
         #expect(CoinLogos.image("chex-token") != nil && CoinLogos.image("bitcoin") != nil && CoinLogos.image("not-a-coin-at-all") == nil)
         #expect(CoinLogos.ticker("chex-token") == "CHEX" && CoinLogos.ticker("zignaly") == "ZIG" && CoinLogos.ticker("not-a-coin-at-all") == nil)
         #expect(ImportCoins.ticker("zignaly", catalog: []) == "ZIG" && ImportCoins.ticker("bitcoin", catalog: []) == "BTC")
+        // ONDO's logo is a black mark on a clear background, so it gets a white disc; Bitcoin's orange coin doesn't.
+        #expect(CoinLogos.isDarkOnClear(NSImage(named: "CoinLogos/ondo-finance")!) && !CoinLogos.isDarkOnClear(NSImage(named: "CoinLogos/bitcoin")!))
     }
     @Test("List rows write amounts short, as market apps do")
     func shortQuantities() {
