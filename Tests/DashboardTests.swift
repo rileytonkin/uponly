@@ -184,8 +184,8 @@ struct DashboardTests {
         #expect(WorthRange.day.hourly && !WorthRange.week.hourly && WorthRange.month.previous == "prev 30D" && WorthRange.all.previous == "at start")
         #expect(WorthRange.all.within == "" && WorthRange.year.within == " in the past year")
         // Every day up to a year; All by how long the history is.
-        #expect(WorthRange.year.chartStepDays(span: 365 * 86400) == 1)
-        #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 800 * 86400) == 3 && WorthRange.all.chartStepDays(span: 2500 * 86400) == 7)
+        #expect(WorthRange.year.chartStepDays(span: 365 * 86400) == 2 && WorthRange.month.chartStepDays(span: 30 * 86400) == 1)
+        #expect(WorthRange.all.chartStepDays(span: 60 * 86400) == 1 && WorthRange.all.chartStepDays(span: 800 * 86400) == 5 && WorthRange.all.chartStepDays(span: 2500 * 86400) == 14)
         #expect(WorthRange.all.months == nil && WorthRange.day.months == 1 && WorthRange.year.months == 12)
     }
 }

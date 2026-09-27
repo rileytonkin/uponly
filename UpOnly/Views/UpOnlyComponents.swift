@@ -619,12 +619,15 @@ nonisolated enum WorthRange: CaseIterable {
     var candleInterval: String? {
         switch self { case .day: "15m"; case .week: "1h"; case .month: "4h"; case .year, .all: nil }
     }
-    /// Days between chart points: every day up to a year (at most 365 points), and for All by how long the
-    /// history is, so it too stays near a year's worth of points.
+    /// Days between chart points, so a chart has about 180 of them whatever its range.
     func chartStepDays(span: TimeInterval) -> Int {
+        // About 180 points across the chart (a point every few pixels), each the last saved value in its step: a
+        // day each for a month, every other day for a year, and wider steps for years of history, rather than
+        // thousands of daily points drawn as a scribble.
         switch self {
-        case .day, .week, .month, .year: 1
-        case .all: span <= 400 * 86400 ? 1 : span <= 1100 * 86400 ? 3 : 7
+        case .day, .week, .month: 1
+        case .year: 2
+        case .all: max(1, Int((span / 86400 / 180).rounded(.up)))
         }
     }
     /// Short ranges name days ("Sep 17"); a year or more also names the year ("Sep 24, 2025").
