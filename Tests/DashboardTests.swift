@@ -373,7 +373,7 @@ struct LlamaHistoryTests {
     private func request(_ id: String = "bitcoin-cash-sv") -> PriceHistoryRequest {
         PriceHistoryRequest(source: .crypto, key: "asset:" + id, identifier: id, start: start, end: start.addingTimeInterval(3 * 86400))
     }
-    private func body(_ key: String = "coingecko:bitcoin-cash-sv", confidence: String = "0.99", points: [(Double, String)]) -> Data {
+    private func body(key: String = "coingecko:bitcoin-cash-sv", confidence: String = "0.99", points: [(Double, String)]) -> Data {
         let prices = points.map { #"{"timestamp":\#($0.0),"price":\#($0.1)}"# }.joined(separator: ",")
         return Data(#"{"coins":{"\#(key)":{"symbol":"BSV","confidence":\#(confidence),"prices":[\#(prices)]}}}"#.utf8)
     }
