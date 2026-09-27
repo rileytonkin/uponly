@@ -71,7 +71,8 @@ extension UpOnlyUnlockedPanel {
                         let stats = [snapshot.change.map { changeStat($0) }, snapshot.allTime.map(allTimeStat)].compactMap { $0 }
                         if !stats.isEmpty { headlineStats(stats) }
                     }
-                    if let stale = staleNote(valuation) {
+                    // On All assets it waits below the rows, so the rows get the room above the fold.
+                    if portfolio != nil, let stale = staleNote(valuation) {
                         Text(stale.text).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(2).help(stale.detail)
                     }
                 }.fixedSize(horizontal: false, vertical: true).padding(.top, 8)
@@ -123,7 +124,10 @@ extension UpOnlyUnlockedPanel {
                 if let valuation, available { holdingsList(portfolio, valuation: valuation, snapshot: snapshot).padding(.top, 16) }
             } else {
                 let rows = overviewRows(snapshot)
-                if !rows.isEmpty { assetList(rows).padding(.top, 16) }
+                if !rows.isEmpty { assetList(rows).padding(.top, 12) }
+                if let valuation, available, let stale = staleNote(valuation) {
+                    Text(stale.text).font(UpOnlyType.caption).foregroundStyle(.secondary).lineLimit(2).help(stale.detail).padding(.top, 10)
+                }
             }
             if !available {
                 worthEmptyState.padding(.top, 14)

@@ -503,6 +503,8 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
     /// Right-click options, such as updating a balance.
     var options: [(title: String, action: () -> Void)] = []
     var action: (() -> Void)? = nil
+    /// A list that should fit many rows (All assets): each row 40 pt tall, its caption on one line.
+    var compact = false
     @ViewBuilder var badge: () -> Badge
     @ViewBuilder var menu: () -> Options
     @Environment(UpOnlySession.self) private var session
@@ -516,7 +518,8 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                             Text(title).font(UpOnlyType.row.weight(.semibold)).foregroundStyle(.primary).lineLimit(1).truncationMode(.middle)
                             if let caption {
                                 Group { if captionIsPrivate { UpOnlyPrivateText(caption) } else { Text(caption) } }
-                                    .font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                    .font(UpOnlyType.caption).foregroundStyle(.secondary)
+                                    .lineLimit(compact ? 1 : nil).fixedSize(horizontal: false, vertical: !compact)
                             }
                         }.frame(minWidth: 100, alignment: .leading)  // a huge amount shrinks before the name disappears
                         Spacer(minLength: 8)
@@ -541,7 +544,7 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                         }
                         if chevron { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
                     // Every row is at least two lines tall, so one with a second line doesn't stand out from the rest.
-                    }.frame(minHeight: 30).padding(.vertical, 8).contentShape(Rectangle())
+                    }.frame(minHeight: 30).padding(.vertical, compact ? 5 : 8).contentShape(Rectangle())
                 }.buttonStyle(UpOnlyRowButtonStyle(selected: selected)).disabled(action == nil)
                     .contextMenu { ForEach(Array(options.enumerated()), id: \.offset) { _, option in Button(option.title, action: option.action) } }
                     .accessibilityLabel(title).accessibilityValue(spokenValue)
@@ -567,8 +570,8 @@ extension UpOnlyRow where Options == EmptyView {
     /// A row with nothing to offer beyond its own click (and any right-click options).
     init(title: String, caption: String? = nil, captionIsPrivate: Bool = false, value: String? = nil, change: Decimal? = nil,
          valueDetail: String? = nil, chevron: Bool = false, selected: Bool = false,
-         options: [(title: String, action: () -> Void)] = [], action: (() -> Void)? = nil, @ViewBuilder badge: @escaping () -> Badge) {
-        self.init(title: title, caption: caption, captionIsPrivate: captionIsPrivate, value: value, change: change, valueDetail: valueDetail, chevron: chevron, selected: selected, options: options, action: action, badge: badge, menu: { EmptyView() })
+         options: [(title: String, action: () -> Void)] = [], action: (() -> Void)? = nil, compact: Bool = false, @ViewBuilder badge: @escaping () -> Badge) {
+        self.init(title: title, caption: caption, captionIsPrivate: captionIsPrivate, value: value, change: change, valueDetail: valueDetail, chevron: chevron, selected: selected, options: options, action: action, compact: compact, badge: badge, menu: { EmptyView() })
     }
 }
 /// A source of personal transactions: a bank account, a Wise profile, or "Added by hand".

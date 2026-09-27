@@ -47,7 +47,7 @@ extension UpOnlyUnlockedPanel {
             return SelectionRow(id: group.id, selection: .bankGroup(group.id), section: group.businessID == nil ? "Accounts" : "Companies", name: name,
                                 image: group.businessID == nil ? session.personalImage : group.image, symbol: group.businessID == nil ? "building.columns.fill" : "building.2.fill", tint: group.businessID == nil ? UpOnlyTint.netWorth : UpOnlyTint.company,
                                 value: total, valueText: shown.map(UpOnlyFormat.exactMoney) ?? Self.needed(parts), change: nil,
-                                personal: personal, detail: ownership.map { share in share.label + " of " + (total.map(UpOnlyFormat.exactMoney) ?? "the company") })
+                                personal: personal, detail: ownership.map { share in share.label + " of " + (total.map(UpOnlyFormat.money) ?? "the company") })
         }
         let companies = Set(groups.compactMap(\.businessID))
         let portfolioOf = Dictionary(document.holdings.map { ($0.id, $0.portfolioID) }, uniquingKeysWith: { first, _ in first })
