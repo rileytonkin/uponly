@@ -188,23 +188,28 @@ struct UpOnlyGuidedEntry: View {
                 .task(id: query.lowercased()) {
                     if !query.isEmpty { try? await Task.sleep(for: .milliseconds(250)); await session.searchCatalog(search) }
                 }
-            // Before typing, offer the best-known coins rather than an empty list.
-            let suggestions = query.isEmpty ? Array(ImportCoins.common.prefix(6)) : ImportCoins.suggestions(search, coins: coins)
-            ManageCard {
-                ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, coin in
-                    UpOnlyRow(title: coin.name, caption: coin.symbol.uppercased(), chevron: true, action: {
-                        row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; chose()
-                    }) {
-                        UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
-                    }
-                    .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
+            if query.isEmpty {
+                // Before typing: your own coins first, the latest added at the top, then the best-known ones, as many
+                // as the page holds without scrolling.
+                let recent = recentCoins
+                let popular = ImportCoins.common.filter { coin in !recent.contains { $0.id == coin.id } }.prefix(max(3, Self.suggestionRows - recent.count))
+                if !recent.isEmpty {
+                    Text("Your coins").font(UpOnlyType.section).foregroundStyle(.secondary).padding(.bottom, -8)
+                    ManageCard { ForEach(recent) { coin in coinRow(coin) } }
                 }
+                Text(recent.isEmpty ? "Popular" : "More coins").font(UpOnlyType.section).foregroundStyle(.secondary).padding(.bottom, -8)
+                ManageCard { ForEach(Array(popular)) { coin in coinRow(coin) } }
+            } else {
+            let suggestions = ImportCoins.suggestions(search, coins: coins)
+            ManageCard {
+                ForEach(suggestions) { coin in coinRow(coin) }
                 // A coin the list doesn't know is found by its CoinGecko ID.
                 if !query.isEmpty {
                     UpOnlyRow(title: "Another coin", caption: suggestions.isEmpty ? "No match here, so enter its CoinGecko ID" : "Enter its CoinGecko ID", chevron: true, action: {
                         row.holding.resolvedCoinID = query.lowercased().replacingOccurrences(of: " ", with: "-"); exactCoin = true
                     }) { addBadge }
                 }
+            }
             }
             // Search stays on this Mac then (`UpOnlySession.searchCatalog`).
             if !query.isEmpty, !lookups {
@@ -214,6 +219,28 @@ struct UpOnlyGuidedEntry: View {
         }
     }
     private var addBadge: some View { UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28) }
+    /// How many coins the chooser shows before anything is typed: what fits under the search without scrolling.
+    static let suggestionRows = 9
+    /// The coins you hold, the latest added first, up to four: what you're most likely adding to again.
+    private var recentCoins: [CatalogCoin] {
+        guard let document = session.document else { return [] }
+        var seen = Set<String>(), result: [CatalogCoin] = []
+        for holding in document.holdings.filter({ $0.archivedAt == nil && PreciousMetal.asset($0.assetID) == nil }).sorted(by: { $0.createdAt > $1.createdAt }) {
+            let id = holding.assetID.rawValue
+            guard seen.insert(id).inserted else { continue }
+            result.append(coins.first { $0.id == id } ?? CatalogCoin(id: id, symbol: ImportCoins.ticker(id, catalog: session.catalog).lowercased(), name: holding.assetName))
+            if result.count == 4 { break }
+        }
+        return result
+    }
+    private func coinRow(_ coin: CatalogCoin) -> some View {
+        UpOnlyRow(title: coin.name, caption: (coin.symbol.nilIfEmpty ?? coin.id).uppercased(), chevron: true, action: {
+            row.holding.coin = coin.id; row.holding.resolvedCoinID = coin.id; row.holding.assetName = coin.name; chose()
+        }, compact: true) {
+            UpOnlyAssetBadge(assetID: coin.id, symbol: coin.symbol, size: 28)
+        }
+        .help(coin.id).accessibilityIdentifier("ChooseCoin-" + coin.id)
+    }
     /// A new account: its bank's logo appears as the name is typed; the currency and owner are choices below it.
     private var newAccountForm: some View {
         VStack(spacing: 16) {
