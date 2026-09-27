@@ -1661,7 +1661,7 @@ extension UpOnlySession {
         for account in doc.accounts {
             let balances = doc.bankBalances.filter { $0.accountID == account.id }
             let derived = balances.filter { $0.source == BalanceReconstruction.source }
-            let entries = doc.entries.filter { $0.accountID == account.id || (account.externalProfileID != nil && $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix("wise:" + account.externalProfileID! + ":") == true) }
+            let entries = doc.entries.filter { $0.accountID == account.id || (account.externalProfileID != nil && AssetOwnership.jarName(account) == nil && $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix("wise:" + account.externalProfileID! + ":") == true) }
             let tracking = doc.bankTracking.filter { $0.accountID == account.id }.sorted { $0.ordinal < $1.ordinal }.map { ($0.tracked ? "on " : "off ") + day.string(from: $0.effectiveAt) }
             lines.append("  \(account.name) [\(account.currency)] balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
         }
