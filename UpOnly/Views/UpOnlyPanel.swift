@@ -436,6 +436,14 @@ struct UpOnlyUnlockedPanel: View {
                 }
                 Divider()
             }
+            if case .bankGroup(let id) = session.dashboardSelection, session.document?.businessAccounting?.contains(where: { $0.id == id }) == true {
+                // Which share of the company is yours, month by month: what its page and net worth count.
+                Button {
+                    session.requestedHoldingEditor = .ownership(id)
+                    session.managementSection = "Manage"; session.managementInMenu = true
+                } label: { Label("Ownership", systemImage: "person.2") }
+                Divider()
+            }
             Button { manage("Manage") } label: { Label("Manage", systemImage: "slider.horizontal.3") }
                 .accessibilityIdentifier("ManageUpOnly")
             Divider()

@@ -23,6 +23,9 @@ nonisolated struct BusinessBook: Codable, Sendable, Equatable, Identifiable {
     var modifiedAt: Date?
     var warning: String?
     var transferCounterparties: [String]?
+    /// The ownership history was set in the app (Manage → the company's Ownership), so a refresh from the
+    /// accounting connection keeps it rather than putting back the connection's.
+    var ownershipEdited: Bool? = nil
 }
 nonisolated struct BusinessContribution: Identifiable {
     var book: BusinessBook
@@ -42,6 +45,32 @@ nonisolated struct OwnershipPeriod: Codable, Sendable, Equatable {
         var percent = Decimal(numerator) / Decimal(denominator) * 100, rounded = Decimal()
         NSDecimalRound(&rounded, &percent, 2, .plain)
         return NSDecimalNumber(decimal: rounded).stringValue + "%"
+    }
+    /// A typed share as a fraction: "50", "33.5" or "12,5" (percent) or "1/3". A third or two written short ("33",
+    /// "33.33", "66.7") is that third, as a partnership split is; other percents keep two decimals. Nil for anything
+    /// that isn't wholly a number or fraction, above 100% or at 0.
+    static func share(_ text: String) -> (numerator: Int, denominator: Int)? {
+        let clean = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "%", with: "").replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: ",", with: ".")
+        let parts = clean.split(separator: "/", omittingEmptySubsequences: false)
+        if parts.count == 2 {
+            guard let numerator = Int(parts[0]), let denominator = Int(parts[1]), numerator > 0, denominator > 0, numerator <= denominator, denominator <= 10_000 else { return nil }
+            return reduced(numerator, denominator)
+        }
+        guard parts.count == 1, clean.wholeMatch(of: #/\d{1,3}(\.\d{1,4})?/#) != nil,
+              let percent = Decimal(string: clean, locale: Locale(identifier: "en_US_POSIX")), percent > 0, percent <= 100 else { return nil }
+        if clean.wholeMatch(of: #/33(\.3{1,4})?/#) != nil { return (1, 3) }
+        if clean.wholeMatch(of: #/66(\.6{0,3}7?)?/#) != nil { return (2, 3) }
+        var hundredths = percent * 100, rounded = Decimal()
+        NSDecimalRound(&rounded, &hundredths, 0, .plain)
+        let numerator = NSDecimalNumber(decimal: rounded).intValue
+        guard numerator > 0 else { return nil }
+        return reduced(numerator, 10_000)
+    }
+    private static func reduced(_ numerator: Int, _ denominator: Int) -> (numerator: Int, denominator: Int) {
+        var a = numerator, b = denominator
+        while b != 0 { (a, b) = (b, a % b) }
+        return (numerator / a, denominator / a)
     }
     func portion(_ amount: Decimal) throws -> Decimal {
         guard numerator >= 0, denominator > 0, numerator <= denominator else { throw VaultError.invalidAmount }
@@ -73,6 +102,8 @@ nonisolated enum AccountingHistory {
         for var book in incoming {
             if let saved = result[book.id] {
                 guard book.fetchedAt >= saved.fetchedAt else { continue }
+                // Ownership set in the app outlives a refresh.
+                if saved.ownershipEdited == true { book.ownership = saved.ownership; book.ownershipEdited = true }
                 let received = Set(book.months.map(\.month))
                 for var row in saved.months where !received.contains(row.month) {
                     row.estimated = true
