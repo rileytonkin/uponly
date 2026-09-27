@@ -349,9 +349,9 @@ struct UpOnlyGuidedEntry: View {
             UpOnlyAssetBadge(assetID: largest.assetID.rawValue, symbol: coins.first { $0.id == largest.assetID.rawValue }?.symbol ?? largest.assetName, size: 28)
         } else if mode == .metals { UpOnlyEntryBadge(mode: .metals, size: 28) } else { UpOnlyAssetBadge(assetID: "bitcoin", symbol: "BTC", size: 28) }
     }
-    /// Each portfolio's largest holding by today's value.
+    /// Each portfolio's largest holding by today's value. None in privacy mode: which is largest is itself private.
     private var largestHoldings: [UUID: Holding] {
-        guard let document = session.pricedDocument() else { return [:] }
+        guard !session.privacyMode, let document = session.pricedDocument() else { return [:] }
         let holdings = Dictionary(document.holdings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var largest: [UUID: (holding: Holding, value: Decimal)] = [:]
         for part in NetWorthCalculator.value(at: Date(), scope: .allTracked, document: document).components where part.kind == .holding {

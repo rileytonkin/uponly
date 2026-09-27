@@ -60,7 +60,7 @@ extension UpOnlyUnlockedPanel {
             let company = owner.flatMap { id in model.books.first { $0.id == id }?.name }
             let largest = parts.max { ($0.usdValue?.value ?? 0) < ($1.usdValue?.value ?? 0) }.flatMap { part in document.holdings.first { $0.id == part.id }?.assetID.rawValue }
             rows.append(SelectionRow(id: portfolio.id.uuidString, selection: .portfolio(portfolio.id), section: portfolio.kind == .metals ? "Metals" : "Crypto",
-                                     name: portfolio.name + (company.map { " · " + $0 } ?? ""), logo: largest ?? (portfolio.kind == .crypto ? "bitcoin" : nil),
+                                     name: portfolio.name + (company.map { " · " + $0 } ?? ""), logo: (session.privacyMode ? nil : largest) ?? (portfolio.kind == .crypto ? "bitcoin" : nil),
                                      symbol: portfolio.kind == .metals ? TrackedKind.metals.symbol : TrackedKind.crypto.symbol,
                                      tint: portfolio.kind == .metals ? UpOnlyTint.metals : UpOnlyTint.crypto,
                                      value: total, valueText: parts.isEmpty ? "No holdings" : total.map(UpOnlyFormat.exactMoney) ?? "Price needed",

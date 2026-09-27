@@ -266,11 +266,11 @@ struct TypedDateTests {
         // Without a year, the latest such day up to today.
         #expect(day("12 Mar") == "2026-03-12" && day("1 Dec") == "2025-12-01")
         #expect(day("today") == "2026-09-27" && day("yesterday") == "2026-09-26" && day("3 weeks ago") == "2026-09-06" && day("2y") == "2024-09-27")
-        #expect(day("29 Feb 2024") == "2024-02-29")
+        #expect(day("29 Feb 2024") == "2024-02-29" && day("29 Feb") == "2024-02-29")
     }
     @Test("Anything else, an impossible day or a day after today reads as nothing")
     func refuses() {
-        for text in ["", "hello", "5", "1 1 1", "31/2/2021", "29 Feb 2023", "12 Foo 2021", "2030-01-01"] { #expect(day(text) == nil, "\(text)") }
+        for text in ["", "hello", "5", "1 1 1", "31/2/2021", "29 Feb 2023", "12 Foo 2021", "2030-01-01", "9999 years ago", "500 y"] { #expect(day(text) == nil, "\(text)") }
         #expect(UpOnlyDateParser.isFuture("2030-01-01", today: today) && !UpOnlyDateParser.isFuture("hello", today: today))
     }
 }

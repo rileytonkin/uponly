@@ -38,7 +38,9 @@ struct UpOnlyDateCalendar: View {
             VStack(alignment: .leading, spacing: 6) {
                 TextField("Type a date: 12 Mar 2021", text: $typed).textFieldStyle(.roundedBorder).focused($typing)
                     .accessibilityLabel("Type a date")
-                    .onChange(of: typed) { _, _ in if let parsed { draft = parsed } }
+                    // Only a day that reads is kept: half-typed text that stops reading ("12 Mar 202") keeps nothing,
+                    // so closing then leaves the date as it was rather than an earlier partial reading.
+                    .onChange(of: typed) { _, now in if !now.trimmingCharacters(in: .whitespaces).isEmpty { draft = parsed } }
                 if !typed.trimmingCharacters(in: .whitespaces).isEmpty {
                     Text(parsed.map { $0.formatted(Date.FormatStyle(date: .complete, time: .omitted, timeZone: UTCDay.timeZone)) }
                          ?? (UpOnlyDateParser.isFuture(typed) ? "That’s after today" : "Try 12 Mar 2021, 2021-03-12 or 2 years ago"))
@@ -79,7 +81,7 @@ nonisolated enum UpOnlyDateParser {
         // "3 weeks ago", "2y", "18 months"
         if let match = clean.wholeMatch(of: #/(\d{1,4})\s*(d|days?|w|wks?|weeks?|m|mos?|months?|y|yrs?|years?)(\s+ago)?/#), let count = Int(match.1) {
             let unit: Calendar.Component = switch match.2.first { case "d": .day; case "w": .weekOfYear; case "m": .month; default: .year }
-            return calendar.date(byAdding: unit, value: -count, to: today)
+            return calendar.date(byAdding: unit, value: -count, to: today).flatMap { day in calendar.date(from: DateComponents(year: 1900, month: 1, day: 1)).flatMap { day >= $0 ? day : nil } }
         }
         // "12th" is 12.
         let tokens = clean.split { !$0.isLetter && !$0.isNumber }.map { token in
@@ -145,9 +147,8 @@ nonisolated enum UpOnlyDateParser {
             return date
         }
         if let fullYear { return date(fullYear) }
-        // No year: the latest such day up to today.
-        guard let candidate = date(thisYear) else { return nil }
-        return candidate <= today ? candidate : date(thisYear - 1)
+        // No year: the latest such day up to today (29 Feb looks back to the last leap year).
+        return (0...8).lazy.compactMap { date(thisYear - $0) }.first { $0 <= today }
     }
     /// Whether this Mac writes the day before the month (12/3 for 12 March).
     private static func dayFirst(_ locale: Locale) -> Bool {

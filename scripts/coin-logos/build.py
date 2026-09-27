@@ -41,17 +41,33 @@ ENTRY = "<IHIBII"
 TICKER = re.compile(r"[\x21-\x7e]{1,20}")  # printable ASCII, as tickers are written
 
 
+def allowed(url):
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" and parts.hostname in HOSTS
+
+
+class CheckedRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuses a redirect before it's followed unless it stays on https and the allowed hosts."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not allowed(newurl):
+            raise ValueError(f"refusing a redirect to {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+OPENER = urllib.request.build_opener(CheckedRedirects)
+
+
 def get(url, tries=6):
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or parts.hostname not in HOSTS:
+    if not allowed(url):
         raise ValueError(f"refusing {url}")
     headers = {"User-Agent": AGENT}
     if parts.hostname == "api.coingecko.com" and os.environ.get("COINGECKO_KEY"):
         headers["x-cg-demo-api-key"] = os.environ["COINGECKO_KEY"]
     for attempt in range(tries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
-                if urllib.parse.urlsplit(response.geturl()).hostname not in HOSTS:
+            with OPENER.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
+                if not allowed(response.geturl()):
                     raise ValueError(f"redirected off the allowed hosts: {url}")
                 return response.read(4 * 1024 * 1024)
         except urllib.error.HTTPError as error:
