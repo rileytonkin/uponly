@@ -334,8 +334,8 @@ struct CompanyOwnershipTests {
         func share(_ text: String) -> String? { OwnershipPeriod.share(text).map { "\($0.numerator)/\($0.denominator)" } }
         #expect(share("50") == "1/2" && share("50%") == "1/2" && share("100") == "1/1" && share("25.5") == "51/200")
         #expect(share("33") == "1/3" && share("33.33") == "1/3" && share("1/3") == "1/3" && share("66.67") == "2/3" && share("2/4") == "1/2")
-        #expect(share("32") == "8/25")
-        for text in ["", "0", "-5", "101", "abc", "4/3", "1/0", "0/3"] { #expect(share(text) == nil, "\(text)") }
+        #expect(share("32") == "8/25" && share("33.5") == "67/200" && share("12,5") == "1/8" && share("66.7") == "2/3")
+        for text in ["", "0", "-5", "101", "abc", "4/3", "1/0", "0/3", "50abc", "1e2"] { #expect(share(text) == nil, "\(text)") }
     }
     @Test("A refresh keeps ownership set in the app, and takes the connection's otherwise")
     func refreshKeepsEdits() {

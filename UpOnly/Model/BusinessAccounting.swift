@@ -46,17 +46,21 @@ nonisolated struct OwnershipPeriod: Codable, Sendable, Equatable {
         NSDecimalRound(&rounded, &percent, 2, .plain)
         return NSDecimalNumber(decimal: rounded).stringValue + "%"
     }
-    /// A typed share as a fraction: "50", "33.5" (percent) or "1/3". A percent within a hundredth of a third or two
-    /// thirds is that third, as a partnership split is; others keep two decimals. Nil for anything above 100% or at 0.
+    /// A typed share as a fraction: "50", "33.5" or "12,5" (percent) or "1/3". A third or two written short ("33",
+    /// "33.33", "66.7") is that third, as a partnership split is; other percents keep two decimals. Nil for anything
+    /// that isn't wholly a number or fraction, above 100% or at 0.
     static func share(_ text: String) -> (numerator: Int, denominator: Int)? {
         let clean = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "%", with: "").replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: ",", with: ".")
         let parts = clean.split(separator: "/", omittingEmptySubsequences: false)
         if parts.count == 2 {
             guard let numerator = Int(parts[0]), let denominator = Int(parts[1]), numerator > 0, denominator > 0, numerator <= denominator, denominator <= 10_000 else { return nil }
             return reduced(numerator, denominator)
         }
-        guard parts.count == 1, let percent = Decimal(string: clean, locale: Locale(identifier: "en_US_POSIX")), percent > 0, percent <= 100 else { return nil }
-        for thirds in 1...2 where abs(percent - Decimal(thirds) * 100 / 3) < Decimal(string: "0.34")! { return (thirds, 3) }
+        guard parts.count == 1, clean.wholeMatch(of: #/\d{1,3}(\.\d{1,4})?/#) != nil,
+              let percent = Decimal(string: clean, locale: Locale(identifier: "en_US_POSIX")), percent > 0, percent <= 100 else { return nil }
+        if clean.wholeMatch(of: #/33(\.3{1,4})?/#) != nil { return (1, 3) }
+        if clean.wholeMatch(of: #/66(\.6{0,3}7?)?/#) != nil { return (2, 3) }
         var hundredths = percent * 100, rounded = Decimal()
         NSDecimalRound(&rounded, &hundredths, 0, .plain)
         let numerator = NSDecimalNumber(decimal: rounded).intValue

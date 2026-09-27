@@ -175,9 +175,10 @@ struct UpOnlyEditSheet: View {
         if let key = MonthKey(clean) { return key }
         return UpOnlyDateParser.parse(clean).map { MonthKey(day: $0) }
     }
-    /// "1/3" for a third, else the percent: "50", "33.5".
+    /// The percent when it's exact to two decimals ("50", "33.5"), else the fraction ("1/3", "1/6"), so saving a line
+    /// left as it was keeps its share exactly.
     static func shareText(_ period: OwnershipPeriod) -> String {
-        if period.denominator == 3 { return "\(period.numerator)/3" }
+        guard period.denominator > 0, 10_000 % period.denominator == 0 else { return "\(period.numerator)/\(period.denominator)" }
         return period.label.replacingOccurrences(of: "%", with: "")
     }
     // MARK: Transaction
