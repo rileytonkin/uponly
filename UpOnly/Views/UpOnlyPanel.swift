@@ -167,6 +167,18 @@ struct UpOnlyUnlockedPanel: View {
     var chartPlotHeight: CGFloat { 120 + chartRoom }
     /// Height a page other than All assets has spare below its content, given to its chart (at most 140 pt more).
     @State var chartRoom: CGFloat = 0
+    /// The height of an asset list's rows past the first six, which All assets leaves below the fold.
+    @State var overflowRowsHeight: CGFloat = 0
+    /// The page's measured height, chart included.
+    @State var pageHeight: CGFloat = 0
+    /// Gives a page's spare height to its chart (up to 140 pt more). All assets also takes height from it, down to a
+    /// 70 pt plot, so its first six rows show without scrolling; past six, the page scrolls.
+    func fitChart() {
+        let home = session.dashboardSelection == .all && !showingSwitcher
+        let natural = pageHeight - chartRoom - (home ? overflowRowsHeight : 0)
+        let room = min(140, max(home ? -50 : 0, (session.dashboardHeight ?? 0) - headerHeight - natural))
+        if abs(room - chartRoom) > 1 { chartRoom = room }
+    }
     @State var switcherListHeight: CGFloat = 0
     /// The page's live state, from its headline.
     @State var livePage = false
@@ -288,11 +300,9 @@ struct UpOnlyUnlockedPanel: View {
         }.padding(.horizontal, UpOnlyLayout.inset).padding(.bottom, 16)
         .onPreferenceChange(UpOnlyLivePage.self) { live in MainActor.assumeIsolated { livePage = live } }
         // A shorter page gives what's left of the height to its chart, rather than leaving it empty at the foot.
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            let natural = height - chartRoom
-            let room = min(140, max(0, (session.dashboardHeight ?? 0) - headerHeight - natural))
-            if abs(room - chartRoom) > 1 { chartRoom = room }
-        }
+        // All assets goes further: its chart shrinks (to 70 pt at least) so its first six rows show without scrolling.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in pageHeight = height; fitChart() }
+        .onChange(of: overflowRowsHeight) { fitChart() }
         // Every page fills the menu's height, its title included.
         .frame(minHeight: session.dashboardHeight.map { max(0, $0 - headerHeight) }, alignment: .top)
         }
@@ -803,14 +813,23 @@ struct UpOnlyUnlockedPanel: View {
         var options: [(title: String, action: () -> Void)] = []
         var action: () -> Void
     }
+    /// Rows in one card, compact. Past the first six, their height is reported (`overflowRowsHeight`), so All assets can
+    /// size its chart to show exactly six before the page scrolls.
     func assetList(_ rows: [AssetRow]) -> some View {
         ManageCard {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                UpOnlyRow(title: row.name, caption: row.detail, captionIsPrivate: row.detailIsAmount, value: row.value, change: row.change,
-                          valueDetail: row.valueDetail, chevron: row.chevron, selected: row.selected, options: row.options,
-                          action: row.action) { assetBadge(row) }
+            ForEach(rows.prefix(Self.rowsAboveFold)) { row in assetRow(row) }
+            if rows.count > Self.rowsAboveFold {
+                VStack(spacing: 0) { ForEach(rows.dropFirst(Self.rowsAboveFold)) { row in assetRow(row) } }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { overflowRowsHeight = $0 }
+                    .onDisappear { overflowRowsHeight = 0 }
             }
         }
+    }
+    static let rowsAboveFold = 6
+    private func assetRow(_ row: AssetRow) -> some View {
+        UpOnlyRow(title: row.name, caption: row.detail, captionIsPrivate: row.detailIsAmount, value: row.value, change: row.change,
+                  valueDetail: row.valueDetail, chevron: row.chevron, selected: row.selected, options: row.options,
+                  action: row.action, compact: true) { assetBadge(row) }
     }
     /// A row's logo: its bank's, a picture, a coin's or metal's, else its symbol.
     @ViewBuilder func assetBadge(_ row: AssetRow) -> some View {
