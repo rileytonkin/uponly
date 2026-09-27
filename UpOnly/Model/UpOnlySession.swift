@@ -157,6 +157,8 @@ final class UpOnlySession {
     var entryMonthForManagement: String { get { unlocked.entryMonthForManagement } set { unlocked.entryMonthForManagement = newValue } }
     var requestedRateCurrency: String? { get { unlocked.requestedRateCurrency } set { unlocked.requestedRateCurrency = newValue } }
     var requestedHoldingEditor: HoldingRequest? { get { unlocked.requestedHoldingEditor } set { unlocked.requestedHoldingEditor = newValue } }
+    /// The purchase a holding's page asked to edit, opened filled in.
+    var requestedLotID: UUID? { get { unlocked.requestedLotID } set { unlocked.requestedLotID = newValue } }
     private var vault: VaultStore
     @ObservationIgnored private var liveAuthenticator: LiveAuthenticator?
     private(set) var authenticationContext: LAContext?
@@ -2415,6 +2417,7 @@ final class UnlockedSession {
     var entryMonthForManagement = ""
     var requestedRateCurrency: String?
     var requestedHoldingEditor: UpOnlySession.HoldingRequest?
+    var requestedLotID: UUID?
     var dropZoneVisible = false
     // Drafts and editors: imports, and a backup being restored or exported.
     var importDraft: ImportBatchDraft?

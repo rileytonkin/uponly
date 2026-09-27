@@ -22,6 +22,8 @@ struct UpOnlyEditSheet: View {
     @State private var saving = false
     @State private var lotQuantity = ""
     @State private var lotToRemove: PurchaseLot?
+    /// The purchase being edited, its details in the form; nil while adding a new one.
+    @State private var editingLot: PurchaseLot?
     /// A transaction's company, when it was paid for one; and whether its day is known (manual ones used to record
     /// only the month, and one opened for a past month starts with just that month).
     @State private var businessID: String?
@@ -39,7 +41,7 @@ struct UpOnlyEditSheet: View {
         case .exchangeRate: "Save rate"
         case .move: "Move coins"
         case .renameAccount, .renamePortfolio: "Save name"
-        case .purchases: "Add purchase"
+        case .purchases: editingLot == nil ? "Add purchase" : "Save purchase"
         case .ownership: "Save ownership"
         }
     }
@@ -96,7 +98,11 @@ struct UpOnlyEditSheet: View {
                 if let month = MonthKey(session.entryMonthForManagement) { date = Self.lastDay(of: month) }
                 amountFocused = true
             case .move: amountFocused = true
-            case .purchases: break
+            case .purchases(let holding):
+                // A purchase asked for from the page, or a holding's only one, opens filled in with what was saved.
+                let lots = (session.document?.purchases ?? []).filter { $0.holdingID == holding.id }
+                if let lot = lots.first(where: { $0.id == session.requestedLotID }) ?? (lots.count == 1 ? lots.first : nil) { edit(lot) }
+                session.requestedLotID = nil
             case .ownership(let book):
                 ownershipLines = book.ownership.sorted { $0.fromMonth < $1.fromMonth }.map { period in
                     OwnershipLine(month: MonthKey(period.fromMonth)?.title ?? period.fromMonth, share: Self.shareText(period))
@@ -308,9 +314,11 @@ struct UpOnlyEditSheet: View {
             if !lots.isEmpty {
                 ManageCard {
                     ForEach(Array(lots.enumerated()), id: \.element.id) { index, lot in
+                        // Clicking a purchase puts it in the form below to change.
                         UpOnlyRow(title: lot.at.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: UTCDay.timeZone)),
                                   caption: ManageFormat.amount(lot.quantity.value, of: holding, catalog: session.catalog), captionIsPrivate: true,
-                                  value: UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency)) {
+                                  value: UpOnlyFormat.currencyMoney(lot.paid.value, currency: lot.currency), selected: editingLot?.id == lot.id,
+                                  action: { edit(lot) }) {
                             UpOnlySymbolBadge(symbol: "cart.fill", tint: UpOnlyTint.crypto, size: 28)
                         } menu: {
                             ManageRowMenu(label: "Options for this purchase") { Button("Remove purchase…", role: .destructive) { lotToRemove = lot } }
@@ -319,7 +327,14 @@ struct UpOnlyEditSheet: View {
                 }
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("Add a purchase").font(UpOnlyType.section)
+                HStack {
+                    Text(editingLot == nil ? "Add a purchase" : "Edit purchase").font(UpOnlyType.section)
+                    Spacer()
+                    if editingLot != nil {
+                        Button("Add a new one instead") { editingLot = nil; lotQuantity = ""; amount = ""; currency = "USD"; date = UTCDay.today() }
+                            .buttonStyle(.plain).font(UpOnlyType.caption).foregroundStyle(UpOnlyTint.brand)
+                    }
+                }
                 ManageCard {
                     UpOnlyFormRow(label: "Bought") {
                         UpOnlyValueField("0", text: $lotQuantity).textFieldStyle(.plain).multilineTextAlignment(.trailing)
@@ -337,6 +352,12 @@ struct UpOnlyEditSheet: View {
                 }
             }
         }
+    }
+    /// Puts a saved purchase in the form, as it was entered.
+    private func edit(_ lot: PurchaseLot) {
+        editingLot = lot
+        lotQuantity = UpOnlyFormat.quantity(lot.quantity.value); amount = UpOnlyFormat.quantity(lot.paid.value)
+        currency = lot.currency; date = UTCDay.start(of: lot.at)
     }
     /// A new name, with the logo it will show (for an account, its bank's) above it.
     private func renameForm(badge: AnyView, placeholder: String) -> some View {
@@ -422,9 +443,19 @@ struct UpOnlyEditSheet: View {
                 guard date <= UTCDay.today() else { throw ImportFailure("Choose today or an earlier date.") }
                 // Today's purchase at now, after anything else today; an earlier day at its start.
                 let at = UTCDay.moment(for: date)
+                let editing = editingLot
                 try await session.mutate { doc in
-                    doc.purchases = (doc.purchases ?? []) + [PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(bought), paid: PreciseDecimal(paid), currency: code, at: at)]
+                    var lots = doc.purchases ?? []
+                    if let editing, let index = lots.firstIndex(where: { $0.id == editing.id }) {
+                        // Edited in place, keeping its identity; a day left as it was keeps its saved moment.
+                        lots[index].quantity = PreciseDecimal(bought); lots[index].paid = PreciseDecimal(paid); lots[index].currency = code
+                        if !UTCDay.isSameDay(lots[index].at, at) { lots[index].at = at }
+                    } else {
+                        lots.append(PurchaseLot(holdingID: holding.id, quantity: PreciseDecimal(bought), paid: PreciseDecimal(paid), currency: code, at: at))
+                    }
+                    doc.purchases = lots
                 }
+                if editing != nil { onSave(); return }
                 lotQuantity = ""; amount = ""; return
             case .renameAccount(let account):
                 let clean = try validName(name, what: "an account name")
