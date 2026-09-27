@@ -430,9 +430,9 @@ struct UpOnlyUnlockedPanel: View {
             if let holding = selectedHolding {
                 let metal = PreciousMetal.asset(holding.assetID) != nil
                 Button { showImport(session.startImport(metal ? .metals : .holdings, prefill: true, portfolioID: holding.portfolioID, holdingID: holding.id)) } label: {
-                    Label(metal ? "Update weight" : "Update quantity", systemImage: "square.and.pencil")
+                    Label(metal ? "Edit weight" : "Edit amount", systemImage: "square.and.pencil")
                 }
-                Button { openHoldingEditor(.purchases(holding.id)) } label: { Label("Purchases", systemImage: "cart") }
+                Button { openHoldingEditor(.purchases(holding.id)) } label: { Label("Edit purchases", systemImage: "cart") }
                 if (session.document?.portfolios.filter { !$0.isArchived && $0.kind == (metal ? .metals : .crypto) }.count ?? 0) > 1 {
                     Button { openHoldingEditor(.move(holding.id)) } label: { Label("Move to another portfolio", systemImage: "arrow.left.arrow.right") }
                 }

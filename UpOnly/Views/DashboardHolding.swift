@@ -57,7 +57,10 @@ extension UpOnlyUnlockedPanel {
             }
             if let document, let performance {
                 holdingDetails(holding, document: document, quantity: quantity, performance: performance, metal: metal).padding(.top, 14)
-                holdingPurchases(holding, document: document, quantity: quantity, value: value, symbol: symbol, metal: metal).padding(.top, 16)
+                // One purchase says nothing the strip above doesn't (its price, cost and day); it's edited from the … menu.
+                if (document.purchases ?? []).filter({ $0.holdingID == holding.id }).count != 1 {
+                    holdingPurchases(holding, document: document, quantity: quantity, value: value, symbol: symbol, metal: metal).padding(.top, 16)
+                }
                 holdingHistory(holding, document: document, symbol: symbol, metal: metal).padding(.top, 16)
             }
         }
@@ -125,12 +128,16 @@ extension UpOnlyUnlockedPanel {
                               caption: UpOnlyFormat.quantityText(lot.quantity.value, symbol: symbol, metal: metal)
                                 + (buyPrice(lot, costUSD: costUSD, metal: metal).map { " at " + $0 } ?? ""),
                               captionIsPrivate: true,
-                              value: profit.map { UpOnlyFormat.movement($0, fraction: nil, cents: true) } ?? "Price needed", change: gain) {
+                              value: profit.map { UpOnlyFormat.movement($0, fraction: nil, cents: true) } ?? "Price needed", change: gain,
+                              action: { session.requestedLotID = lot.id; openHoldingEditor(.purchases(holding.id)) }) {
                         UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: symbol, size: 28)
                     }
                 }
-                UpOnlyRow(title: lots.isEmpty ? "Add what you paid" : "Add a purchase", caption: lots.isEmpty ? "See the gain or loss on each buy" : nil, chevron: true, action: { openHoldingEditor(.purchases(holding.id)) }) {
-                    UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
+                // With none yet, an invitation; more are added from the … menu's Edit purchases.
+                if lots.isEmpty {
+                    UpOnlyRow(title: "Add what you paid", caption: "See the gain or loss on each buy", chevron: true, action: { openHoldingEditor(.purchases(holding.id)) }) {
+                        UpOnlySymbolBadge(symbol: "plus", tint: UpOnlyTint.brand, size: 28)
+                    }
                 }
             }
         }
