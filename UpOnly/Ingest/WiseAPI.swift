@@ -116,6 +116,10 @@ nonisolated enum WiseAPI {
         }
         return WiseSnapshot(profiles: profiles, fetchedAt: Date())
     }
+    /// Wise's activities that move money between two of your own balances in different currencies.
+    static let conversionTypes: Set<String> = ["INTERBALANCE", "AUTO_CONVERSION", "BALANCE_CONVERSION", "CONVERSION"]
+    /// Marks the arriving side of a conversion, recorded as its own entry beside the activity's.
+    static let creditSuffix = ":credit"
     static func plain(_ text: String) -> String {
         text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
             .replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&nbsp;", with: " ")
@@ -165,13 +169,18 @@ nonisolated enum WiseAPI {
                 try Task.checkCancellation()
                 let reference = "wise:" + profileID + ":" + activity.id
                 if ["CANCELLED", "CANCELED", "REVERSED", "FAILED"].contains(activity.status) {
-                    next.entries.removeAll { $0.source == .wise && $0.sourceRef == reference }; continue
+                    next.entries.removeAll { $0.source == .wise && ($0.sourceRef == reference || $0.sourceRef == reference + Self.creditSuffix) }; continue
                 }
                 guard activity.status == "COMPLETED", activity.type != "CARD_CHECK" else { continue }
                 guard let primary = try amount(activity.primaryAmount) else { continue }
                 let secondaryText = plain(activity.secondaryAmount ?? "")
                 let secondary = secondaryText.contains(where: \.isNumber) ? try amount(secondaryText) : nil
-                let income = primary.incoming || ["DEPOSIT", "RECEIVED", "REFUND", "INTEREST", "CASHBACK"].contains { activity.type.contains($0) }
+                // A conversion between two of your balances is one activity with both sides: the primary amount arrives in
+                // one balance, the secondary leaves another ("Topping up 100 USD balance with 80 GBP"). Both are recorded,
+                // the money leaving as this entry and the money arriving as a second one, so each balance's rebuilt history
+                // sees it. Recording only one side made a balance topped up by conversions look far larger in the past.
+                let conversion = Self.conversionTypes.contains(activity.type) && secondary.map { $0.currency != primary.currency && $0.value > 0 } == true
+                let income = !conversion && (primary.incoming || ["DEPOSIT", "RECEIVED", "REFUND", "INTEREST", "CASHBACK"].contains { activity.type.contains($0) })
                 // Outgoing activity's secondary amount is the amount debited from the source balance.
                 // Incoming activity uses the credited primary currency. Currency-list subtitles are not amounts.
                 let recorded = !income ? secondary ?? primary : primary
@@ -181,7 +190,7 @@ nonisolated enum WiseAPI {
                 // Wise gives the moment; the transaction's day and month are the date it was on this Mac.
                 let dayText = ImportDateFormat.today(UTCDay.today(now: date)), monthText = String(dayText.prefix(7))
                 guard let month = MonthKey(monthText) else { throw ImportFailure("A Wise transaction month is invalid.") }
-                let ownTransfer = activity.type == "INTERBALANCE" || activity.resource.map { (sharedTransfers[$0.id]?.count ?? 0) > 1 } == true
+                let ownTransfer = activity.type == "INTERBALANCE" || conversion || activity.resource.map { (sharedTransfers[$0.id]?.count ?? 0) > 1 } == true
                 // Cleaned like an imported statement's: no control characters or marks that reorder how it reads.
                 let label = ImportBatchProcessor.cleanLabel(plain(activity.title ?? activity.description ?? "Wise transaction"))
                 guard label.count <= 500, !activity.id.isEmpty else { throw ImportFailure("A Wise activity has invalid details.") }
@@ -200,6 +209,23 @@ nonisolated enum WiseAPI {
                     var entry = Entry(month: month, bucket: item.profile.bucket, kind: kind, amount: amount, currency: recorded.currency, label: label.isEmpty ? "Wise transaction" : label, source: .wise, sourceRef: reference)
                     entry.day = dayText; entry.outflow = !income
                     next.entries.append(entry)
+                }
+                // The conversion's other side: what arrived, in the balance it arrived in. A transfer between your own
+                // balances, so it never counts as income.
+                let creditReference = reference + Self.creditSuffix
+                if conversion, primary.value > 0 {
+                    if let index = next.entries.firstIndex(where: { $0.source == .wise && $0.sourceRef == creditReference }) {
+                        next.entries[index].amount = primary.value; next.entries[index].currency = primary.currency
+                        next.entries[index].label = label.isEmpty ? "Wise conversion" : label; next.entries[index].outflow = false
+                        if next.entries[index].kindIsUserEdited != true { next.entries[index].kind = .transfer }
+                    } else {
+                        var credit = Entry(month: month, bucket: item.profile.bucket, kind: .transfer, amount: primary.value, currency: primary.currency,
+                                           label: label.isEmpty ? "Wise conversion" : label, source: .wise, sourceRef: creditReference)
+                        credit.day = dayText; credit.outflow = false
+                        next.entries.append(credit)
+                    }
+                } else {
+                    next.entries.removeAll { $0.source == .wise && $0.sourceRef == creditReference }
                 }
             }
         }

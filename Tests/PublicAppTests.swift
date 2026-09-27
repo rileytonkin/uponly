@@ -1449,6 +1449,28 @@ struct WiseInputTests {
         let cancelled = try WiseAPI.apply(snapshot, to: saved)
         #expect(cancelled.entries.count == 2 && cancelled.accounts.count == 2)
     }
+    @Test("A conversion records both sides, so each balance's rebuilt history sees the money leave and arrive")
+    func conversions() throws {
+        let date = Date(), business = WiseConfiguredProfile(id: 3, name: "Company", bucket: .otherBusiness)
+        // Jan 2: 1,000 USD converted to 1,500 AUD. Jan 3: 1,200 AUD paid out. Today: 500 USD and 300 AUD.
+        let convert = WiseActivity(id: "fx", type: "INTERBALANCE", title: "Converted", primaryAmount: "+ 1,500 AUD", secondaryAmount: "1,000 USD", status: "COMPLETED", createdOn: "2026-01-02T12:00:00Z")
+        let payout = WiseActivity(id: "pay", type: "TRANSFER", title: "Payout", primaryAmount: "1,200 AUD", status: "COMPLETED", createdOn: "2026-01-03T12:00:00Z")
+        var snapshot = WiseSnapshot(profiles: [WiseProfileSnapshot(profile: business, balances: [
+            WiseBalance(id: 31, currency: "USD", amount: WiseAmount(value: 500, currency: "USD")), WiseBalance(id: 32, currency: "AUD", amount: WiseAmount(value: 300, currency: "AUD"))
+        ], activities: [convert, payout])], fetchedAt: date)
+        let saved = try WiseAPI.apply(snapshot, to: empty())
+        #expect(saved.entries.filter { $0.sourceRef?.hasPrefix("wise:3:fx") == true }.map { "\($0.outflow == true ? "-" : "+")\($0.amount) \($0.currency) \($0.kind)" }.sorted()
+                == ["+1500 AUD transfer", "-1000 USD transfer"])
+        func history(_ currency: String) throws -> [Decimal] {
+            let account = try #require(saved.accounts.first { $0.externalProfileID == "3" && $0.currency == currency })
+            return saved.bankBalances.filter { $0.accountID == account.id && $0.source == BalanceReconstruction.source }.sorted { $0.observedAt < $1.observedAt }.map(\.amount.value)
+        }
+        // AUD ends Jan 2 at 1,500 (it had nothing before the conversion) and Jan 3 at 300; USD ends Jan 2 at 500.
+        #expect(try history("AUD") == [1500, 300] && try history("USD") == [500])
+        #expect(try WiseAPI.apply(snapshot, to: saved).entries.count == saved.entries.count)
+        snapshot.profiles[0].activities[0].status = "CANCELLED"
+        #expect(try WiseAPI.apply(snapshot, to: saved).entries.allSatisfy { $0.sourceRef?.hasPrefix("wise:3:fx") != true })
+    }
 }
 #endif
 
