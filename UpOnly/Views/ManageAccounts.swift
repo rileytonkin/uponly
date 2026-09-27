@@ -133,7 +133,7 @@ extension UpOnlyManagement {
         }
         // Less than a cent is nothing, not "€0.00".
         let funded = byCurrency.values.filter { abs($0.1) >= Decimal(string: "0.005")! }
-            .sorted { (usd($0.1, currency: $0.0.currency) ?? 0) > (usd($1.1, currency: $1.0.currency) ?? 0) }
+            .sorted { session.privacyMode ? $0.0.currency < $1.0.currency : (usd($0.1, currency: $0.0.currency) ?? 0) > (usd($1.1, currency: $1.0.currency) ?? 0) }
         let dollars = funded.map { usd($0.1, currency: $0.0.currency) }
         let total = dollars.contains { $0 == nil } ? nil : dollars.compactMap { $0 }.reduce(Decimal(0), +)
         let open = expandedProfiles.contains(key)

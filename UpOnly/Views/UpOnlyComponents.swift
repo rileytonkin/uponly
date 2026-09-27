@@ -528,7 +528,8 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                             VStack(alignment: .trailing, spacing: 1) {
                                 // Only a very long amount may shrink; SwiftUI otherwise sometimes shrinks short ones for no reason.
                                 // A figure is bold; words in its place ("Balance needed", "Not reported") stay quiet.
-                                let figure = value.contains(where: \.isNumber)
+                                // Hidden, every value looks alike: quiet words would say which ones are nothing.
+                                let figure = session.privacyMode || value.contains(where: \.isNumber)
                                 UpOnlyPrivateText(value).font(figure ? UpOnlyType.row.weight(.semibold).monospacedDigit() : UpOnlyType.body)
                                     .foregroundStyle(figure ? .primary : .secondary).lineLimit(1)
                                     .contentTransition(.numericText()).animation(.snappy(duration: 0.35), value: value)
@@ -537,7 +538,8 @@ struct UpOnlyRow<Badge: View, Options: View>: View {
                                 if let change {
                                     Text(UpOnlyFormat.arrowPercent(change)).font(UpOnlyType.caption.weight(.medium).monospacedDigit())
                                         .foregroundStyle(UpOnlyTint.signed(change)).lineLimit(1)
-                                } else if let valueDetail {
+                                } else if let valueDetail, !session.privacyMode {
+                                    // Hidden, it would only be a second row of dots.
                                     UpOnlyPrivateText(valueDetail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
                                 }
                             }.layoutPriority(1)

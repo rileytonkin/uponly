@@ -173,11 +173,12 @@ struct UpOnlyDataAttention: View {
             }
             if !evidence.largest.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Transactions, biggest first").font(UpOnlyType.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                    Text(session.privacyMode ? "Transactions" : "Transactions, biggest first").font(UpOnlyType.caption.weight(.semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
                     // The scroll extends to the panel edge so its bar sits outside the rows.
                     UpOnlyMenuScroll(maxHeight: 280) {
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(evidence.largest) { item in
+                            // Newest first in privacy mode: biggest first would rank them by what they cost.
+                            ForEach(session.privacyMode ? evidence.largest.sorted { ($0.entry.day ?? $0.entry.month, $1.entry.label) > ($1.entry.day ?? $1.entry.month, $0.entry.label) } : evidence.largest) { item in
                                 evidenceRow(item, document: document)
                             }
                         }.padding(.trailing, UpOnlyLayout.inset)

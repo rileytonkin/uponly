@@ -354,7 +354,7 @@ struct UpOnlyUnlockedPanel: View {
                 else if let holding = selectedHolding { (holding.assetName, portfolioTitle(holding.portfolioID)) } else { (selectionTitle, nil) }
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                    Text(title.name).font(UpOnlyType.pageTitle).lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
                     Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                         .rotationEffect(.degrees(showingSwitcher ? 180 : 0)).animation(.snappy(duration: 0.2), value: showingSwitcher)
                 }
@@ -778,7 +778,9 @@ struct UpOnlyUnlockedPanel: View {
         let spoken = [session.privacyMode ? "amount hidden" : moved, change.fraction.map(UpOnlyFormat.percent), session.privacyMode ? nil : "from " + previous]
             .compactMap { $0 }.joined(separator: ", ")
         guard percent, let fraction = change.fraction else {
-            return HeadlineStat(label: label, value: moved, tint: UpOnlyTint.signed(change.amount), help: session.privacyMode ? "" : "vs " + previous + " " + range.since, spoken: spoken)
+            // With no percentage beside it, a green "+••••" would still say which way the money went: plain dots.
+            if session.privacyMode { return HeadlineStat(label: label, value: "••••", tint: .primary, help: "", spoken: spoken) }
+            return HeadlineStat(label: label, value: moved, tint: UpOnlyTint.signed(change.amount), help: "vs " + previous + " " + range.since, spoken: spoken)
         }
         return HeadlineStat(label: label, value: UpOnlyFormat.arrowPercent(fraction), tint: UpOnlyTint.signed(UpOnlyFormat.roundedPercent(fraction)), detail: moved,
                             help: session.privacyMode ? "" : "vs " + previous + " " + range.since, spoken: spoken)

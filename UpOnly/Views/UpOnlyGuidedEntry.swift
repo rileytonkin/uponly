@@ -459,7 +459,7 @@ struct UpOnlyGuidedEntry: View {
         return VStack(spacing: 10) {
             badge
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                UpOnlyPrivateText(readBack(total, fraction: 0...18)).font(UpOnlyAmountEntry.font(readBack(total, fraction: 0...18).count)).lineLimit(1).minimumScaleFactor(0.6)
+                UpOnlyPrivateText(readBack(total, fraction: 0...18)).font(UpOnlyAmountEntry.font(session.privacyMode ? 0 : readBack(total, fraction: 0...18).count)).lineLimit(1).minimumScaleFactor(0.6)
                 Text(unitText).font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary).fixedSize()
             }.frame(maxWidth: .infinity)
             UpOnlyPrivateText([worth.map { "≈ " + UpOnlyFormat.exactMoney($0) + " now" }, buysCost.map { "cost " + UpOnlyFormat.exactMoney($0) }].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
@@ -530,7 +530,7 @@ struct UpOnlyGuidedEntry: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     // What the app read, not what was typed, so "0,125" can't pass as 125 unseen.
                     UpOnlyPrivateText(entered.map { readBack($0, fraction: (mode == .bankBalances ? 2 : 0)...18) } ?? quantity.wrappedValue)
-                        .font(UpOnlyAmountEntry.font(quantity.wrappedValue.count)).lineLimit(1).minimumScaleFactor(0.6)
+                        .font(UpOnlyAmountEntry.font(session.privacyMode ? 0 : quantity.wrappedValue.count)).lineLimit(1).minimumScaleFactor(0.6)
                     Text(unitText).font(.system(size: 20, weight: .medium)).foregroundStyle(.secondary).fixedSize()
                 }.frame(maxWidth: .infinity)
             }

@@ -233,8 +233,9 @@ struct UpOnlyChartCanvas: View {
         let layout = UpOnlyChartLayout(points: points, includesZero: includesZero, showsAllMarkers: showsAllMarkers, selected: selected, bridgesGaps: bridgesGaps)
         self.layout = layout
         let tickFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular), labelFont = NSFont.systemFont(ofSize: 10)
-        let tickLabels = hidden ? ["••••"] : layout.scale.ticks.map(UpOnlyChartScale.label)
-        axisWidth = (tickLabels.map { ($0 as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
+        // Hidden values leave no axis labels (a column of dots says nothing), so the plot takes the width.
+        let tickLabels = layout.scale.ticks.map(UpOnlyChartScale.label)
+        axisWidth = hidden ? 2 : (tickLabels.map { ($0 as NSString).size(withAttributes: [.font: tickFont]).width }.max() ?? 24) + 9
         labelWidths = layout.visible.map { point in
             guard let text = layout.labelled == nil ? point.label : point.axisLabel else { return 0 }
             return (text as NSString).size(withAttributes: [.font: labelFont]).width
@@ -356,10 +357,11 @@ struct UpOnlyChartCanvas: View {
                         // Gridlines at 4.5% (the admin's rgba(255,255,255,0.045)); the zero line a little firmer on cash-flow charts.
                         let zero = tick == 0 && includesZero
                         context.stroke(grid, with: .color(.primary.opacity(zero ? 0.2 : contrast == .increased ? 0.14 : 0.06)), lineWidth: 1)
-                        // Privacy mode keeps the axis's shape with dots in place of the amounts, as market apps do.
-                        let label = hidden ? "••••" : UpOnlyChartScale.label(tick)
-                        context.draw(Text(label).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
-                                     at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
+                        // Privacy mode keeps the gridlines but draws no amounts beside them.
+                        if !hidden {
+                            context.draw(Text(UpOnlyChartScale.label(tick)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.primary.opacity(contrast == .increased ? 0.75 : 0.45)),
+                                         at: CGPoint(x: axisWidth - 7, y: yy), anchor: .trailing)
+                        }
                     }
                     // Everything below is drawn in the plot's own coordinates, starting at the axis.
                     var plot = context
