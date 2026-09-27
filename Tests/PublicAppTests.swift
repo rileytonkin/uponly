@@ -1527,27 +1527,28 @@ struct WiseInputTests {
         #expect(draft.sources.map(\.account.name) == ["Wise · EUR", "Wise · GBP"] && draft.rows.count == 3)
         #expect(Set(draft.rows.map(\.sourceID)) == Set(draft.sources.map(\.id)))
     }
-    @Test("The menu's height grows at once, shrinks only once All assets stays shorter, and never below the floor")
+    @Test("The menu's height changes only once All assets holds a new height, taller or shorter")
     func menuHeight() async throws {
         let (session, _, _) = harness()
-        session.homeShrinkDelay = .milliseconds(100)
-        session.recordHomeHeight(300)
-        #expect(session.dashboardHeight == UpOnlySession.minimumPageHeight)
-        session.recordHomeHeight(720)
-        #expect(session.dashboardHeight == 720)
-        // A moment drawn without its chart doesn't shrink it, whether All assets fills out again or is left.
-        session.recordHomeHeight(480)
-        #expect(session.dashboardHeight == 720)
-        session.recordHomeHeight(720)
+        session.homeSettleDelay = .milliseconds(100)
+        session.recordHomeHeight(640)
+        #expect(session.dashboardHeight == 640)
+        // A moment drawn without its chart, or with a note that then goes, changes nothing.
+        session.recordHomeHeight(320); session.recordHomeHeight(640)
+        session.recordHomeHeight(900); session.recordHomeHeight(640)
         try await Task.sleep(for: .milliseconds(250))
-        #expect(session.dashboardHeight == 720)
-        session.recordHomeHeight(480); session.keepHomeHeight()
+        #expect(session.dashboardHeight == 640)
+        // Nor does one All assets is left in.
+        session.recordHomeHeight(320); session.keepHomeHeight()
         try await Task.sleep(for: .milliseconds(250))
-        #expect(session.dashboardHeight == 720)
-        // A page that really is shorter, and stays so, is taken.
+        #expect(session.dashboardHeight == 640)
+        // A height that holds is taken, shorter or taller.
         session.recordHomeHeight(600); session.recordHomeHeight(600)
         try await Task.sleep(for: .milliseconds(250))
         #expect(session.dashboardHeight == 600)
+        session.recordHomeHeight(700)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(session.dashboardHeight == 700)
     }
     @Test("Setup completes with one generation and correct navigation")
     func setup() async throws {
