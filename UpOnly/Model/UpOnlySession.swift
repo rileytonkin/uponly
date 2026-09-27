@@ -2364,16 +2364,26 @@ extension UpOnlySession {
         unlocked.liveExpected = Set(coins.map(\.id)); unlocked.liveStartedAt = Date()
         // The network side runs off the main thread and only ever writes to `feed`.
         unlocked.liveWork = Task.detached(priority: .utility) { await PublicPrices.streamLivePrices(coins, key: key, sources: sources, feed: feed) }
-        // Whatever arrived goes to the dashboard in one change, if it's still this unlock's: every second while the stream
-        // is connecting, so its first prices show as they arrive, then every `livePublishInterval`.
-        let interval = livePublishInterval, first = min(Duration.seconds(1), interval)
+        // Whatever arrived goes to the dashboard in one change, if it's still this unlock's, so the figures move once
+        // every `livePublishInterval` rather than as each coin's first price lands. While the stream connects nothing
+        // changes (the dot already shows); once it delivers, a moment is left for every coin's first price to arrive,
+        // and they show together. A coin Binance doesn't list, or a stream that never connects, shows what it has then.
+        let interval = livePublishInterval, first = min(Duration.seconds(1), interval), gather = min(Duration.seconds(2), interval)
         unlocked.liveTask = Task { [weak self] in
-            var wait = first
+            var wait = first, gathered = false
             while !Task.isCancelled {
                 do { try await Task.sleep(for: wait) } catch { return }
                 guard let self, !Task.isCancelled else { return }
-                self.publishLive(feed.take(), streaming: feed.isStreaming(), unlisted: feed.unlisted, checkedAt: feed.checkedAt, token: token)
-                wait = self.unlocked.liveExpected.isEmpty ? interval : first
+                let streaming = feed.isStreaming()
+                if !streaming, !self.unlocked.liveExpected.isEmpty {
+                    // Still connecting: note which coins it won't carry, change no figures yet.
+                    self.publishLive([:], streaming: false, unlisted: feed.unlisted, checkedAt: feed.checkedAt, token: token)
+                    if !self.unlocked.liveExpected.isEmpty { wait = first; continue }
+                } else if streaming, !gathered {
+                    gathered = true; wait = gather; continue
+                }
+                self.publishLive(feed.take(), streaming: streaming, unlisted: feed.unlisted, checkedAt: feed.checkedAt, token: token)
+                wait = interval
             }
         }
     }
