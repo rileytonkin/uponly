@@ -338,7 +338,7 @@ struct UpOnlyAmountEntry: View {
     var label: String
     var focused: FocusState<Bool>.Binding
     /// Smaller as the number grows, so a long one still fits the menu's width beside its unit.
-    static func font(_ count: Int) -> Font { .system(size: count > 14 ? 22 : count > 12 ? 26 : count > 9 ? 32 : 38, weight: .medium).monospacedDigit() }
+    static func font(_ count: Int) -> Font { .system(size: count > 14 ? 20 : count > 12 ? 24 : count > 9 ? 28 : 32, weight: .medium).monospacedDigit() }
     var body: some View {
         let font = Self.font(text.count)
         HStack(alignment: .firstTextBaseline, spacing: 6) {

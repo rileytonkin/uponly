@@ -14,18 +14,18 @@ struct UpOnlyAmount: View {
         // Privacy mode shows dots in the figure's place, in a neutral colour (a red figure would say it's a loss), and
         // tells VoiceOver it's hidden.
         if session.privacyMode {
-            Text("••••").font(.system(size: 40, weight: .bold)).foregroundStyle(.primary)
+            Text("••••").font(.system(size: 32, weight: .bold)).foregroundStyle(.primary)
                 .accessibilityLabel("Hidden value")
         } else {
             let parts = Self.parts(value, signed: signed, cents: cents)
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text(parts.sign + "$").fixedSize(horizontal: false, vertical: true)
-                        .font(.system(size: 24, weight: .bold))
+                        .font(.system(size: 20, weight: .bold))
                     Text(parts.whole).fixedSize(horizontal: false, vertical: true)
-                        .font(.system(size: 40, weight: .bold).monospacedDigit()).tracking(-1.3)
+                        .font(.system(size: 32, weight: .bold).monospacedDigit()).tracking(-1)
                     if !parts.fraction.isEmpty {
-                        Text(parts.fraction).font(.system(size: 40, weight: .bold).monospacedDigit()).tracking(-1.3).foregroundStyle(.secondary)
+                        Text(parts.fraction).font(.system(size: 32, weight: .bold).monospacedDigit()).tracking(-1).foregroundStyle(.secondary)
                     }
                 }.fixedSize()
                     // The digits roll to a new figure as prices update or the page changes, as the system's do.
