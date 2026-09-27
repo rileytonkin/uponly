@@ -34,25 +34,31 @@ extension UpOnlyUnlockedPanel {
             } else {
                 Text(component?.missing == "quote" ? "Price needed" : "Quantity needed").font(UpOnlyType.title)
             }
-            // How much, at what price, after the coin's logo: the price is public, so privacy mode only hides the amount.
+            // How much, at what price and how the price moved over the range, after the coin's logo: the price is public,
+            // so privacy mode only hides the amount.
             if let quantity {
+                let move = document.flatMap { (session.chartEstimates() ?? ChartEstimates(document: $0)).priceChange(holding.assetID, since: interval.start, now: interval.end, live: session.livePrices[holding.assetID]) }
                 HStack(spacing: 5) {
                     UpOnlyAssetBadge(assetID: holding.assetID.rawValue, symbol: symbol, size: 16).padding(.trailing, 1)
                     UpOnlyPrivateText(UpOnlyFormat.quantityText(quantity, symbol: symbol, metal: metal))
                     if let value, let price = UpOnlyFormat.unitPrice(quantity: quantity, valueUSD: value, metal: metal) { Text("at " + price) }
-                }.font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).padding(.top, 4)
+                    if let move {
+                        Text(UpOnlyFormat.arrowPercent(move)).font(UpOnlyType.body.weight(.medium).monospacedDigit())
+                            .foregroundStyle(UpOnlyTint.signed(UpOnlyFormat.roundedPercent(move))).help("The price's move over the chart's range")
+                    }
+                }.font(UpOnlyType.body.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 4)
             }
             if !stats.isEmpty { headlineStats(stats).padding(.top, 10) }
             if points.contains(where: { $0.value != nil }) {
                 VStack(alignment: .leading, spacing: 10) {
                     rangeControl
                     UpOnlyChart(points: points, tint: trendTint(points), plotHeight: chartPlotHeight, bridgesGaps: true)
-                }.padding(.top, 18)
+                }.padding(.top, 14)
             }
             if let document, let performance {
-                holdingDetails(holding, document: document, quantity: quantity, value: value, performance: performance, metal: metal).padding(.top, 18)
-                holdingPurchases(holding, document: document, quantity: quantity, value: value, symbol: symbol, metal: metal).padding(.top, 18)
-                holdingHistory(holding, document: document, symbol: symbol, metal: metal).padding(.top, 18)
+                holdingDetails(holding, document: document, quantity: quantity, performance: performance, metal: metal).padding(.top, 14)
+                holdingPurchases(holding, document: document, quantity: quantity, value: value, symbol: symbol, metal: metal).padding(.top, 16)
+                holdingHistory(holding, document: document, symbol: symbol, metal: metal).padding(.top, 16)
             }
         }
     }
@@ -68,29 +74,30 @@ extension UpOnlyUnlockedPanel {
         if worthRange.hourly { return hourlySeries(scope: scope, interval: interval, live: live) { figure($0, $1, $1) } }
         return dailySeries(samples, interval: interval, live: live) { figure($0.components, nil, $0.utcDay) }
     }
-    /// Four tiles, two by two, as market apps show a holding: its price (and move over the range), what one cost on
-    /// average, what was paid in all, and how long it has been held.
-    func holdingDetails(_ holding: Holding, document: VaultDocument, quantity: Decimal?, value: Decimal?, performance: HoldingPerformance, metal: Bool) -> some View {
-        let price = quantity.flatMap { q in value.flatMap { UpOnlyFormat.unitPrice(quantity: q, valueUSD: $0, metal: metal) } }
-        let move = (session.chartEstimates() ?? ChartEstimates(document: document)).priceChange(holding.assetID, since: selectedInterval.start, now: selectedInterval.end,
-                                                                                               live: session.livePrices[holding.assetID])
+    /// What one cost on average, what was paid in all, and how long it has been held: one strip of three, so the page
+    /// spends its height on the chart and the purchases. The price and its move are in the line under the value.
+    func holdingDetails(_ holding: Holding, document: VaultDocument, quantity: Decimal?, performance: HoldingPerformance, metal: Bool) -> some View {
         // What one unit cost on average, over the part of the holding the purchases cover.
         let covered = performance.coveredQuantity ?? quantity
         let average = performance.costUSD.flatMap { cost in covered.flatMap { q in q > 0 ? UpOnlyFormat.unitPrice(quantity: q, valueUSD: cost, metal: metal) : nil } }
         // Held since the first buy, or the first amount recorded when that's earlier.
         let since = ((document.purchases ?? []).filter { $0.holdingID == holding.id }.map(\.at) + [performance.since].compactMap { $0 }).min()
-        return Grid(horizontalSpacing: 8, verticalSpacing: 8) {
-            GridRow {
-                UpOnlyStatTile(title: "Price", value: price ?? "—", detail: move.map(UpOnlyFormat.arrowPercent), detailTint: move.map { UpOnlyTint.signed(UpOnlyFormat.roundedPercent($0)) })
-                // What you paid, not a market price, so privacy mode hides it.
-                UpOnlyStatTile(title: "Avg. buy price", value: average ?? "—", isPrivate: true)
-            }
-            GridRow {
-                UpOnlyStatTile(title: "Cost basis", value: performance.costUSD.map(UpOnlyFormat.exactMoney) ?? "—", isPrivate: true,
-                               detail: performance.coveredQuantity != nil ? "For part of it" : nil)
-                UpOnlyStatTile(title: "Held since", value: since.map(UpOnlyFormat.utcDate) ?? "—", detail: since.map { Self.heldFor($0) })
-            }
-        }
+        return HStack(alignment: .top, spacing: 0) {
+            // What you paid, not a market price, so privacy mode hides the first two.
+            detailStat("Avg. buy price", average ?? "—", isPrivate: true)
+            Divider().padding(.vertical, 2)
+            detailStat("Cost basis", performance.costUSD.map(UpOnlyFormat.exactMoney) ?? "—", isPrivate: true, detail: performance.coveredQuantity != nil ? "For part of it" : nil)
+            Divider().padding(.vertical, 2)
+            detailStat("Held since", since.map(UpOnlyFormat.utcDate) ?? "—", detail: since.map { Self.heldFor($0) })
+        }.fixedSize(horizontal: false, vertical: true).padding(.vertical, 10).modifier(UpOnlyContentSurface())
+    }
+    private func detailStat(_ title: String, _ value: String, isPrivate: Bool = false, detail: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(UpOnlyType.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+            Group { if isPrivate { UpOnlyPrivateText(value) } else { Text(value) } }
+                .font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
+            if let detail { Text(detail).font(UpOnlyType.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1) }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).accessibilityElement(children: .combine)
     }
     /// "1 yr 6 mo", "5 mo", "12 days".
     static func heldFor(_ since: Date, now: Date = Date()) -> String {
