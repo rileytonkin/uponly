@@ -50,7 +50,7 @@ private final class ProviderPauses: @unchecked Sendable {
 }
 nonisolated enum PublicPrices {
     /// Every host the app asks anything of: requests go to these, and nowhere else.
-    static let requestHosts: Set<String> = ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com", "api.binance.com", "forex-data-feed.swissquote.com"]
+    static let requestHosts: Set<String> = ["api.coingecko.com", "api.frankfurter.dev", "api.gold-api.com", "api.binance.com", "forex-data-feed.swissquote.com", "coins.llama.fi"]
     /// Binance's live price stream, the one host a socket is opened to (`openLiveStream`), at a URL only `liveStream` builds.
     static let streamHost = "stream.binance.com"
     /// One session for every provider call, so up to 80 exchange-rate requests share connections.
@@ -251,7 +251,7 @@ extension PublicPrices {
             result.fxIssues.merge(historicalFX.fxIssues) { _, latest in latest }
         }
         let pending = PriceHistory.requests(document: document, now: now, reconnected: reconnected)
-        var count = 0, metalCount = 0, fxCount = 0, exchangeCount = 0, queued = false
+        var count = 0, metalCount = 0, fxCount = 0, exchangeCount = 0, llamaCount = 0, queued = false
         // Older than CoinGecko's free year: Binance's daily closes, for a coin whose Binance pair checks out.
         let coinGeckoStart = UTCDay.start(of: now).addingTimeInterval(-364 * 86400)
         var matched: [String: Bool] = [:]
@@ -282,14 +282,35 @@ extension PublicPrices {
                     } catch {
                         try Task.checkCancellation()
                         if isOffline(error) { offline = true; continue }
-                        // A failed Binance call doesn't hold back CoinGecko: a recent stretch falls through to it below.
-                        if !recent { result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue }
+                        // A failed Binance call falls through to DefiLlama, then CoinGecko for a recent stretch.
                     }
-                } else if !recent {
-                    // No exchange history to be had: record the stretch as checked so it isn't asked for again soon.
-                    if exchangeCount >= 24 { queued = true; continue }
-                    result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue
+                } else if exchangeCount >= 24, symbols[item.identifier] != nil {
+                    // Binance might have it; this round's exchange calls are spent, so it waits for the next.
+                    queued = true; continue
                 }
+                // Not on Binance: DefiLlama's daily prices, by CoinGecko's ID and at any age (years back, where
+                // CoinGecko's free plan stops at one), for the coins Binance doesn't list or delisted.
+                if llamaCount < 40 {
+                    llamaCount += 1
+                    do {
+                        try Task.checkCancellation()
+                        try await Task.sleep(for: .milliseconds(200))
+                        let days = max(1, Int((item.end.timeIntervalSince(item.start) / 86400).rounded(.up)))
+                        let data = try await request(host: "coins.llama.fi", path: "/chart/coingecko:" + pathSegment(item.identifier),
+                                                     query: [URLQueryItem(name: "start", value: String(Int(item.start.timeIntervalSince1970))), URLQueryItem(name: "span", value: String(days)), URLQueryItem(name: "period", value: "1d")])
+                        let quotes = try PriceHistory.decodeLlama(data, request: item, fetchedAt: now)
+                        if !quotes.isEmpty {
+                            result.quotes += quotes
+                            result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: PriceHistory.isComplete(item, observations: quotes.map(\.providerTime), now: now)))
+                            continue
+                        }
+                    } catch {
+                        try Task.checkCancellation()
+                        if isOffline(error) { offline = true; continue }
+                    }
+                } else { queued = true; continue }
+                // Nowhere to get it past CoinGecko's year: checked, so it isn't asked for again soon.
+                if !recent { result.coverage.append(PriceHistoryCoverage(key: item.key, start: item.start, end: item.end, checkedAt: now, complete: false)); continue }
             }
             // Exchange rates are cheap and unmetered, so a rebuilt balance history fills in within one refresh.
             // Prices stay at eight calls; at most four metal history calls per hour, leaving headroom on the free ten/hour allowance.

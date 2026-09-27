@@ -1060,6 +1060,17 @@ nonisolated struct ChartEstimates {
         let portfolioOwner = Dictionary(document.portfolios.map { ($0.id, $0.ownerBusinessID ?? "") }, uniquingKeysWith: { first, _ in first })
         for holding in document.holdings { owners[holding.id] = portfolioOwner[holding.portfolioID] ?? "" }
         books = Dictionary((document.businessAccounting ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // What you paid is a price too: where no market price was saved within a few days of a purchase, its unit
+        // price stands for that day, so the line runs from what you paid to the first market price rather than
+        // carrying a later price back over years.
+        for lot in document.purchases ?? [] {
+            guard let asset = assets[lot.holdingID]?.rawValue, lot.quantity.value > 0 else { continue }
+            if let series = quotes[asset], Self.nearest(series, to: lot.at, within: Self.near) != nil { continue }
+            let rate: Decimal? = lot.currency == "USD" ? 1 : rates[lot.currency].flatMap { Self.estimate($0, at: lot.at)?.value }
+            guard let rate, let paid = try? MoneyInput.multiply(lot.paid.value, rate, allowingRounding: true), paid > 0 else { continue }
+            quotes[asset, default: []].append((lot.at, paid / lot.quantity.value))
+            quotes[asset]?.sort { $0.time < $1.time }
+        }
     }
     /// The observation nearest `moment` within `window`, the earlier one on a tie.
     static func nearest(_ series: Series, to moment: Date, within window: TimeInterval = window) -> (time: Date, value: Decimal)? {
@@ -1112,7 +1123,10 @@ nonisolated struct ChartEstimates {
             var copy = component, note: String?
             switch (component.kind, component.missing) {
             case (.holding, "quote"?):
-                if let amount = component.nativeAmount?.value, let id = assets[component.id], let series = quotes[id.rawValue], let found = Self.estimate(series, at: moment),
+                // Estimated between saved prices; failing that, at the nearest one however far, so one coin with no
+                // price for a stretch is valued there rather than leaving the whole day out of the chart.
+                if let amount = component.nativeAmount?.value, let id = assets[component.id], let series = quotes[id.rawValue],
+                   let found = Self.estimate(series, at: moment) ?? Self.nearest(series, to: moment, within: .greatestFiniteMagnitude).map({ (value: $0.value, from: $0.time, to: Date?.none) }),
                    let usd = try? MoneyInput.multiply(amount, found.value, allowingRounding: true) {
                     copy.usdValue = PreciseDecimal(usd); copy.quoteTime = found.from; note = component.label + Self.source(found, "price")
                 }

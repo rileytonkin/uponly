@@ -1,6 +1,9 @@
 import Foundation
 
 nonisolated enum PriceHistory {
+    /// When DefiLlama joined as a source: a stretch left incomplete before then is asked for again at once, rather
+    /// than after the usual six hours.
+    static let sourcesChanged = Date(timeIntervalSince1970: 1_790_537_400)  // 2026-09-27 19:30 UTC
     static func requests(document: VaultDocument, now: Date, reconnected: Bool = false) -> [PriceHistoryRequest] {
         let end = UTCDay.start(of: now)
         // Each target's stretches: an asset only while held, so a coin or metal that was sold (its holding or portfolio
@@ -35,7 +38,7 @@ nonisolated enum PriceHistory {
         let accountCurrencies = Set(document.accounts.map(\.currency))
         for (source, identifier, stretches) in targets {
             let key = (source == .fx ? "fx:" : "asset:") + identifier
-            let coverage = (document.priceHistoryCoverage ?? []).filter { $0.key == key && ($0.complete || (!reconnected && now.timeIntervalSince($0.checkedAt) < 6 * 3600)) }.sorted { $0.start < $1.start }
+            let coverage = (document.priceHistoryCoverage ?? []).filter { $0.key == key && ($0.complete || (!reconnected && now.timeIntervalSince($0.checkedAt) < 6 * 3600 && ($0.checkedAt >= sourcesChanged || now < sourcesChanged))) }.sorted { $0.start < $1.start }
             // Held stretches that overlap (two portfolios holding the same coin) are merged, so no day is asked for twice.
             var merged: [(start: Date, end: Date)] = []
             for stretch in stretches.sorted(by: { $0.start < $1.start }) where stretch.start < stretch.end {
@@ -78,6 +81,31 @@ nonisolated enum PriceHistory {
         return QuoteObservation(assetID: metal.assetID, priceUSD: PreciseDecimal(try pricePerGram(row.price)), providerTime: date, fetchedAt: fetchedAt, provider: "Gold API · spot")
     }
     struct CryptoHistory: Decodable { var prices: [[Decimal?]] }
+    /// DefiLlama's `/chart/coingecko:<id>`: one point a day, keyed by CoinGecko's ID.
+    struct LlamaChart: Decodable {
+        struct Coin: Decodable { struct Point: Decodable { var timestamp: Double; var price: Decimal }; var prices: [Point]; var confidence: Decimal? }
+        var coins: [String: Coin]
+    }
+    /// A chunk of DefiLlama's daily prices: one per day inside the chunk, none from a low-confidence series (DefiLlama's
+    /// own score of how well a price is sourced) or for another coin than asked.
+    static func decodeLlama(_ data: Data, request: PriceHistoryRequest, fetchedAt: Date) throws -> [QuoteObservation] {
+        let response = try JSONDecoder().decode(LlamaChart.self, from: data)
+        let asset = try CanonicalAssetID(request.identifier)
+        guard response.coins.count <= 1 else { throw PriceError.invalidResponse }
+        guard let (key, coin) = response.coins.first else { return [] }
+        guard key == "coingecko:" + request.identifier, coin.prices.count <= 1000 else { throw PriceError.invalidResponse }
+        if let confidence = coin.confidence, confidence < Decimal(string: "0.5")! { return [] }
+        var days: [Date: QuoteObservation] = [:]
+        for point in coin.prices {
+            guard point.timestamp.isFinite, point.timestamp > 0, MoneyInput.isFinite(point.price), point.price > 0 else { continue }
+            let date = Date(timeIntervalSince1970: point.timestamp)
+            guard date >= request.start, date < request.end, date <= fetchedAt else { continue }
+            let day = UTCDay.start(of: date)
+            if days[day].map({ $0.providerTime >= date }) == true { continue }
+            days[day] = QuoteObservation(assetID: asset, priceUSD: PreciseDecimal(point.price), providerTime: date, fetchedAt: fetchedAt, provider: "DefiLlama · daily")
+        }
+        return days.values.sorted { $0.providerTime < $1.providerTime }
+    }
     static func decodeCrypto(_ data: Data, request: PriceHistoryRequest, fetchedAt: Date) throws -> [QuoteObservation] {
         let response = try JSONDecoder().decode(CryptoHistory.self, from: data)
         guard response.prices.count <= 30000 else { throw PriceError.invalidResponse }
