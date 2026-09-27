@@ -118,7 +118,7 @@ extension UpOnlyUnlockedPanel {
                         Text("No saved values" + worthRange.within + ".").font(UpOnlyType.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                }.padding(.top, 18)
+                }.padding(.top, 12)
             }
             if let portfolio {
                 if let valuation, available { holdingsList(portfolio, valuation: valuation, snapshot: snapshot).padding(.top, 16) }
