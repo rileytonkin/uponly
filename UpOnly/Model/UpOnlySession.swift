@@ -1665,6 +1665,32 @@ extension UpOnlySession {
             let tracking = doc.bankTracking.filter { $0.accountID == account.id }.sorted { $0.ordinal < $1.ordinal }.map { ($0.tracked ? "on " : "off ") + day.string(from: $0.effectiveAt) }
             lines.append("  \(account.name) [\(account.currency)] balances=\(balances.count) (derived \(derived.count), \(derived.map { day.string(from: $0.observedAt) }.min() ?? "-")..\(derived.map { day.string(from: $0.observedAt) }.max() ?? "-")) real=\(balances.filter { $0.source != BalanceReconstruction.source }.map { $0.source + "@" + day.string(from: $0.observedAt) }.sorted().suffix(3).joined(separator: ",")) entries=\(entries.count) withDay=\(entries.filter { $0.day != nil }.count) withOutflow=\(entries.filter { $0.outflow != nil }.count) tracking=\(tracking.joined(separator: ";")) trackedNow=\(doc.isBankTracked(account.id, at: Date()))")
         }
+        // How each synced Wise balance's activity was read, in counts and ratios only: which kinds of transaction came
+        // in or went out and how they were classified, money in against money out, and the earliest rebuilt balance
+        // against today's synced one (about 0 for a balance that started empty; far above 1 means flows were misread).
+        lines.append("wise activity (counts and ratios, no amounts):")
+        func words(_ label: String) -> String {
+            label.lowercased().split(separator: " ").prefix(2).map { $0.filter(\.isLetter) }.filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        func ratio(_ a: Decimal, _ b: Decimal) -> String {
+            guard b != 0 else { return "-" }
+            var value = a / b, rounded = Decimal(); NSDecimalRound(&rounded, &value, 2, .plain)
+            return NSDecimalNumber(decimal: rounded).stringValue
+        }
+        for account in doc.accounts where account.externalProfileID != nil && AssetOwnership.jarName(account) == nil {
+            let prefix = "wise:" + account.externalProfileID! + ":"
+            let rows = doc.entries.filter { $0.source == .wise && $0.currency == account.currency && $0.sourceRef?.hasPrefix(prefix) == true }
+            guard !rows.isEmpty else { continue }
+            let groups = Dictionary(grouping: rows) { ($0.outflow == true ? "out " : "in ") + $0.kind.rawValue + " '" + words($0.label) + "'" }
+            let inflow = rows.filter { $0.outflow == false }.map(\.amount).reduce(0, +), outflow = rows.filter { $0.outflow == true }.map(\.amount).reduce(0, +)
+            let balances = doc.bankBalances.filter { $0.accountID == account.id }
+            let real = balances.filter { $0.source != BalanceReconstruction.source }.max { $0.observedAt < $1.observedAt }?.amount.value ?? 0
+            let earliest = balances.filter { $0.source == BalanceReconstruction.source }.min { $0.observedAt < $1.observedAt }?.amount.value ?? 0
+            lines.append("  \(account.name) [\(account.currency)] rows=\(rows.count) in/out=\(ratio(inflow, outflow)) earliest/today=\(ratio(earliest, real))")
+            for (key, members) in groups.sorted(by: { $0.value.count > $1.value.count }).prefix(30) {
+                lines.append("    \(members.count)× \(key)")
+            }
+        }
         lines.append("fx:")
         for currency in Set(doc.fx.map(\.sourceCurrency)).sorted() {
             let days = Set(doc.fx.filter { $0.sourceCurrency == currency }.map { day.string(from: UTCDay.start(of: $0.providerTime)) })
