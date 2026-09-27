@@ -542,6 +542,9 @@ struct UpOnlyUnlockedPanel: View {
             // Up at the top right of the figure, level with the tops of its digits (32pt digits stand about 23pt tall).
             if shown { UpOnlyLiveDot().alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.top] + 23 }.padding(.leading, -3).transition(.opacity) }
         }.animation(.snappy(duration: 0.3), value: shown)
+            // Pages opened from All assets have a back box and often a second line under their name, which sits the
+            // figure closer to the title: a little more room above it matches All assets.
+            .padding(.top, session.dashboardSelection == .all ? 0 : 8)
             .preference(key: UpOnlyLivePage.self, value: live)
     }
     func eyebrow(_ title: String) -> some View {
