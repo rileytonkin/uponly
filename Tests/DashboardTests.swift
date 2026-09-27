@@ -354,3 +354,14 @@ struct CompanyOwnershipTests {
         #expect(plain.first?.ownership == half)
     }
 }
+
+/// Pages scroll only when they're taller than their room: a few points over is clipped from the bottom margin.
+@Suite("Page scrolling")
+struct PageScrollingTests {
+    @Test("A page scrolls only when it runs more than 12 points past its room")
+    func fits() {
+        typealias Scroll = UpOnlyMenuScroll<EmptyView>
+        #expect(!Scroll.scrolls(content: 400, room: 510) && !Scroll.scrolls(content: 510, room: 510) && !Scroll.scrolls(content: 522, room: 510))
+        #expect(Scroll.scrolls(content: 523, room: 510) && Scroll.scrolls(content: 1200, room: 510))
+    }
+}

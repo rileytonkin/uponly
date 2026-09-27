@@ -176,7 +176,7 @@ struct UpOnlyUnlockedPanel: View {
     func fitChart() {
         let home = session.dashboardSelection == .all && !showingSwitcher
         let natural = pageHeight - chartRoom - (home ? overflowRowsHeight : 0)
-        let room = min(140, max(home ? -50 : 0, (session.dashboardHeight ?? 0) - headerHeight - natural))
+        let room = min(140, max(home ? -50 : 0, maxHeight - headerHeight - natural))
         if abs(room - chartRoom) > 1 { chartRoom = room }
     }
     @State var switcherListHeight: CGFloat = 0
@@ -303,8 +303,9 @@ struct UpOnlyUnlockedPanel: View {
         // All assets goes further: its chart shrinks (to 70 pt at least) so its first six rows show without scrolling.
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in pageHeight = height; fitChart() }
         .onChange(of: overflowRowsHeight) { fitChart() }
-        // Every page fills the menu's height, its title included.
-        .frame(minHeight: session.dashboardHeight.map { max(0, $0 - headerHeight) }, alignment: .top)
+        // Every page fills the menu's height, its title included, and no more: a page stretched past its room would
+        // scroll with nothing to show.
+        .frame(minHeight: max(0, maxHeight - headerHeight), alignment: .top)
         }
         .environment(\.upOnlyScrollHeader, AnyView(header))
         .accessibilityElement(children: .contain)
