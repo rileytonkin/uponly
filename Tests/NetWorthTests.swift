@@ -1341,7 +1341,9 @@ struct PeriodChangeTests {
     @Test("A rolling range opens at the close of the day before it starts, not that day's")
     func rangeOpensAtPreviousClose() {
         var doc = VaultDocument.empty(inboxPrivateKeyX963: VaultCrypto.makeInboxKeyPair().privateX963, inboxPublicKeyX963: VaultCrypto.makeInboxKeyPair().publicX963)
-        let first = UTCDay.start(of: Date(timeIntervalSince1970: 1_790_000_000))
+        // Years back: `samples` files a range's last day by the Mac's date, so a range ending around today would move
+        // with the clock (on Sep 28 2026 between 00:00 and 03:00 UTC, west of UTC, its last day read as the 27th).
+        let first = UTCDay.start(of: Date(timeIntervalSince1970: 1_700_000_000))
         func saved(_ offset: Double) -> DailyValuation {
             DailyValuation(utcDay: first.addingTimeInterval(offset * 86400), scope: .allTracked, total: PreciseDecimal(100), isComplete: true, components: [],
                            computedAt: first.addingTimeInterval(offset * 86400 + 86399), includedAccountIDs: [], includedPortfolioIDs: [])
