@@ -40,6 +40,10 @@ Whenever you merge a PR into `main` that changes the app (`UpOnly/`, `Tests/` or
 
 Keep everything in the background: never take the owner's cursor or focus. The app quits and relaunches only during the install.
 
+## TestFlight (iPhone)
+
+`scripts/ios_testflight.sh doctor` is read-only and may be run on the Mac. `setup` and `upload` change App Store Connect and publish a build to testers: run them only when the owner asks for that upload, each time. [docs/IOS_TESTFLIGHT.md](docs/IOS_TESTFLIGHT.md) has the steps. A merge that touches only `ios/` doesn't change the Mac app, so needs no install, and no merge uploads to TestFlight by itself.
+
 ## Safety
 
 - On the Mac, run only the commands documented here. Ask the owner before any other command there.

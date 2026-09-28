@@ -1,0 +1,9 @@
+The first iPhone build of Up Only: the Mac app's pages at phone size.
+
+Please try:
+- Setting up a new vault (save the recovery code), or restoring an encrypted backup exported from the Mac.
+- Face ID unlock, leaving the app (it locks) and coming back.
+- Adding a bank balance, coins and metals; the chart's ranges and live prices.
+- Exporting an encrypted backup to Files.
+
+Known gaps: the layout is the Mac menu's, not yet redesigned for touch; hover details don't show.

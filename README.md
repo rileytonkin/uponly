@@ -56,6 +56,10 @@ flowdeck test --streaming
 flowdeck run
 ```
 
+## iPhone
+
+The `UpOnlyiOS` scheme builds Up Only for iPhone (iOS 26, `com.tonkinapps.up`). It compiles the same engine and pages as the Mac app, full screen at the phone's width; what only the iPhone needs is in [`ios/`](ios): the app entry (Face ID unlock on opening, locking when the app leaves the screen, a cover over the app switcher's snapshot, touches counting as activity for the idle lock), stand-ins for the few AppKit names the shared views use, and the Files picker in place of the Mac's open and save panels. Mac-only pieces (the menu, embedded Touch ID, window sharing, sleep and screen-lock observers) are behind `#if os(macOS)`. The phone keeps its own vault, with no sync: move data with an encrypted backup. CI builds it for the simulator; [docs/IOS_TESTFLIGHT.md](docs/IOS_TESTFLIGHT.md) covers TestFlight.
+
 ## Optional prices
 
 Prices and rates need no API keys: nothing in setup or Data sources asks for one. (A key saved by an earlier version is still used; it only raises CoinGecko's rate limit.) Choose a coin from the catalog or enter its exact CoinGecko ID, such as the public identifier `bitcoin`. Symbols are not unique identifiers.

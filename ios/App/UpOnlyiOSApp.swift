@@ -77,21 +77,18 @@ private struct UpOnlyActivityProbe: UIViewRepresentable {
             super.didMoveToWindow()
             if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
             guard let window else { recognizer = nil; return }
-            let watcher = Watcher { [weak self] in self?.touched?() }
+            let watcher = Watcher(target: nil, action: nil)
+            watcher.touched = { [weak self] in self?.touched?() }
+            watcher.cancelsTouchesInView = false; watcher.delaysTouchesBegan = false; watcher.delaysTouchesEnded = false
+            watcher.delegate = watcher
             window.addGestureRecognizer(watcher)
             recognizer = watcher
         }
     }
     final class Watcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
-        private let touched: () -> Void
-        init(_ touched: @escaping () -> Void) {
-            self.touched = touched
-            super.init(target: nil, action: nil)
-            cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
-            delegate = self
-        }
+        var touched: (() -> Void)?
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-            touched()
+            touched?()
             state = .failed
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
