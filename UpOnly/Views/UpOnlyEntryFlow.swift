@@ -371,11 +371,16 @@ struct UpOnlyCurrencyField: View {
     @FocusState private var focused: Bool
     var body: some View {
         TextField(fallback, text: $code)
+            #if os(macOS)
             .textInputSuggestions {
                 ForEach(CurrencyCodes.suggestions(for: code), id: \.self) { choice in
                     Text(choice + " · " + CurrencyCodes.name(choice)).textInputCompletion(choice)
                 }
             }
+            #else
+            // iPhone has no suggestions under a field; the keyboard types capitals, as codes are written.
+            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+            #endif
             .focused($focused)
             // Three letters, capitals, as currency codes are written.
             .onChange(of: code) { _, next in
