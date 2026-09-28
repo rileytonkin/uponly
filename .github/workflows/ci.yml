@@ -80,8 +80,10 @@ jobs:
           -derivedDataPath "$HOME/Library/Caches/uponly-ci/DerivedData"
           CODE_SIGNING_ALLOWED=NO
           SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) UPONLY_PERSONAL'
-      # The iPhone app compiles the same sources. A simulator build needs no signing and no simulator runtime.
+      # The iPhone app compiles the same sources. A simulator build needs no signing and no simulator runtime. It runs
+      # even when a step above failed, so a Mac test failure doesn't hide an iPhone compile error.
       - name: Build the iPhone app (UpOnlyiOS, Debug, simulator, unsigned)
+        if: ${{ !cancelled() }}
         run: >-
           xcodebuild build -quiet
           -project UpOnly.xcodeproj -scheme UpOnlyiOS -configuration Debug
