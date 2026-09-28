@@ -1,6 +1,8 @@
 import SwiftUI
 import LocalAuthentication
+#if os(macOS)
 import LocalAuthenticationEmbeddedUI
+#endif
 
 struct UpOnlyLockView: View {
     @Environment(UpOnlySession.self) private var session
@@ -13,12 +15,19 @@ struct UpOnlyLockView: View {
     @State private var showRecovery = false
     @State private var showRestore = false
     @State private var confirmingStartOver = false
-    private var compactUnlock: Bool { session.state == .locked && !showRecovery && !showRestore && !session.canStartOver }
+    /// The Mac's locked menu is a small pill; the iPhone's lock screen is the whole screen.
+    private var compactUnlock: Bool {
+        #if os(macOS)
+        session.state == .locked && !showRecovery && !showRestore && !session.canStartOver
+        #else
+        false
+        #endif
+    }
     private var codeIsComplete: Bool { (try? RecoveryCode(canonical: recoveryText)) != nil }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let recovery, showsRecoveryCode, session.state == .newVault {
-                UpOnlySetupHeader(step: 1, symbol: "key.fill", title: "Save your recovery code", subtitle: "We generated this code for you. Save it in case you lose access to this Mac.")
+                UpOnlySetupHeader(step: 1, symbol: "key.fill", title: "Save your recovery code", subtitle: "We generated this code for you. Save it in case you lose access to this " + UpOnlyDevice.name + ".")
                 UpOnlyRecoveryCodeCard(code: recovery)
                 Toggle("I’ve saved my recovery code somewhere safe", isOn: $savedCode).toggleStyle(.checkbox).font(UpOnlyType.body).fixedSize(horizontal: false, vertical: true)
                 Text("Keep it separately from your encrypted backups.").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
@@ -28,7 +37,7 @@ struct UpOnlyLockView: View {
                     Button("Create encrypted vault") { Task { await session.create(recovery: recovery) } }
                         .buttonStyle(.upOnlyPrimary).controlSize(.large).keyboardShortcut(.defaultAction).disabled(session.isBusy || !savedCode)
                 }
-                Text("Touch ID or your Mac password will protect the vault key.").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
+                Text(UpOnlyDevice.unlockMethods + " will protect the vault key.").fixedSize(horizontal: false, vertical: true).font(UpOnlyType.caption).foregroundStyle(.secondary)
             } else if showRestore {
                 UpOnlyWordmark(width: 64)
                 Text("Restore your backup").font(UpOnlyType.title)
@@ -48,7 +57,7 @@ struct UpOnlyLockView: View {
             } else if showRecovery || session.state == .recovery {
                 UpOnlyWordmark(width: 64)
                 Text("Use your saved recovery code").font(UpOnlyType.title).fixedSize(horizontal: false, vertical: true)
-                Text("Up Only generated this code during setup. On this Mac, you can also try unlocking with Touch ID or your Mac password.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Up Only generated this code during setup. On this " + UpOnlyDevice.name + ", you can also try unlocking with " + UpOnlyDevice.unlockMethods + ".").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 recoveryField("Recovery code").accessibilityLabel("Recovery code")
                 Button("Recover vault") { Task { await session.recover(code: recoveryText); if session.state == .unlocked { recoveryText = "" } } }
                     .buttonStyle(.upOnlyPrimary).disabled(session.isBusy || !codeIsComplete)
@@ -58,7 +67,7 @@ struct UpOnlyLockView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("All your wealth, in one place.").font(.system(size: 15, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                     Text("Your accounts, assets and cash flow.").font(UpOnlyType.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Text("Encrypted. Stored on your Mac.").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text("Encrypted. Stored on your " + UpOnlyDevice.name + ".").font(UpOnlyType.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 #if UPONLY_PERSONAL
                 if !session.wiseProfiles.isEmpty {
@@ -94,6 +103,18 @@ struct UpOnlyLockView: View {
                     Button("Start over…") { confirmingStartOver = true }.buttonStyle(.upOnlyPrimary).disabled(session.isBusy)
                 }
             } else {
+                #if os(iOS)
+                UpOnlyWordmark()
+                Text("Locked").font(UpOnlyType.title)
+                VStack(spacing: 10) {
+                    Button { session.beginUnlock() } label: {
+                        Label("Unlock", systemImage: "faceid").frame(maxWidth: .infinity)
+                    }.buttonStyle(.upOnlyPrimary).disabled(session.isBusy)
+                    Button { showRecovery = true } label: {
+                        Text("Use recovery code").frame(maxWidth: .infinity)
+                    }.buttonStyle(.upOnlySecondary).disabled(session.isBusy)
+                }.controlSize(.large)
+                #else
                 // The logo and the fingerprint side by side in a small pill, nothing between them.
                 HStack(spacing: 10) {
                     UpOnlyWordmark(width: 42)
@@ -116,6 +137,7 @@ struct UpOnlyLockView: View {
                             .overlay { UpOnlyPasswordClick { session.authenticationFailed ? session.beginUnlock(usePassword: true) : session.beginUnlock() } }
                     }
                 }.frame(height: 36)
+                #endif
             }
             if let message = session.message { Text(message).fixedSize(horizontal: false, vertical: true).font(UpOnlyType.body).foregroundStyle(.secondary) }
             if session.isBusy && !compactUnlock { ProgressView().controlSize(.small) }
@@ -136,7 +158,9 @@ struct UpOnlyLockView: View {
             try? await Task.sleep(for: .seconds(120))
             if !Task.isCancelled { recoveryText = "" }
         }
+        #if os(macOS)
         .onReceive(NotificationCenter.default.publisher(for: NSPopover.didCloseNotification)) { _ in recoveryText = "" }
+        #endif
     }
     /// People copy the code from paper, so they need to see what they type: a monospaced field, not a secure one.
     private func recoveryField(_ title: String) -> some View {
@@ -147,6 +171,7 @@ struct UpOnlyLockView: View {
 
 
 
+#if os(macOS)
 // Attach Apple's authentication view before requesting evaluation. The same context
 // then authorizes the existing protected Keychain read; no app-managed credential UI.
 private struct UpOnlyAuthenticationIcon: View {
@@ -235,3 +260,4 @@ final class UpOnlyAuthenticationViewController: NSViewController {
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
     }
 }
+#endif

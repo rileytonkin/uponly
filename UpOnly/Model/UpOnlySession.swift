@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import os
 import Observation
@@ -236,11 +240,14 @@ final class UpOnlySession {
     @ObservationIgnored private var lastActivity = Date()
     @ObservationIgnored private var financeSurfaces = 0
     private var pickerDepth = 0
+    #if os(macOS)
     @ObservationIgnored private var activeFilePanel: NSSavePanel?
+    #endif
     var filePickerIsOpen: Bool { pickerDepth > 0 }
     /// True while the statement drop zone is on screen, so a drag from Finder does not dismiss the menu.
     var dropZoneVisible: Bool { get { unlocked.dropZoneVisible } set { unlocked.dropZoneVisible = newValue } }
     var menuStaysOpen: Bool { filePickerIsOpen || (state == .unlocked && dropZoneVisible) }
+    #if os(macOS)
     func focusFilePicker() {
         NSApp.activate(ignoringOtherApps: true)
         activeFilePanel?.makeKeyAndOrderFront(nil)
@@ -266,8 +273,31 @@ final class UpOnlySession {
             panel.orderFrontRegardless()
         }
     }
+    #else
+    /// The Files picker is a sheet over the app, so there's nothing to bring forward.
+    func focusFilePicker() {}
+    /// Idle lock waits while the Files picker is on screen, as it does for the Mac's panels. Nil after a lock.
+    private func presentFilePicker<Value>(_ present: () async -> Value) async -> Value? {
+        let token = sessionToken
+        pickerDepth += 1
+        defer { pickerFinished() }
+        let result = await present()
+        return token == sessionToken ? result : nil
+    }
+    /// Writes a file to a folder of its own in the app's temporary folder and hands it to Files to save.
+    private func exportThroughFiles(named name: String, write: (URL) throws -> Void) async throws -> Bool {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent(name)
+        try write(url)
+        return await presentFilePicker { await UpOnlyFilePicker.export(url) } ?? false
+    }
+    #endif
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    #if os(macOS)
     @ObservationIgnored private var screenLockObserver: ScreenLockObserver?
+    #endif
     @ObservationIgnored private var inactivityTimer: DispatchSourceTimer?
     @ObservationIgnored private var eventMonitor: Any?
     /// The preview app never streams; `UPONLY_PREVIEW_LIVE=1` shows the live dot anyway, to check how it looks.
@@ -367,23 +397,27 @@ final class UpOnlySession {
             lock()
             passwordUnlockRequested = true
             liveAuthenticator?.preparePassword()
+            #if os(macOS)
             NSApp.activate()
+            #endif
         } else {
             guard !isBusy, authenticationContext == nil else { return }
         }
         authenticationFailed = false
+        #if os(macOS)
         let context = LAContext()
         if !usePassword, let liveAuthenticator,
            context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
             liveAuthenticator.prepareEmbedded(context)
             authenticationContext = context
             // The embedded view starts evaluation only after attaching this context.
-        } else {
-            let token = sessionToken
-            Task {
-                guard token == sessionToken, state == .locked else { return }
-                await unlock()
-            }
+            return
+        }
+        #endif
+        let token = sessionToken
+        Task {
+            guard token == sessionToken, state == .locked else { return }
+            await unlock()
         }
     }
 
@@ -536,7 +570,11 @@ final class UpOnlySession {
     /// reaches the next unlock. A restore whose vault already opened the backup passes false, keeping that new vault
     /// session and the authentication it was saved with.
     private func endSession(lockingVault: Bool) {
+        #if os(macOS)
         activeFilePanel?.cancel(nil)
+        #else
+        UpOnlyFilePicker.dismiss()
+        #endif
         authenticationContext?.invalidate(); authenticationContext = nil
         passwordUnlockRequested = false
         authenticationFailed = false
@@ -929,11 +967,17 @@ final class UpOnlySession {
     }
     func chooseImportFiles() async {
         guard state == .unlocked, !importLoading, !filePickerIsOpen else { focusFilePicker(); return }
+        let types: [UTType] = importDraft?.mode == .statements ? [.commaSeparatedText] : [.commaSeparatedText, .tabSeparatedText, .plainText]
+        #if os(macOS)
         let token = sessionToken
-        let panel = NSOpenPanel(); panel.allowedContentTypes = importDraft?.mode == .statements ? [.commaSeparatedText] : [.commaSeparatedText, .tabSeparatedText, .plainText]
+        let panel = NSOpenPanel(); panel.allowedContentTypes = types
         panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
         guard await presentFilePanel(panel) == .OK, token == sessionToken else { return }
         await readImportFiles(panel.urls)
+        #else
+        guard let urls = await presentFilePicker({ await UpOnlyFilePicker.open(types, multiple: true) }), !urls.isEmpty else { return }
+        await readImportFiles(urls)
+        #endif
     }
     func readImportFiles(_ urls: [URL]) async {
         let urls = urls.map { ($0 as NSURL).filePathURL ?? $0 }
@@ -1005,11 +1049,16 @@ final class UpOnlySession {
     func saveImportTemplate() async {
         guard state == .unlocked, !filePickerIsOpen else { focusFilePicker(); return }
         let token = sessionToken, mode = importDraft?.mode ?? importMode
+        #if os(macOS)
         let panel = NSSavePanel(); panel.allowedContentTypes = [.commaSeparatedText]; panel.nameFieldStringValue = mode.rawValue + ".csv"
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
         do { try mode.template.write(to: url, atomically: true, encoding: .utf8) }
         catch { importMessage = "The template could not be saved." }
+        #else
+        do { _ = try await exportThroughFiles(named: mode.rawValue + ".csv") { try mode.template.write(to: $0, atomically: true, encoding: .utf8) } }
+        catch { if token == sessionToken { importMessage = "The template could not be saved." } }
+        #endif
     }
     func commitImportBatch(_ draft: ImportBatchDraft) async throws {
         let coins = catalog
@@ -1130,23 +1179,31 @@ final class UpOnlySession {
     func exportBackup() async {
         guard state == .unlocked, !filePickerIsOpen, !exportingBackup else { focusFilePicker(); return }
         let token = sessionToken
-        let panel = NSSavePanel()
         // A dated name keeps earlier backups and never collides with yesterday's.
-        panel.nameFieldStringValue = "Up Only Backup " + ImportDateFormat.today() + ".uponlybackup"
+        let name = "Up Only Backup " + ImportDateFormat.today() + ".uponlybackup"
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = name
         panel.canCreateDirectories = true
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return }
+        #endif
         // This unlock's export: finishing after a lock mustn't free the next unlock's.
         let thisUnlock = unlocked
         thisUnlock.exportingBackup = true; defer { thisUnlock.exportingBackup = false }
         do {
             let package = try await BackupCoordinator.makePackage(store: vault, producers: [])
             guard token == sessionToken else { throw VaultError.locked }
+            #if os(macOS)
             // Hashing and writing up to a few hundred megabytes stays off the main thread.
             try await Task.detached(priority: .userInitiated) {
                 let access = url.startAccessingSecurityScopedResource()
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
                 try BackupCoordinator.publish(package, to: url, io: DiskFileIO())
             }.value
+            #else
+            // Written to the app's temporary folder first (still encrypted), then saved wherever Files is told to.
+            guard try await exportThroughFiles(named: name, write: { try BackupCoordinator.publish(package, to: $0, io: DiskFileIO()) }) else { return }
+            #endif
             guard token == sessionToken else { return }
             flash("Encrypted backup saved. Keep your recovery code separately.")
         } catch { if token == sessionToken { message = "Backup could not be saved. Choose a new filename and try again." } }
@@ -1197,6 +1254,7 @@ final class UpOnlySession {
         }
     }
 
+    #if os(macOS)
     private func installLockObservers() {
         let workspace = NSWorkspace.shared.notificationCenter
         observers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1214,6 +1272,19 @@ final class UpOnlySession {
             return event
         }
     }
+    #else
+    /// The app locks as it goes to the background (`UpOnlyiOSApp`), and taps count as activity there too. Here: sources
+    /// refresh on coming back, and the vault locks when the phone locks, before its files become unreadable.
+    private func installLockObservers() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.startBackgroundRefresh() }
+        })
+        observers.append(center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.lock() }
+        })
+    }
+    #endif
 
     /// The idle lock's once-a-second check, which only an unlocked vault needs: it starts with each unlock and stops at
     /// the lock, so a locked app isn't woken for it. A strict dispatch timer, so App Nap can't coalesce or put it off
@@ -1932,9 +2003,14 @@ extension UpOnlySession {
             return .failed
         }
         let token = sessionToken, replacing = state == .unlocked
+        #if os(macOS)
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.message = "Choose the Up Only Backup folder"; panel.prompt = "Restore"
         guard await presentFilePanel(panel) == .OK, let url = panel.url, token == sessionToken else { return .cancelled }
+        #else
+        // The backup folder is read where it is, under the security scope taken below.
+        guard let url = await presentFilePicker({ await UpOnlyFilePicker.open([.folder], multiple: false, asCopy: false) })?.first else { return .cancelled }
+        #endif
         isBusy = true; message = nil
         // Reading and hashing up to a few hundred megabytes stays off the main thread.
         let read = await Task.detached(priority: .userInitiated) { () throws -> BackupPackage in
@@ -2412,6 +2488,7 @@ extension UpOnlySession {
     }
 }
 
+#if os(macOS)
 /// Locks the vault the moment the screen locks. AppKit holds distributed notifications back while an app is inactive,
 /// and a menu-bar app is inactive nearly all the time, so this asks for immediate delivery, which only the
 /// selector-based registration offers.
@@ -2432,6 +2509,7 @@ private final class ScreenLockObserver: NSObject {
         else { Task { @MainActor in lock() } }
     }
 }
+#endif
 
 /// Everything that belongs to one unlocked vault: the document and what's worked out from it, navigation within the
 /// unlocked app, drafts and editors, imports, what the sources said, and the work in flight for all of it.

@@ -704,16 +704,22 @@ enum UpOnlyTint {
     /// Up Only's green, a little softer than the wordmark's: the glow behind every page, switches and gains.
     static let brand = Color(red: 0.227, green: 0.71, blue: 0.498)
     static let metals = Color(red: 0.60, green: 0.47, blue: 0.23)
-    static let cashFlow = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.227, green: 0.71, blue: 0.498, alpha: 1)
-            : NSColor(srgbRed: 0.13, green: 0.51, blue: 0.39, alpha: 1)
-    })
-    static let netWorth = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.52, green: 0.64, blue: 0.94, alpha: 1)
-            : NSColor(srgbRed: 0.29, green: 0.39, blue: 0.67, alpha: 1)
-    })
+    static let cashFlow = adaptive(dark: (0.227, 0.71, 0.498), light: (0.13, 0.51, 0.39))
+    static let netWorth = adaptive(dark: (0.52, 0.64, 0.94), light: (0.29, 0.39, 0.67))
+    /// One colour in dark mode and another in light.
+    private static func adaptive(dark: (CGFloat, CGFloat, CGFloat), light: (CGFloat, CGFloat, CGFloat)) -> Color {
+        #if os(macOS)
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+        })
+        #else
+        Color(uiColor: UIColor { traits in
+            let rgb = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+        })
+        #endif
+    }
     static let crypto = Color(red: 0.82, green: 0.52, blue: 0.18)
     /// Companies, apart from your own bank balances in the breakdown.
     static let company = Color(red: 0.56, green: 0.42, blue: 0.86)

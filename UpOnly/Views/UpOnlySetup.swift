@@ -1,5 +1,10 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+import UniformTypeIdentifiers
+#endif
 
 /// Action rows wrap as a whole, keeping native button titles readable in narrow windows.
 // Shared menu geometry. Content surfaces stay quiet; navigation uses native glass.
@@ -9,8 +14,23 @@ enum UpOnlyLayout {
     static let cardInset: CGFloat = 12
     static let radius: CGFloat = 16
     /// The menu is one size on every page, Mullvad's: 320 by 568 points. A page with more scrolls within it.
+    #if os(macOS)
     static let menuWidth: CGFloat = 320
+    #else
+    /// On iPhone, the screen's width (`adopt(width:)`).
+    nonisolated(unsafe) static var menuWidth: CGFloat = 320
+    #endif
     static let menuHeight: CGFloat = 568
+}
+/// What the copy calls the device and how it unlocks.
+enum UpOnlyDevice {
+    #if os(macOS)
+    static let name = "Mac"
+    static let unlockMethods = "Touch ID or your Mac password"
+    #else
+    static let name = "iPhone"
+    static let unlockMethods = "Face ID or your passcode"
+    #endif
 }
 /// Type roles shared by every page, so the same kind of text looks the same everywhere.
 enum UpOnlyType {
@@ -246,6 +266,7 @@ struct UpOnlyRecoveryCodeCard: View {
             .task(id: copied) { if copied { try? await Task.sleep(for: .seconds(2)); if !Task.isCancelled { copied = false } } }
     }
 }
+#if os(macOS)
 /// The recovery code on the clipboard: for this Mac only (never passed to other devices by Universal Clipboard), marked
 /// concealed and transient so clipboard managers and history skip it, and cleared after a minute, or when Up Only quits
 /// first, unless something else has been copied since.
@@ -297,6 +318,21 @@ private struct UpOnlyCaptureShield: NSViewRepresentable {
         }
     }
 }
+#else
+/// The recovery code on the clipboard: for this iPhone only (never passed to other devices by Universal Clipboard), and
+/// gone after a minute.
+@MainActor enum UpOnlyRecoveryClipboard {
+    static func copy(_ code: RecoveryCode) -> Bool {
+        UIPasteboard.general.setItems([[UTType.utf8PlainText.identifier: code.canonical]],
+                                      options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(60)])
+        return true
+    }
+}
+/// iOS offers no way to keep one view out of screenshots; the code is shown only on this step.
+private struct UpOnlyCaptureShield: View {
+    var body: some View { Color.clear }
+}
+#endif
 struct UpOnlySetup: View {
     @Environment(UpOnlySession.self) private var session
     @State private var automatic = true
