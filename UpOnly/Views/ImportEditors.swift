@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#endif
 
 // Editors for one import file's account and for one row, used by the statement and spreadsheet review.
 struct ImportField<Content: View>: View {

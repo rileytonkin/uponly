@@ -3,7 +3,7 @@
 # Fails when a change would:
 #   - run code at build time (Run Script phases, build rules, external build
 #     tools, scheme pre/post actions) or pull in Swift packages;
-#   - let a development-signed Release build of the app carry get-task-allow;
+#   - let a development-signed Release build of either app carry get-task-allow;
 #   - add an entitlement beyond the sandbox, network client, user-selected
 #     files and keychain group;
 #   - commit something that looks like a secret, a vault, a backup or a
@@ -26,17 +26,19 @@ while IFS= read -r scheme; do
   grep -qE 'PreActions|PostActions|ShellScriptAction' "$scheme" && fail "$scheme has a pre- or post-action script"
 done < <(git ls-files '*.xcscheme')
 
-# 2. The app target's Release configuration must not inject get-task-allow.
-list=$(awk '/Build configuration list for PBXNativeTarget "UpOnly" \*\/ = \{/ { f = 1; next }
-            f && /\/\* Release \*\// { print $1; exit }
-            f && /^\t\t\};/ { exit }' "$PBX")
-if [ -z "$list" ]; then
-  fail "could not find the UpOnly target's Release configuration in $PBX"
-else
-  block=$(awk -v id="$list" '$1 == id && /= \{/ { f = 1 } f { print } f && /^\t\t\};/ { exit }' "$PBX")
-  grep -q 'CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;' <<< "$block" \
-    || fail "the UpOnly target's Release configuration must set CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO"
-fi
+# 2. The app targets' Release configurations must not inject get-task-allow.
+for target in UpOnly UpOnlyiOS; do
+  list=$(awk -v t="$target" 'index($0, "Build configuration list for PBXNativeTarget \"" t "\" */ = {") { f = 1; next }
+              f && /\/\* Release \*\// { print $1; exit }
+              f && /^\t\t\};/ { exit }' "$PBX")
+  if [ -z "$list" ]; then
+    fail "could not find the $target target's Release configuration in $PBX"
+  else
+    block=$(awk -v id="$list" '$1 == id && /= \{/ { f = 1 } f { print } f && /^\t\t\};/ { exit }' "$PBX")
+    grep -q 'CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;' <<< "$block" \
+      || fail "the $target target's Release configuration must set CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO"
+  fi
+done
 
 # 3. Entitlements: only the expected keys, never get-task-allow, and every
 #    CODE_SIGN_ENTITLEMENTS points at one of the files checked here.

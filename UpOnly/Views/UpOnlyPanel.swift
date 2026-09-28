@@ -1,6 +1,8 @@
 import SwiftUI
 import LocalAuthentication
+#if os(macOS)
 import LocalAuthenticationEmbeddedUI
+#endif
 
 struct UpOnlyPanel: View {
     var menuLifecycleManaged = false
@@ -31,11 +33,13 @@ struct UpOnlyPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .buttonStyle(.upOnlySecondary).controlSize(.regular)
         .background { UpOnlyBackdrop() }
+        #if os(macOS)
         .background(UpOnlyPanelKeyboard(close: {
             // Esc steps back first (switcher, a page in Manage or Add, a drill-in) and closes the menu from the top.
             if session.handleEscape() {}
             else if let closeMenu { closeMenu() } else { dismiss() }
         }).frame(width: 0, height: 0))
+        #endif
         // The dashboard's ⇧⌘P (privacy) and ⌘L (lock) also work on Manage and Add pages, which replace the dashboard. A
         // privacy choice that can't be saved keeps values hidden and leaves a note (`togglePrivacyMode`).
         .background {
@@ -46,19 +50,26 @@ struct UpOnlyPanel: View {
                 }.opacity(0).frame(width: 0, height: 0).allowsHitTesting(false).accessibilityHidden(true)
             }
         }
+        #if os(macOS)
         .background {
             if session.state == .unlocked, session.unlockTiming != nil {
                 UpOnlyUnlockDisplayProbe { session.recordUnlockedMenuDisplay() }.frame(width: 1, height: 1)
             }
         }
+        #endif
         .onAppear { if !menuLifecycleManaged { session.menuOpened() } }
         .onDisappear { if !menuLifecycleManaged { session.surfaceClosed() } }
     }
     /// Every page is the same height, Mullvad's 568 points (less on a screen too short for it), and scrolls within it
     /// only when it must, so the menu never changes size between pages.
     private var menuHeight: CGFloat {
+        #if os(macOS)
         let screen = max(400, (NSScreen.main?.visibleFrame.height ?? 900) - 40)
         return min(session.dashboardHeight ?? UpOnlyLayout.menuHeight, screen)
+        #else
+        // On iPhone, the screen's height, which the app sets.
+        return session.dashboardHeight ?? UpOnlyLayout.menuHeight
+        #endif
     }
     private var panelContent: some View {
         Group {
@@ -74,6 +85,7 @@ struct UpOnlyPanel: View {
     }
 }
 
+#if os(macOS)
 // An opt-in probe reports after AppKit displays the unlocked menu. It samples
 // no pixels or accessibility values and draws no visible content.
 private struct UpOnlyUnlockDisplayProbe: NSViewRepresentable {
@@ -130,6 +142,8 @@ private struct UpOnlyPanelKeyboard: NSViewRepresentable {
         }
     }
 }
+
+#endif
 
 /// The unlocked dashboard: the switcher title, attention row and the shared pieces its pages use. Cash flow, net worth,
 /// company pages and the switcher live in DashboardCashFlow, DashboardNetWorth, DashboardCompany and DashboardSwitcher.

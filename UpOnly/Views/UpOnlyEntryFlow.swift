@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#endif
 
 // The Add page and the pieces its guided forms share: date picker, badge and number read-back.
 

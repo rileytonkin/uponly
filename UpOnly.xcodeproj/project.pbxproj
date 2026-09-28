@@ -116,6 +116,59 @@
 		ACCF10000000000000000003 /* BusinessAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF10000000000000000001 /* BusinessAccounting.swift */; };
 		ACCF20000000000000000002 /* BackgroundRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF20000000000000000001 /* BackgroundRefresh.swift */; };
 		ACCF20000000000000000003 /* BackgroundRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF20000000000000000001 /* BackgroundRefresh.swift */; };
+		EE9A232390654349F0E849A7 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300C3E4D76D618517D899CD /* Config.swift */; };
+		684A1CAFAAC1CAF0EBA10EBB /* CSVReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = D180EDF0610BC67774AB7415 /* CSVReader.swift */; };
+		777DDF0BB035F64024D5BB6E /* PublicPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F2ADF9E6B5BF0EA4D490438 /* PublicPrices.swift */; };
+		858C612BAFBA0D03E4B5BFC3 /* WiseAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7604B1BD8E5B7307F86FFE9 /* WiseAPI.swift */; };
+		57AB36D2238141D4AAF092E9 /* PriceHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12114112BF2733B07BF222A6 /* PriceHistory.swift */; };
+		0E2896350373293129C4002D /* ExchangeRates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 470D6D2B0283006C27A4F0BE /* ExchangeRates.swift */; };
+		F68A405C0BB4E6CD94BAE714 /* MetalPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = B012ECA50137677E1DF8C8E0 /* MetalPrices.swift */; };
+		4C94D7903125A0069D6DCB79 /* CryptoPrices.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB8501290DC05168A4D5DD0D /* CryptoPrices.swift */; };
+		2DC25246B30FBEFB36A4ECEC /* Ledger.swift in Sources */ = {isa = PBXBuildFile; fileRef = E507EAC3074AC2B97A73DD43 /* Ledger.swift */; };
+		771470E347CEB519E8A7B708 /* BusinessAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF10000000000000000001 /* BusinessAccounting.swift */; };
+		16AAAC3228F8FE56F118D541 /* BackgroundRefresh.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACCF20000000000000000001 /* BackgroundRefresh.swift */; };
+		9B311E456858D23F41FD8CBE /* MonthKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 958DD98DBE39E2BEF1639434 /* MonthKey.swift */; };
+		7E9F1E05865007DA720C190C /* NetWorthCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A96F7B1FE84B960918B4DF7 /* NetWorthCalculator.swift */; };
+		39C21C192F4647294CD9E862 /* PopoverModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 126BDC3C9A4A1979B2C758AA /* PopoverModel.swift */; };
+		E7C3A0BE26B367896297A291 /* PortfolioModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CF899C6630B9A8C8439F574 /* PortfolioModels.swift */; };
+		B80DAC53DC9184AFBEFFC243 /* UpOnlyFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E176ABBBFCE9A2BAD8326050 /* UpOnlyFixture.swift */; };
+		054E8BAAD4796DDB274DBFB5 /* UpOnlySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 830946773D055B16590B028F /* UpOnlySession.swift */; };
+		D6EA6A7C02C4AAB5AB5BCA05 /* BackupCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A5EFDAAA1E8A22A9D498637 /* BackupCoordinator.swift */; };
+		E30C44A30385E38501774C4F /* VaultCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = E026F1FCD21F5DE102BF4E3C /* VaultCrypto.swift */; };
+		6A5B2A058A7F12A6CB94D9AB /* VaultDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5DDA7CD990580655671FCA1 /* VaultDependencies.swift */; };
+		75F30D7CDDF76BB73CCFF624 /* VaultDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05B6298B0491C10F365113AC /* VaultDocument.swift */; };
+		424AFBB5A0A11A44C8C8E3FC /* VaultStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4A0CC03132F3D57167B0C6 /* VaultStore.swift */; };
+		D7C97673D53578F4997F7B60 /* VaultTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25507AF43A97D41B240765B2 /* VaultTypes.swift */; };
+		5CF76CE9CC2BADC7484C4258 /* StatementReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 357DA93FB3EEE2EF97738ABC /* StatementReview.swift */; };
+		9EF6F8CE88E0B91DB59511E7 /* UpOnlyChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ED71CAC3053FCC4645F3584 /* UpOnlyChart.swift */; };
+		41BFF6E011FD54731767CB0B /* DashboardSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CE4BB458F1F53396B40ACAB /* DashboardSwitcher.swift */; };
+		ACCD883F9F8A6A6AB4B959FC /* UpOnlyEditSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DFA52E77776185A9C253E6D /* UpOnlyEditSheet.swift */; };
+		70C2DF42C4727ACC381250AD /* NeedsAttentionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D17068D47AF111BD712A2A8 /* NeedsAttentionView.swift */; };
+		A02EC40D12D2A22951FE8490 /* ManageComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E3B1DEC6E390C62F550F584 /* ManageComponents.swift */; };
+		B05B0B15658B95F3338B5E88 /* ManageSecurity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 738DE7A4E733C2DC4427BD49 /* ManageSecurity.swift */; };
+		E80017113B2E7EE25D91827D /* ManageTransactions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198B09586B5AD8B77A5E80FE /* ManageTransactions.swift */; };
+		3DE7C1651B7DB06F4E22DAAE /* ManageHoldings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D555B91B5DBB1E62C0BBAFA3 /* ManageHoldings.swift */; };
+		07D8B063EFFCF5636A7CEB39 /* ManageAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFD469C4876FA39FDD4133B /* ManageAccounts.swift */; };
+		8E70753D5B585082D7AAA081 /* ImportEditors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79BD2A1C7BB82A34E2D0574F /* ImportEditors.swift */; };
+		8A842008C424410B01367F97 /* UpOnlyGuidedEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 901971A1C400449524C91DE5 /* UpOnlyGuidedEntry.swift */; };
+		CEB5C55874939F455D1BF315 /* UpOnlyEntryFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61425AF32A1B9377B0726652 /* UpOnlyEntryFlow.swift */; };
+		5C791AC53DD9E3F89E5349C5 /* UpOnlyComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 640C7860FF50431DB36B6B05 /* UpOnlyComponents.swift */; };
+		7EE4846FB10F89D339F496C0 /* UpOnlyLockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D667F68325B8F056D1DAF43 /* UpOnlyLockView.swift */; };
+		4D417B6859F195952FF154DD /* DashboardCompany.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BF57952FC1E7E1B75B44786 /* DashboardCompany.swift */; };
+		49332A4CE4074D4D64B56ED7 /* DashboardHolding.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* DashboardHolding.swift */; };
+		0E2D3BB403ED90D1701D8AED /* DashboardNetWorth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AC61ED88610A6AD031E464D /* DashboardNetWorth.swift */; };
+		5529F218347F6B16434F3503 /* DashboardCashFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C688DE98A37CE631E5EDBDB6 /* DashboardCashFlow.swift */; };
+		CA2D8E93A72CA0AAC9849177 /* UpOnlyManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 299AEE2C5DAF4B1624371F8C /* UpOnlyManagement.swift */; };
+		9A54F780E99D9A306DF7E8CE /* UpOnlyPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A99FF15A45D16BA857AD82E /* UpOnlyPanel.swift */; };
+		61CFC08EFDC8225F2B02718A /* UpOnlySetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6AD1A2DD38325FF702427EF /* UpOnlySetup.swift */; };
+		4FBCD7C1FBFC72D843CCFA05 /* UpOnlyiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35666ACF087A37C6F69E473D /* UpOnlyiOSApp.swift */; };
+		6D4BE195E560D3F20ED87ADC /* AppKitCompat.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACF83E5E30CC730071373B16 /* AppKitCompat.swift */; };
+		A3F3C8E47C1F62669F376489 /* UpOnlyFilePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41C6791C808760B130783D62 /* UpOnlyFilePicker.swift */; };
+		E520B6C33F2B886DDA74B3C9 /* UpOnlyStatus.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 6EAD867068CE6C48E4A03B3B /* UpOnlyStatus.pdf */; };
+		06982D3E9502187463844CF6 /* CoinLogos.pack in Resources */ = {isa = PBXBuildFile; fileRef = C01A0600000000000000C000 /* CoinLogos.pack */; };
+		317D5B955269D8A771D21D30 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A55E7C0000000000000A55E7 /* Assets.xcassets */; };
+		2A7AD9FC829B6B54AA88D57B /* UpOnlyWordmarkLight.pdf in Resources */ = {isa = PBXBuildFile; fileRef = A202422E149CD9C23DC853B0 /* UpOnlyWordmarkLight.pdf */; };
+		4F1B96CAC1EECD1720DD7AA2 /* UpOnlyWordmark.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 4CA49EC6FC41206643714D72 /* UpOnlyWordmark.pdf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -189,6 +242,12 @@
 		A55E7C0000000000000A55E7 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		ACCF10000000000000000001 /* BusinessAccounting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BusinessAccounting.swift; path = Model/BusinessAccounting.swift; sourceTree = "<group>"; };
 		ACCF20000000000000000001 /* BackgroundRefresh.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BackgroundRefresh.swift; path = Ingest/BackgroundRefresh.swift; sourceTree = "<group>"; };
+		35666ACF087A37C6F69E473D /* UpOnlyiOSApp.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UpOnlyiOSApp.swift; sourceTree = "<group>"; };
+		ACF83E5E30CC730071373B16 /* AppKitCompat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AppKitCompat.swift; sourceTree = "<group>"; };
+		41C6791C808760B130783D62 /* UpOnlyFilePicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UpOnlyFilePicker.swift; sourceTree = "<group>"; };
+		D92811E34B5246AEC405451E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		3686B5EF07F7707DBB8073EC /* UpOnly.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = UpOnly.entitlements; sourceTree = "<group>"; };
+		E2CA3D5EEEA786A0B876281B /* Up Only.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Up Only.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -216,6 +275,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D6BB930D88D459C9E5A01540 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -233,6 +299,7 @@
 				8E296457AAA851327AF61555 /* Products */,
 				49573ECC8B53B5BAC5F47437 /* Frameworks */,
 				6C748F260DA855563EC38B19 /* UpOnly */,
+				D31A0868C74D60C6543AF820 /* ios */,
 				B4DCA285A044D420DEE8C7F6 /* Tests */,
 			);
 			sourceTree = "<group>";
@@ -311,6 +378,7 @@
 				78D3CD521AAC49EA0ECEFE03 /* UpOnly.app */,
 				859A3D1679A33C69896684CE /* UpOnlyFixture.app */,
 				C5517FF51F5D434A6DA6617D /* UpOnlyTests.xctest */,
+				E2CA3D5EEEA786A0B876281B /* Up Only.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -325,6 +393,26 @@
 			);
 			name = Tests;
 			path = Tests;
+			sourceTree = "<group>";
+		};
+		D31A0868C74D60C6543AF820 /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				B7E2F22AA0776F261BE13D83 /* App */,
+				D92811E34B5246AEC405451E /* Info.plist */,
+				3686B5EF07F7707DBB8073EC /* UpOnly.entitlements */,
+			);
+			path = ios;
+			sourceTree = "<group>";
+		};
+		B7E2F22AA0776F261BE13D83 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				35666ACF087A37C6F69E473D /* UpOnlyiOSApp.swift */,
+				ACF83E5E30CC730071373B16 /* AppKitCompat.swift */,
+				41C6791C808760B130783D62 /* UpOnlyFilePicker.swift */,
+			);
+			path = App;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -382,6 +470,23 @@
 			productReference = 78D3CD521AAC49EA0ECEFE03 /* UpOnly.app */;
 			productType = "com.apple.product-type.application";
 		};
+		2D741DCAF452947D90149EB1 /* UpOnlyiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DB7DB64E3C8534B2AFEDB936 /* Build configuration list for PBXNativeTarget "UpOnlyiOS" */;
+			buildPhases = (
+				933C2E62C8A1DF7B0416C288 /* Sources */,
+				D6BB930D88D459C9E5A01540 /* Frameworks */,
+				9AC63DF0CDD2BF3AFF40DDE0 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = UpOnlyiOS;
+			productName = UpOnlyiOS;
+			productReference = E2CA3D5EEEA786A0B876281B /* Up Only.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -408,6 +513,7 @@
 				F546043A7C6657F266649262 /* UpOnly */,
 				178D8F07E3A7B4434162F645 /* UpOnlyFixture */,
 				2B4DD4C206161447922FE54D /* UpOnlyTests */,
+				2D741DCAF452947D90149EB1 /* UpOnlyiOS */,
 			);
 		};
 /* End PBXProject section */
@@ -441,6 +547,18 @@
 				A55E7C0000000000000A55E9 /* Assets.xcassets in Resources */,
 				EB6F657D1DB867F45E7E55FA /* UpOnlyWordmarkLight.pdf in Resources */,
 				CDA41EC98958A816FF718697 /* UpOnlyWordmark.pdf in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9AC63DF0CDD2BF3AFF40DDE0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E520B6C33F2B886DDA74B3C9 /* UpOnlyStatus.pdf in Resources */,
+				06982D3E9502187463844CF6 /* CoinLogos.pack in Resources */,
+				317D5B955269D8A771D21D30 /* Assets.xcassets in Resources */,
+				2A7AD9FC829B6B54AA88D57B /* UpOnlyWordmarkLight.pdf in Resources */,
+				4F1B96CAC1EECD1720DD7AA2 /* UpOnlyWordmark.pdf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -561,6 +679,61 @@
 				02B0B7026E9B8FD38D282227 /* UpOnlyManagement.swift in Sources */,
 				938896F26DF29E826BFE3711 /* UpOnlyPanel.swift in Sources */,
 				387D6EC44CEB31F82F042AB8 /* UpOnlySetup.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		933C2E62C8A1DF7B0416C288 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EE9A232390654349F0E849A7 /* Config.swift in Sources */,
+				684A1CAFAAC1CAF0EBA10EBB /* CSVReader.swift in Sources */,
+				777DDF0BB035F64024D5BB6E /* PublicPrices.swift in Sources */,
+				858C612BAFBA0D03E4B5BFC3 /* WiseAPI.swift in Sources */,
+				57AB36D2238141D4AAF092E9 /* PriceHistory.swift in Sources */,
+				0E2896350373293129C4002D /* ExchangeRates.swift in Sources */,
+				F68A405C0BB4E6CD94BAE714 /* MetalPrices.swift in Sources */,
+				4C94D7903125A0069D6DCB79 /* CryptoPrices.swift in Sources */,
+				2DC25246B30FBEFB36A4ECEC /* Ledger.swift in Sources */,
+				771470E347CEB519E8A7B708 /* BusinessAccounting.swift in Sources */,
+				16AAAC3228F8FE56F118D541 /* BackgroundRefresh.swift in Sources */,
+				9B311E456858D23F41FD8CBE /* MonthKey.swift in Sources */,
+				7E9F1E05865007DA720C190C /* NetWorthCalculator.swift in Sources */,
+				39C21C192F4647294CD9E862 /* PopoverModel.swift in Sources */,
+				E7C3A0BE26B367896297A291 /* PortfolioModels.swift in Sources */,
+				B80DAC53DC9184AFBEFFC243 /* UpOnlyFixture.swift in Sources */,
+				054E8BAAD4796DDB274DBFB5 /* UpOnlySession.swift in Sources */,
+				D6EA6A7C02C4AAB5AB5BCA05 /* BackupCoordinator.swift in Sources */,
+				E30C44A30385E38501774C4F /* VaultCrypto.swift in Sources */,
+				6A5B2A058A7F12A6CB94D9AB /* VaultDependencies.swift in Sources */,
+				75F30D7CDDF76BB73CCFF624 /* VaultDocument.swift in Sources */,
+				424AFBB5A0A11A44C8C8E3FC /* VaultStore.swift in Sources */,
+				D7C97673D53578F4997F7B60 /* VaultTypes.swift in Sources */,
+				5CF76CE9CC2BADC7484C4258 /* StatementReview.swift in Sources */,
+				9EF6F8CE88E0B91DB59511E7 /* UpOnlyChart.swift in Sources */,
+				41BFF6E011FD54731767CB0B /* DashboardSwitcher.swift in Sources */,
+				ACCD883F9F8A6A6AB4B959FC /* UpOnlyEditSheet.swift in Sources */,
+				70C2DF42C4727ACC381250AD /* NeedsAttentionView.swift in Sources */,
+				A02EC40D12D2A22951FE8490 /* ManageComponents.swift in Sources */,
+				B05B0B15658B95F3338B5E88 /* ManageSecurity.swift in Sources */,
+				E80017113B2E7EE25D91827D /* ManageTransactions.swift in Sources */,
+				3DE7C1651B7DB06F4E22DAAE /* ManageHoldings.swift in Sources */,
+				07D8B063EFFCF5636A7CEB39 /* ManageAccounts.swift in Sources */,
+				8E70753D5B585082D7AAA081 /* ImportEditors.swift in Sources */,
+				8A842008C424410B01367F97 /* UpOnlyGuidedEntry.swift in Sources */,
+				CEB5C55874939F455D1BF315 /* UpOnlyEntryFlow.swift in Sources */,
+				5C791AC53DD9E3F89E5349C5 /* UpOnlyComponents.swift in Sources */,
+				7EE4846FB10F89D339F496C0 /* UpOnlyLockView.swift in Sources */,
+				4D417B6859F195952FF154DD /* DashboardCompany.swift in Sources */,
+				49332A4CE4074D4D64B56ED7 /* DashboardHolding.swift in Sources */,
+				0E2D3BB403ED90D1701D8AED /* DashboardNetWorth.swift in Sources */,
+				5529F218347F6B16434F3503 /* DashboardCashFlow.swift in Sources */,
+				CA2D8E93A72CA0AAC9849177 /* UpOnlyManagement.swift in Sources */,
+				9A54F780E99D9A306DF7E8CE /* UpOnlyPanel.swift in Sources */,
+				61CFC08EFDC8225F2B02718A /* UpOnlySetup.swift in Sources */,
+				4FBCD7C1FBFC72D843CCFA05 /* UpOnlyiOSApp.swift in Sources */,
+				6D4BE195E560D3F20ED87ADC /* AppKitCompat.swift in Sources */,
+				A3F3C8E47C1F62669F376489 /* UpOnlyFilePicker.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -844,6 +1017,79 @@
 			};
 			name = Debug;
 		};
+		A8EA49A2257098835CDF7BA0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ios/UpOnly.entitlements;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ios/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Up Only";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID unlocks your encrypted vault.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tonkinapps.up;
+				PRODUCT_MODULE_NAME = UpOnly;
+				PRODUCT_NAME = "Up Only";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		17A3DBCA23D17BD62719448A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ios/UpOnly.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ios/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Up Only";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID unlocks your encrypted vault.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tonkinapps.up;
+				PRODUCT_MODULE_NAME = UpOnly;
+				PRODUCT_NAME = "Up Only";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -879,6 +1125,15 @@
 			buildConfigurations = (
 				19F0C63E36D11E85A22CBEAA /* Release */,
 				CB83C28EC8453670732A8E27 /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DB7DB64E3C8534B2AFEDB936 /* Build configuration list for PBXNativeTarget "UpOnlyiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A8EA49A2257098835CDF7BA0 /* Release */,
+				17A3DBCA23D17BD62719448A /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -1,6 +1,8 @@
 import SwiftUI
 import OSLog
+#if os(macOS)
 import AppKit
+#endif
 
 struct UpOnlyGuidedEntry: View {
     @Environment(UpOnlySession.self) private var session

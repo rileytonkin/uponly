@@ -146,13 +146,22 @@ struct UpOnlyChangeBadge: View {
     /// disc, as exchange apps do. Anything else is returned as it is.
     private static func legible(_ image: NSImage) -> NSImage {
         guard isDarkOnClear(image) else { return image }
-        let size = NSSize(width: 64, height: 64)
+        let size = CGSize(width: 64, height: 64)
+        #if os(macOS)
         return NSImage(size: size, flipped: false) { rect in
             NSColor.white.setFill()
             NSBezierPath(ovalIn: rect).fill()
             image.draw(in: rect.insetBy(dx: 6, dy: 6))
             return true
         }
+        #else
+        return UIGraphicsImageRenderer(size: size).image { context in
+            let rect = CGRect(origin: .zero, size: size)
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: rect).fill()
+            image.draw(in: rect.insetBy(dx: 6, dy: 6))
+        }
+        #endif
     }
     /// Over 30% of it clear and what isn't, dark: its opaque pixels' average luminance under a quarter.
     nonisolated static func isDarkOnClear(_ image: NSImage) -> Bool {

@@ -1,5 +1,7 @@
 import SwiftUI
+#if os(macOS)
 import AppKit
+#endif
 
 struct UpOnlyImportView: View {
     @Environment(UpOnlySession.self) private var session
@@ -158,7 +160,12 @@ struct UpOnlyImportView: View {
             session.importRequest = nil
             switch request {
             case .paste:
-                guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { error = "Copy some spreadsheet cells first."; return }
+                #if os(macOS)
+                let copied = NSPasteboard.general.string(forType: .string)
+                #else
+                let copied = UIPasteboard.general.string
+                #endif
+                guard let text = copied, !text.isEmpty else { error = "Copy some spreadsheet cells first."; return }
                 prepareExternalInput(); Task { await session.pasteImport(text) }
             case .chooseFiles: prepareExternalInput(); Task { await session.chooseImportFiles() }
             case .template: Task { await session.saveImportTemplate() }
