@@ -15,8 +15,8 @@
 set -euo pipefail
 
 BUNDLE_ID=com.tonkinapps.up
-APP_NAME="Up"
-SKU=UP-IOS
+APP_NAME="Up Only"
+SKU=UPONLY-IOS
 GROUP=Internal
 SCHEME=UpOnlyiOS
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

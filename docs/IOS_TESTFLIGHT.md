@@ -8,7 +8,7 @@ The iPhone app is the `UpOnlyiOS` target (`com.tonkinapps.up`, Tonkin Apps). It 
 |---|---|
 | Check asc, the API key and Xcode | `scripts/ios_testflight.sh doctor` (read-only) |
 | Register the bundle ID | `setup`: `asc bundle-ids create` |
-| Create the App Store Connect app | `setup`: `asc web apps create`. Apple's public API can't create apps, so this is the one step that signs in to App Store Connect on the web, with two-factor authentication the first time. It stops if the name "Up" is taken rather than renaming the app. |
+| Create the App Store Connect app | `setup`: `asc web apps create`. Apple's public API can't create apps, so this is the one step that signs in to App Store Connect on the web, with two-factor authentication the first time. It stops if the name "Up Only" is taken rather than renaming the app. Not plain "Up": that is the Australian bank Up's app (Finance, "Up — Simplify Money"). |
 | Internal TestFlight group, and adding you to it | `setup`: `asc testflight groups create --internal`, `asc testflight testers add` |
 | Export compliance | Never asked: `ios/Info.plist` sets `ITSAppUsesNonExemptEncryption` to false (the app uses only Apple's encryption, for your own data) |
 | Signing | Automatic, cloud-managed, with the API key: `-allowProvisioningUpdates` and the key's `-authenticationKey…` flags. No Apple ID needs to be signed in to Xcode. |
