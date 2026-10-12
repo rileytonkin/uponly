@@ -42,9 +42,22 @@ Use the `code-review` skill on the branch, or run it by hand: freeze the diff in
 reviewer agents (one per lens: correctness, privacy/security, repository guidance), validate every candidate with a
 separate agent, and keep only high-confidence findings. Fix what's real, then re-run the relevant checks.
 
+## Step 4.5: Tech debt (every PR, docs-only included; one line in the report)
+Riley, 2026-10-12: every PR carries a technical debt analysis. Follow `.claude/skills/tech-debt/SKILL.md`, Steps 1
+to 4:
+- After the commit: `git fetch -q origin main && python3 .claude/skills/tech-debt/scripts/debt_scan.py --committed`
+  (about a second). Any non-zero exit means "Tech debt scan could not run", with the reason, never "none".
+- If it prints `judge: recommended`, launch the skill's one fresh read-only judge, reading the diff file the scan
+  printed. Launch it with the Step 4 reviewers when they run, so it adds no wall-clock time.
+- The judge's call is the disposition. S-sized debt in files already in the diff is fixed with the review fixes, in
+  one push; the rest is registered under `docs/tech-debt/` in this PR. Rescan after fixes.
+- The table goes in the PR body; one plain line goes in the report ("Tech debt: none added", "adds one thing to
+  clean up later, written down", "scan only", "could not run").
+
 ## Step 5: Pull request and CI
 - `gh pr create --base main`. The body holds the detail: what changed, verification, review findings and how
   each was handled, anything unverified. End it with the session's attribution line.
+- The Step 4.5 tech debt table goes in the body too.
 - Wait for the PR's checks (Guard, Test and build). Report failures with their output; fix and push again.
 
 ## Step 6: Merge (only when Riley asks) and install
@@ -58,7 +71,7 @@ separate agent, and keep only high-confidence findings. Fix what's real, then re
 At most 150 words plus screenshots, in three blocks:
 1. **What shipped**, in plain words a user would notice. If the requested behaviour still doesn't work, lead with that.
 2. **What Riley must decide or check**, one short line each, including every gap ("Not seen on screen yet",
-   "Code review did not run"). Silence must never imply coverage.
+   "Code review did not run") and the tech debt line. Silence must never imply coverage.
 3. **The PR link.**
 
 Everything else (verification numbers, review findings, housekeeping) goes in the PR body. Then end with the
