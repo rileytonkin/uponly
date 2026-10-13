@@ -707,6 +707,77 @@ class DeepReviewFixes(unittest.TestCase):
         self.assertEqual(len(sig.items), 2)
 
 
+class FreshReviewFixes(unittest.TestCase):
+    def test_commented_out_rls_does_not_count(self):
+        r = base_repo(self)
+        r.write("supabase/migrations/5_e.sql", "create table public.secrets (id uuid primary key);\n"
+                "-- alter table public.secrets enable row level security;\n")
+        res = commit_and_scan(r)
+        self.assertEqual([s["line"] for s in kinds(res, "table-without-rls")], [1])
+
+    def test_untracked_diff_ignores_external_diff_tools(self):
+        r = base_repo(self)
+        marker = os.path.join(r.dir, "EXT_RAN")
+        tool = os.path.join(r.dir, "ext.sh")
+        with open(tool, "w") as fh:
+            fh.write("#!/bin/sh\ntouch %s\necho EXTERNAL\n" % marker)
+        os.chmod(tool, 0o755)
+        r.git("config", "diff.external", tool)
+        r.write("src/new.js", "export const n = 1;\n")
+        out = os.path.join(r.dir, "o.json")
+        subprocess.run([sys.executable, SCAN, "--json", out], cwd=r.root, env=r.env, check=True, stdout=subprocess.PIPE)
+        with open(os.path.join(r.dir, "o.diff")) as fh:
+            self.assertIn("+export const n = 1;", fh.read())
+        self.assertFalse(os.path.exists(marker))
+
+    def test_register_block_list_stops_at_front_matter(self):
+        sys.path.insert(0, HERE)
+        import debt_scan
+        content = "---\ntitle: x\nfiles:\n  - a/b.py\n---\n- keep both paths\n- old step\n"
+        self.assertEqual(debt_scan.register_files(content), ["a/b.py"])
+        r = base_repo(self, {"docs/tech-debt/x.md": content, "a/b.py": "x = 1\n"})
+        r.write("docs/tech-debt/x.md", content.replace("old step", "new step"))
+        res = commit_and_scan(r)
+        self.assertEqual(res["register"]["paid"], [])
+
+    def test_register_entries_in_every_shape_keep_their_files(self):
+        sys.path.insert(0, HERE)
+        import debt_scan
+        rf = debt_scan.register_files
+        self.assertEqual(rf("files:\n  - a.py\n  - b.py\n\nBody.\n"), ["a.py", "b.py"])          # no front matter
+        self.assertEqual(rf("---\r\nfiles:\r\n  - a.py\r\n---\r\nx\r\n"), ["a.py"])            # CRLF
+        self.assertEqual(rf("\ufeff---\nfiles: [a.py]\n---\nx\n"), ["a.py"])                     # BOM
+        self.assertEqual(rf("---\nfiles: [a.py]\n---\nfiles: [a.py, b.py]\n"), ["a.py"])         # body line ignored
+        self.assertEqual(rf("files:\n  - a.py\n\n- body bullet\n"), ["a.py"])
+        self.assertEqual(rf("---\n---\nfiles:\n- z.py\n---\n"), [])                              # empty front matter
+
+    def test_removal_only_edit_to_opted_out_file_is_reported(self):
+        r = base_repo(self, {"src/rules.py": "# debt-scan: ignore-file\nRULES = [\n    'a',\n    'b',\n]\n"})
+        r.write("src/rules.py", "# debt-scan: ignore-file\nRULES = [\n    'a',\n]\n")
+        res = commit_and_scan(r)
+        self.assertEqual(len(kinds(res, "scan-opt-out")), 1)
+        self.assertEqual(kinds(res, "scan-opt-out")[0]["line"], 1)
+        self.assertTrue(res["recommend_judge"])
+
+    def test_marker_quoted_inside_a_file_is_not_an_opt_out(self):
+        r = base_repo(self)
+        r.write("src/fixtures.py", "".join("X%d = 1\n" % i for i in range(35)) + "MARK = '# debt-scan: ignore-file'\n")
+        self.assertFalse(kinds(commit_and_scan(r), "scan-opt-out"))
+
+    def test_marker_quoted_late_in_an_opted_out_file_is_not_a_new_opt_out(self):
+        body = "# debt-scan: ignore-file\n" + "".join("X%d = 1\n" % i for i in range(35))
+        r = base_repo(self, {"src/rules.py": body})
+        r.write("src/rules.py", body + "MARK = '# debt-scan: ignore-file'\n")
+        opt = kinds(commit_and_scan(r), "scan-opt-out")
+        self.assertEqual(len(opt), 1)
+        self.assertEqual(opt[0]["direction"], "info")
+
+    def test_removal_only_edit_points_at_the_marker_under_a_shebang(self):
+        r = base_repo(self, {"src/rules.py": "#!/usr/bin/env python3\n# debt-scan: ignore-file\nA = 1\nB = 2\n"})
+        r.write("src/rules.py", "#!/usr/bin/env python3\n# debt-scan: ignore-file\nA = 1\n")
+        self.assertEqual(kinds(commit_and_scan(r), "scan-opt-out")[0]["line"], 2)
+
+
 class Modes(unittest.TestCase):
     def test_committed_mode_ignores_uncommitted_and_untracked(self):
         r = base_repo(self, {"src/a.js": "export const a = 1;\n"})
