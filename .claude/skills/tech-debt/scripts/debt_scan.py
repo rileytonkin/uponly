@@ -38,7 +38,7 @@ import sys
 import tempfile
 from collections import defaultdict
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 CODE_EXT = {
     "swift", "kt", "kts", "java", "js", "jsx", "ts", "tsx", "mjs", "cjs", "py",
@@ -587,7 +587,8 @@ def is_opted_out(repo, sig, f):
         sig.add("scan-opt-out", "code", f.path, opted[0], OPT_OUT,
                 note="file opted out of line rules; the judge should confirm why")
     elif f.added or f.removed:  # never silent: say which lines the line rules did not read
-        first = f.added[0][0] if f.added else 1  # removed lines have old-file numbers; point at the marker instead
+        first = f.added[0][0] if f.added else next(  # removed lines have old-file numbers; point at the marker
+            i for i, t in enumerate(head_text.split("\n")[:30], start=1) if OPT_OUT in t)
         sig.add("scan-opt-out", "code", f.path, first, OPT_OUT, direction="info",
                 note="opted-out file: %d added, %d removed lines were not line-checked; the judge reads them"
                 % (len(f.added), len(f.removed)))

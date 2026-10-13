@@ -764,6 +764,19 @@ class FreshReviewFixes(unittest.TestCase):
         r.write("src/fixtures.py", "".join("X%d = 1\n" % i for i in range(35)) + "MARK = '# debt-scan: ignore-file'\n")
         self.assertFalse(kinds(commit_and_scan(r), "scan-opt-out"))
 
+    def test_marker_quoted_late_in_an_opted_out_file_is_not_a_new_opt_out(self):
+        body = "# debt-scan: ignore-file\n" + "".join("X%d = 1\n" % i for i in range(35))
+        r = base_repo(self, {"src/rules.py": body})
+        r.write("src/rules.py", body + "MARK = '# debt-scan: ignore-file'\n")
+        opt = kinds(commit_and_scan(r), "scan-opt-out")
+        self.assertEqual(len(opt), 1)
+        self.assertEqual(opt[0]["direction"], "info")
+
+    def test_removal_only_edit_points_at_the_marker_under_a_shebang(self):
+        r = base_repo(self, {"src/rules.py": "#!/usr/bin/env python3\n# debt-scan: ignore-file\nA = 1\nB = 2\n"})
+        r.write("src/rules.py", "#!/usr/bin/env python3\n# debt-scan: ignore-file\nA = 1\n")
+        self.assertEqual(kinds(commit_and_scan(r), "scan-opt-out")[0]["line"], 2)
+
 
 class Modes(unittest.TestCase):
     def test_committed_mode_ignores_uncommitted_and_untracked(self):
