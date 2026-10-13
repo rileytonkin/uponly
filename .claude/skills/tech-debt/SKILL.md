@@ -141,6 +141,9 @@ The PR table shows the judge's call beside every outcome.
    "and N more: <kinds>".
 4. **Rejected**: with the reason. For wrong items, never for inconvenient ones.
 
+An item fixed only in part becomes two rows: the part fixed, and the rest
+registered or rejected with its reason, never just "left untested".
+
 A register entry the scan reports as touched gets one line: paid down here,
 still true, or now false (delete it and say why). Deleting an entry, moving
 it out of the register, or dropping a file from its `files:` makes the rescan
