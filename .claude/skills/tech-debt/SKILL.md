@@ -130,7 +130,8 @@ The PR table shows the judge's call beside every outcome.
 
 1. **Fixed now**: S principal, introduced by this change, and fixable inside
    files already in the diff without moving the change to a heavier review
-   lane. Fix it with the review fixes, one push.
+   lane. The one exception is security debt: fix it even when that moves the
+   change to a heavier lane, and say so. Fix it with the review fixes, one push.
 2. **Registered**: everything else this change introduces that is not fixed:
    deliberate shortcuts and M/L principal. One file in the register (below),
    in this PR. Wrap-up's "an enlarging fix becomes its own PR" does not apply

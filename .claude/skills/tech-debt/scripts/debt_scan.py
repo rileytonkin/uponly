@@ -582,13 +582,15 @@ def is_opted_out(repo, sig, f):
     head_text = repo.read_head(f.path) if f.status != "D" else None
     if head_text is None or OPT_OUT not in "\n".join(head_text.split("\n")[:30]):
         return False
-    opted = [l for l, t in f.added if OPT_OUT in t]
+    opted = [l for l, t in f.added if OPT_OUT in t and l <= 30]  # the marker itself, not a fixture quoting it
     if opted:
         sig.add("scan-opt-out", "code", f.path, opted[0], OPT_OUT,
                 note="file opted out of line rules; the judge should confirm why")
-    elif f.added:  # never silent: say which lines the line rules did not read
-        sig.add("scan-opt-out", "code", f.path, f.added[0][0], OPT_OUT, direction="info",
-                note="opted-out file: %d added lines were not line-checked; the judge reads them" % len(f.added))
+    elif f.added or f.removed:  # never silent: say which lines the line rules did not read
+        first = f.added[0][0] if f.added else 1  # removed lines have old-file numbers; point at the marker instead
+        sig.add("scan-opt-out", "code", f.path, first, OPT_OUT, direction="info",
+                note="opted-out file: %d added, %d removed lines were not line-checked; the judge reads them"
+                % (len(f.added), len(f.removed)))
     return True
 
 
@@ -669,7 +671,8 @@ def sql_code(text):
 
 def check_sql(sig, repo, f):
     """Tables without row-level security; SECURITY DEFINER without a pinned search_path."""
-    head_text = repo.read_head(f.path) or "\n".join(t for _, t in f.added)
+    raw = repo.read_head(f.path) or "\n".join(t for _, t in f.added)
+    head_text = "\n".join(sql_code(l) for l in raw.split("\n"))  # an RLS line commented out with -- does not count
     for lineno, text in f.added:
         tm = SQL_CREATE_TABLE.search(sql_code(text))
         if tm and not re.search(r"\b(temp|temporary)\s+table\b", text, re.I):
@@ -952,11 +955,17 @@ def check_docs(sig, repo, doc_files, removed_paths, code_files):
 
 
 def register_files(content):
-    """The `files:` list of a register entry (inline [a, b] or a YAML list)."""
-    fm = re.search(r"^files:\s*\[(.*?)\]", content or "", re.M)
+    """The `files:` list of a register entry (inline [a, b] or a YAML list), read from its front matter.
+
+    Without front matter the whole file is read, but a block list stops at the first
+    line that is not a `- item`, so body bullets after a blank line never count."""
+    text = (content or "").lstrip("\ufeff").replace("\r\n", "\n")
+    front = re.match(r"^---[ \t]*\n(.*?)^---[ \t]*$", text, re.S | re.M)
+    section = front.group(1) if front else text
+    fm = re.search(r"^files:[ \t]*\[(.*?)\]", section, re.M)
     if fm:
         return [x.strip().strip("'\"") for x in fm.group(1).split(",") if x.strip()]
-    block = re.search(r"^files:\s*\n((?:\s*-\s*.+\n?)+)", content or "", re.M)
+    block = re.search(r"^files:[ \t]*\n((?:[ \t]*-[ \t]+\S.*\n?)+)", section, re.M)
     if block:
         return [re.sub(r"^\s*-\s*", "", x).strip().strip("'\"") for x in block.group(1).splitlines() if x.strip()]
     return []
@@ -1127,7 +1136,8 @@ def write_diff(root, merge_base, head, path):
     text = git(args, cwd=root)
     if head is None:
         for p in [x for x in git(["ls-files", "--others", "--exclude-standard", "-z"], cwd=root).split("\0") if x]:
-            text += git(["diff", "--no-color", "--no-index", "--", "/dev/null", p], check=False, cwd=root)
+            text += git(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-index", "--", "/dev/null", p],
+                        check=False, cwd=root)
     with open(path, "w") as fh:
         fh.write(text)
 
